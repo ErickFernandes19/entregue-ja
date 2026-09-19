@@ -1,0 +1,25 @@
+# Flutter
+.dart_tool/
+.packages
+.pub/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Android/IDE
+.gradle/
+.idea/
+.vscode/
+*.iml
+
+# Spring Boot / Java
+backend/target/
+*.class
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
+
+# Dados sensíveis
+.env
+application-local.properties
