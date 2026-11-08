@@ -1,12 +1,17 @@
+
 package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.Usuario;
 import com.entregueja.backend.repository.UsuarioRepository;
+import com.entregueja.backend.service.EmailService;
+import com.entregueja.backend.service.JwtService;
+
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-import com.entregueja.backend.service.EmailService;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -23,15 +28,46 @@ public class AuthController {
     private final UsuarioRepository usuarioRepository;
     private final PasswordEncoder passwordEncoder;
     private final EmailService emailService;
+    private final JwtService jwtService;
 
     public AuthController(
             UsuarioRepository usuarioRepository,
             PasswordEncoder passwordEncoder,
-            EmailService emailService
+            EmailService emailService,
+            JwtService jwtService
     ) {
         this.usuarioRepository = usuarioRepository;
         this.passwordEncoder = passwordEncoder;
         this.emailService = emailService;
+        this.jwtService = jwtService;
+    }
+
+    private Long obterIdAutenticado() {
+        Authentication authentication =
+                SecurityContextHolder.getContext().getAuthentication();
+
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return null;
+        }
+
+        String principal = authentication.getName();
+
+        if (principal == null || !principal.startsWith("ENTREGADOR:")) {
+            return null;
+        }
+
+        try {
+            return Long.parseLong(principal.substring("ENTREGADOR:".length()));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private boolean usuarioAutorizado(Usuario usuario) {
+        Long idAutenticado = obterIdAutenticado();
+
+        return idAutenticado != null
+                && idAutenticado.equals(usuario.getId());
     }
 
     @PostMapping("/esqueci-senha")
@@ -42,10 +78,7 @@ public class AuthController {
 
         if (email == null || email.trim().isEmpty()) {
             return ResponseEntity.badRequest().body(
-                    Map.of(
-                            "mensagem",
-                            "Informe o e-mail"
-                    )
+                    Map.of("mensagem", "Informe o e-mail")
             );
         }
 
@@ -65,12 +98,10 @@ public class AuthController {
 
         String codigo = String.format(
                 "%06d",
-                new java.security.SecureRandom()
-                        .nextInt(1000000)
+                new java.security.SecureRandom().nextInt(1000000)
         );
 
         usuario.setCodigoRecuperacao(codigo);
-
         usuario.setCodigoRecuperacaoExpira(
                 LocalDateTime.now().plusMinutes(10)
         );
@@ -117,7 +148,6 @@ public class AuthController {
                 || email.trim().isEmpty()
                 || codigo == null
                 || codigo.trim().isEmpty()) {
-
             return ResponseEntity.badRequest().body(
                     Map.of(
                             "mensagem",
@@ -142,7 +172,6 @@ public class AuthController {
 
         if (usuario.getCodigoRecuperacao() == null
                 || usuario.getCodigoRecuperacaoExpira() == null) {
-
             return ResponseEntity.badRequest().body(
                     Map.of(
                             "mensagem",
@@ -160,30 +189,19 @@ public class AuthController {
             usuarioRepository.save(usuario);
 
             return ResponseEntity.badRequest().body(
-                    Map.of(
-                            "mensagem",
-                            "Código expirado"
-                    )
+                    Map.of("mensagem", "Código expirado")
             );
         }
 
-        if (!usuario
-                .getCodigoRecuperacao()
+        if (!usuario.getCodigoRecuperacao()
                 .equals(codigo.trim())) {
-
             return ResponseEntity.badRequest().body(
-                    Map.of(
-                            "mensagem",
-                            "Código inválido"
-                    )
+                    Map.of("mensagem", "Código inválido")
             );
         }
 
         return ResponseEntity.ok(
-                Map.of(
-                        "mensagem",
-                        "Código válido"
-                )
+                Map.of("mensagem", "Código válido")
         );
     }
 
@@ -201,7 +219,6 @@ public class AuthController {
                 || codigo.trim().isEmpty()
                 || novaSenha == null
                 || novaSenha.isEmpty()) {
-
             return ResponseEntity.badRequest().body(
                     Map.of(
                             "mensagem",
@@ -235,7 +252,6 @@ public class AuthController {
 
         if (usuario.getCodigoRecuperacao() == null
                 || usuario.getCodigoRecuperacaoExpira() == null) {
-
             return ResponseEntity.badRequest().body(
                     Map.of(
                             "mensagem",
@@ -253,29 +269,20 @@ public class AuthController {
             usuarioRepository.save(usuario);
 
             return ResponseEntity.badRequest().body(
-                    Map.of(
-                            "mensagem",
-                            "Código expirado"
-                    )
+                    Map.of("mensagem", "Código expirado")
             );
         }
 
-        if (!usuario
-                .getCodigoRecuperacao()
+        if (!usuario.getCodigoRecuperacao()
                 .equals(codigo.trim())) {
-
             return ResponseEntity.badRequest().body(
-                    Map.of(
-                            "mensagem",
-                            "Código inválido"
-                    )
+                    Map.of("mensagem", "Código inválido")
             );
         }
 
         usuario.setSenha(
                 passwordEncoder.encode(novaSenha)
         );
-
         usuario.setCodigoRecuperacao(null);
         usuario.setCodigoRecuperacaoExpira(null);
 
@@ -290,22 +297,33 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody Map<String, String> body) {
+    public ResponseEntity<?> login(
+            @RequestBody Map<String, String> body
+    ) {
         String email = body.get("email");
         String senha = body.get("senha");
 
-        if (email == null || email.trim().isEmpty()
-                || senha == null || senha.isEmpty()) {
+        if (email == null
+                || email.trim().isEmpty()
+                || senha == null
+                || senha.isEmpty()) {
             return ResponseEntity.badRequest().body(
-                    Map.of("mensagem", "Informe e-mail e senha")
+                    Map.of(
+                            "mensagem",
+                            "Informe e-mail e senha"
+                    )
             );
         }
 
-        var usuarioOptional = usuarioRepository.findByEmail(email.trim());
+        var usuarioOptional =
+                usuarioRepository.findByEmail(email.trim());
 
         if (usuarioOptional.isEmpty()) {
             return ResponseEntity.status(401).body(
-                    Map.of("mensagem", "E-mail ou senha inválidos")
+                    Map.of(
+                            "mensagem",
+                            "E-mail ou senha inválidos"
+                    )
             );
         }
 
@@ -313,7 +331,10 @@ public class AuthController {
 
         if (!senhaValida(usuario.getSenha(), senha)) {
             return ResponseEntity.status(401).body(
-                    Map.of("mensagem", "E-mail ou senha inválidos")
+                    Map.of(
+                            "mensagem",
+                            "E-mail ou senha inválidos"
+                    )
             );
         }
 
@@ -322,55 +343,78 @@ public class AuthController {
             usuarioRepository.save(usuario);
         }
 
+        String token = jwtService.gerarToken(
+                usuario.getId(),
+                "ENTREGADOR"
+        );
+
         Map<String, Object> resposta = new HashMap<>();
 
-        resposta.put("mensagem", "Login realizado com sucesso");
+        resposta.put(
+                "mensagem",
+                "Login realizado com sucesso"
+        );
         resposta.put("id", usuario.getId());
         resposta.put("nome", usuario.getNome());
         resposta.put("email", usuario.getEmail());
         resposta.put(
                 "foto",
-                usuario.getFoto() == null ? "" : usuario.getFoto()
+                usuario.getFoto() == null
+                        ? ""
+                        : usuario.getFoto()
         );
+        resposta.put("token", token);
 
         return ResponseEntity.ok(resposta);
     }
 
     @GetMapping("/{email}/perfil")
-    public ResponseEntity<?> perfil(@PathVariable String email) {
-        return usuarioRepository.findByEmail(email)
-                .map(usuario -> {
-                    Map<String, Object> resposta = new HashMap<>();
+    public ResponseEntity<?> perfil(
+            @PathVariable String email
+    ) {
+        var usuarioOptional = usuarioRepository.findByEmail(email);
 
-                    resposta.put("id", usuario.getId());
-                    resposta.put("nome", usuario.getNome());
-                    resposta.put("email", usuario.getEmail());
-                    resposta.put(
-                            "veiculo",
-                            usuario.getVeiculo() == null
-                                    ? ""
-                                    : usuario.getVeiculo()
-                    );
-                    resposta.put(
-                            "capacidadeCarga",
-                            usuario.getCapacidadeCarga() == null
-                                    ? ""
-                                    : usuario.getCapacidadeCarga()
-                    );
-                    resposta.put(
-                            "foto",
-                            usuario.getFoto() == null
-                                    ? ""
-                                    : usuario.getFoto()
-                    );
+        if (usuarioOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
 
-                    return ResponseEntity.ok(resposta);
-                })
-                .orElse(ResponseEntity.notFound().build());
+        Usuario usuario = usuarioOptional.get();
+
+        if (!usuarioAutorizado(usuario)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        Map<String, Object> resposta = new HashMap<>();
+
+        resposta.put("id", usuario.getId());
+        resposta.put("nome", usuario.getNome());
+        resposta.put("email", usuario.getEmail());
+        resposta.put(
+                "veiculo",
+                usuario.getVeiculo() == null
+                        ? ""
+                        : usuario.getVeiculo()
+        );
+        resposta.put(
+                "capacidadeCarga",
+                usuario.getCapacidadeCarga() == null
+                        ? ""
+                        : usuario.getCapacidadeCarga()
+        );
+        resposta.put(
+                "foto",
+                usuario.getFoto() == null
+                        ? ""
+                        : usuario.getFoto()
+        );
+
+        return ResponseEntity.ok(resposta);
     }
 
     @PostMapping("/register")
-    public ResponseEntity<?> register(@RequestBody Usuario usuario) {
+    public ResponseEntity<?> register(
+            @RequestBody Usuario usuario
+    ) {
         if (usuario.getNome() == null
                 || usuario.getNome().trim().isEmpty()) {
             return ResponseEntity.badRequest().body(
@@ -400,11 +444,19 @@ public class AuthController {
             );
         }
 
+        usuario.setId(null);
         usuario.setNome(usuario.getNome().trim());
         usuario.setEmail(email);
         usuario.setSenha(
                 passwordEncoder.encode(usuario.getSenha())
         );
+
+        usuario.setEmpresa(null);
+        usuario.setEmpresaPendente(null);
+        usuario.setDataVinculo(null);
+        usuario.setFoto(null);
+        usuario.setCodigoRecuperacao(null);
+        usuario.setCodigoRecuperacaoExpira(null);
 
         usuarioRepository.save(usuario);
 
@@ -421,218 +473,7 @@ public class AuthController {
             @PathVariable String email,
             @RequestParam("foto") MultipartFile foto
     ) {
-        return usuarioRepository.findByEmail(email)
-                .map(usuario -> {
-                    try {
-                        String pasta = "uploads/usuarios/";
-
-                        Files.createDirectories(
-                                Paths.get(pasta)
-                        );
-
-                        String nomeArquivo =
-                                email.replace("@", "_")
-                                        .replace(".", "_")
-                                        + "_"
-                                        + System.currentTimeMillis()
-                                        + "_"
-                                        + foto.getOriginalFilename();
-
-                        Path caminho = Paths.get(
-                                pasta + nomeArquivo
-                        );
-
-                        Files.write(
-                                caminho,
-                                foto.getBytes()
-                        );
-
-                        String urlFoto =
-                                "/uploads/usuarios/"
-                                        + nomeArquivo;
-
-                        usuario.setFoto(urlFoto);
-
-                        usuarioRepository.save(usuario);
-
-                        return ResponseEntity.ok(
-                                Map.of(
-                                        "mensagem",
-                                        "Foto atualizada com sucesso",
-                                        "foto",
-                                        urlFoto
-                                )
-                        );
-                    } catch (Exception e) {
-                        return ResponseEntity
-                                .internalServerError()
-                                .body(
-                                        Map.of(
-                                                "mensagem",
-                                                "Erro ao salvar foto"
-                                        )
-                                );
-                    }
-                })
-                .orElse(
-                        ResponseEntity.notFound().build()
-                );
-    }
-
-    @GetMapping("/{email}/empresa-vinculada")
-    public ResponseEntity<?> empresaVinculada(
-            @PathVariable String email
-    ) {
-        return usuarioRepository.findByEmail(email)
-                .map(usuario -> {
-                    if (usuario.getEmpresa() == null) {
-                        return ResponseEntity.ok(
-                                Map.of(
-                                        "vinculado",
-                                        false
-                                )
-                        );
-                    }
-
-                    return ResponseEntity.ok(
-                            Map.of(
-                                    "vinculado",
-                                    true,
-                                    "nome",
-                                    usuario.getEmpresa().getNome(),
-                                    "email",
-                                    usuario.getEmpresa().getEmail()
-                            )
-                    );
-                })
-                .orElse(
-                        ResponseEntity.notFound().build()
-                );
-    }
-
-    @GetMapping("/{email}/vinculo-pendente")
-    public ResponseEntity<?> vinculoPendente(
-            @PathVariable String email
-    ) {
-        return usuarioRepository.findByEmail(email)
-                .map(usuario -> {
-                    if (usuario.getEmpresaPendente() == null) {
-                        return ResponseEntity.ok(
-                                Map.of(
-                                        "possuiVinculo",
-                                        false
-                                )
-                        );
-                    }
-
-                    return ResponseEntity.ok(
-                            Map.of(
-                                    "possuiVinculo",
-                                    true,
-                                    "empresa",
-                                    usuario.getEmpresaPendente().getNome(),
-                                    "email",
-                                    usuario.getEmpresaPendente().getEmail()
-                            )
-                    );
-                })
-                .orElse(
-                        ResponseEntity.notFound().build()
-                );
-    }
-
-    @PutMapping("/{email}/aceitar-vinculo")
-    public ResponseEntity<?> aceitarVinculo(
-            @PathVariable String email
-    ) {
-        return usuarioRepository.findByEmail(email)
-                .map(usuario -> {
-                    if (usuario.getEmpresaPendente() == null) {
-                        return ResponseEntity
-                                .badRequest()
-                                .build();
-                    }
-
-                    usuario.setEmpresa(
-                            usuario.getEmpresaPendente()
-                    );
-                    usuario.setEmpresaPendente(null);
-                    usuario.setDataVinculo(
-                            LocalDateTime.now()
-                    );
-
-                    usuarioRepository.save(usuario);
-
-                    return ResponseEntity.ok(
-                            Map.of(
-                                    "mensagem",
-                                    "Vínculo aceito"
-                            )
-                    );
-                })
-                .orElse(
-                        ResponseEntity.notFound().build()
-                );
-    }
-
-    @PutMapping("/{email}/recusar-vinculo")
-    public ResponseEntity<?> recusarVinculo(
-            @PathVariable String email
-    ) {
-        return usuarioRepository.findByEmail(email)
-                .map(usuario -> {
-                    usuario.setEmpresaPendente(null);
-
-                    usuarioRepository.save(usuario);
-
-                    return ResponseEntity.ok(
-                            Map.of(
-                                    "mensagem",
-                                    "Vínculo recusado"
-                            )
-                    );
-                })
-                .orElse(
-                        ResponseEntity.notFound().build()
-                );
-    }
-
-    @PutMapping("/{email}/configuracoes-veiculo")
-    public ResponseEntity<?> atualizarConfiguracoesVeiculo(
-            @PathVariable String email,
-            @RequestBody Map<String, String> body
-    ) {
-        return usuarioRepository.findByEmail(email)
-                .map(usuario -> {
-                    usuario.setVeiculo(
-                            body.get("veiculo")
-                    );
-
-                    usuario.setCapacidadeCarga(
-                            body.get("capacidadeCarga")
-                    );
-
-                    usuarioRepository.save(usuario);
-
-                    return ResponseEntity.ok(
-                            Map.of(
-                                    "mensagem",
-                                    "Configurações atualizadas"
-                            )
-                    );
-                })
-                .orElse(
-                        ResponseEntity.notFound().build()
-                );
-    }
-
-    @PutMapping("/{email}/perfil")
-    public ResponseEntity<?> atualizarPerfil(
-            @PathVariable String email,
-            @RequestBody Map<String, String> body
-    ) {
-        var usuarioOptional =
-                usuarioRepository.findByEmail(email);
+        var usuarioOptional = usuarioRepository.findByEmail(email);
 
         if (usuarioOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
@@ -640,26 +481,239 @@ public class AuthController {
 
         Usuario usuario = usuarioOptional.get();
 
-        String novoNome = body.get("nome");
-        String novoEmail = body.get("email");
+        if (!usuarioAutorizado(usuario)) {
+            return ResponseEntity.status(403).build();
+        }
 
-        if (novoNome == null
-                || novoNome.trim().isEmpty()) {
-            return ResponseEntity.badRequest().body(
+        try {
+            if (foto == null || foto.isEmpty()) {
+                return ResponseEntity.badRequest().body(
+                        Map.of("mensagem", "Selecione uma foto")
+                );
+            }
+
+            String pasta = "uploads/usuarios/";
+
+            Files.createDirectories(Paths.get(pasta));
+
+            String original = foto.getOriginalFilename();
+
+            if (original == null || original.isBlank()) {
+                original = "perfil.jpg";
+            }
+
+            original = original.replaceAll("[^a-zA-Z0-9._-]", "_");
+
+            String nomeArquivo =
+                    usuario.getId()
+                            + "_"
+                            + System.currentTimeMillis()
+                            + "_"
+                            + original;
+
+            Path caminho = Paths.get(pasta, nomeArquivo);
+
+            Files.write(caminho, foto.getBytes());
+
+            String urlFoto = "/uploads/usuarios/" + nomeArquivo;
+
+            usuario.setFoto(urlFoto);
+            usuarioRepository.save(usuario);
+
+            return ResponseEntity.ok(
                     Map.of(
-                            "mensagem",
-                            "Nome não pode ficar vazio"
+                            "mensagem", "Foto atualizada com sucesso",
+                            "foto", urlFoto
                     )
+            );
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(
+                    Map.of("mensagem", "Erro ao salvar foto")
+            );
+        }
+    }
+
+    @GetMapping("/{email}/empresa-vinculada")
+    public ResponseEntity<?> empresaVinculada(
+            @PathVariable String email
+    ) {
+        var usuarioOptional = usuarioRepository.findByEmail(email);
+
+        if (usuarioOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Usuario usuario = usuarioOptional.get();
+
+        if (!usuarioAutorizado(usuario)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        if (usuario.getEmpresa() == null) {
+            return ResponseEntity.ok(
+                    Map.of("vinculado", false)
             );
         }
 
-        if (novoEmail == null
-                || novoEmail.trim().isEmpty()) {
+        return ResponseEntity.ok(
+                Map.of(
+                        "vinculado", true,
+                        "nome", usuario.getEmpresa().getNome(),
+                        "email", usuario.getEmpresa().getEmail()
+                )
+        );
+    }
+
+    @GetMapping("/{email}/vinculo-pendente")
+    public ResponseEntity<?> vinculoPendente(
+            @PathVariable String email
+    ) {
+        var usuarioOptional = usuarioRepository.findByEmail(email);
+
+        if (usuarioOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Usuario usuario = usuarioOptional.get();
+
+        if (!usuarioAutorizado(usuario)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        if (usuario.getEmpresaPendente() == null) {
+            return ResponseEntity.ok(
+                    Map.of("possuiVinculo", false)
+            );
+        }
+
+        return ResponseEntity.ok(
+                Map.of(
+                        "possuiVinculo", true,
+                        "empresa", usuario.getEmpresaPendente().getNome(),
+                        "email", usuario.getEmpresaPendente().getEmail()
+                )
+        );
+    }
+
+    @PutMapping("/{email}/aceitar-vinculo")
+    public ResponseEntity<?> aceitarVinculo(
+            @PathVariable String email
+    ) {
+        var usuarioOptional = usuarioRepository.findByEmail(email);
+
+        if (usuarioOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Usuario usuario = usuarioOptional.get();
+
+        if (!usuarioAutorizado(usuario)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        if (usuario.getEmpresaPendente() == null) {
             return ResponseEntity.badRequest().body(
-                    Map.of(
-                            "mensagem",
-                            "E-mail não pode ficar vazio"
-                    )
+                    Map.of("mensagem", "Nenhuma solicitação pendente")
+            );
+        }
+
+        if (usuario.getEmpresa() != null) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Entregador já possui empresa vinculada")
+            );
+        }
+
+        usuario.setEmpresa(usuario.getEmpresaPendente());
+        usuario.setEmpresaPendente(null);
+        usuario.setDataVinculo(LocalDateTime.now());
+
+        usuarioRepository.save(usuario);
+
+        return ResponseEntity.ok(
+                Map.of("mensagem", "Vínculo aceito")
+        );
+    }
+
+    @PutMapping("/{email}/recusar-vinculo")
+    public ResponseEntity<?> recusarVinculo(
+            @PathVariable String email
+    ) {
+        var usuarioOptional = usuarioRepository.findByEmail(email);
+
+        if (usuarioOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Usuario usuario = usuarioOptional.get();
+
+        if (!usuarioAutorizado(usuario)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        usuario.setEmpresaPendente(null);
+        usuarioRepository.save(usuario);
+
+        return ResponseEntity.ok(
+                Map.of("mensagem", "Vínculo recusado")
+        );
+    }
+
+    @PutMapping("/{email}/configuracoes-veiculo")
+    public ResponseEntity<?> atualizarConfiguracoesVeiculo(
+            @PathVariable String email,
+            @RequestBody Map<String, String> body
+    ) {
+        var usuarioOptional = usuarioRepository.findByEmail(email);
+
+        if (usuarioOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Usuario usuario = usuarioOptional.get();
+
+        if (!usuarioAutorizado(usuario)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        usuario.setVeiculo(body.get("veiculo"));
+        usuario.setCapacidadeCarga(body.get("capacidadeCarga"));
+
+        usuarioRepository.save(usuario);
+
+        return ResponseEntity.ok(
+                Map.of("mensagem", "Configurações atualizadas")
+        );
+    }
+
+    @PutMapping("/{email}/perfil")
+    public ResponseEntity<?> atualizarPerfil(
+            @PathVariable String email,
+            @RequestBody Map<String, String> body
+    ) {
+        var usuarioOptional = usuarioRepository.findByEmail(email);
+
+        if (usuarioOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Usuario usuario = usuarioOptional.get();
+
+        if (!usuarioAutorizado(usuario)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        String novoNome = body.get("nome");
+        String novoEmail = body.get("email");
+
+        if (novoNome == null || novoNome.trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Nome não pode ficar vazio")
+            );
+        }
+
+        if (novoEmail == null || novoEmail.trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "E-mail não pode ficar vazio")
             );
         }
 
@@ -668,16 +722,11 @@ public class AuthController {
 
         if (!email.equalsIgnoreCase(novoEmail)) {
             var usuarioComMesmoEmail =
-                    usuarioRepository.findByEmail(
-                            novoEmail
-                    );
+                    usuarioRepository.findByEmail(novoEmail);
 
             if (usuarioComMesmoEmail.isPresent()) {
                 return ResponseEntity.badRequest().body(
-                        Map.of(
-                                "mensagem",
-                                "E-mail já está sendo utilizado"
-                        )
+                        Map.of("mensagem", "E-mail já está sendo utilizado")
                 );
             }
         }
@@ -687,8 +736,7 @@ public class AuthController {
 
         usuarioRepository.save(usuario);
 
-        Map<String, Object> resposta =
-                new HashMap<>();
+        Map<String, Object> resposta = new HashMap<>();
 
         resposta.put(
                 "mensagem",

@@ -1,34 +1,70 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:entregue_ja/services/empresa_service.dart' as empresa_service;
 
 import '../config/api_config.dart';
 
 class EmpresaListaEntregasService {
+  static Future<Map<String, String>> _headersAutenticados() async {
+    return await empresa_service.EmpresaService.headersAutenticados();
+  }
+
+  static void _registrarErro(String operacao, int statusCode, String body) {
+    debugPrint('$operacao: HTTP $statusCode');
+
+    if (statusCode == 401) {
+      debugPrint('Sessão da empresa inválida ou token JWT expirado.');
+    } else if (statusCode == 403) {
+      debugPrint('A empresa não possui permissão para esta operação.');
+    } else {
+      debugPrint('Resposta: $body');
+    }
+  }
+
   static Future<List<dynamic>> buscarEntregas() async {
     try {
       final empresaEmail = await empresa_service.EmpresaService.empresaLogada();
 
-      if (empresaEmail == null) {
-        return [];
+      if (empresaEmail == null || empresaEmail.isEmpty) {
+        throw Exception('Empresa não autenticada.');
       }
 
+      final headers = await _headersAutenticados();
+
       final response = await http.get(
-        Uri.parse('${ApiConfig.entregas}/empresa/$empresaEmail'),
+        Uri.parse(
+          '${ApiConfig.entregas}/empresa/'
+          '${Uri.encodeComponent(empresaEmail)}',
+        ),
+        headers: headers,
       );
 
       if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+        final dados = jsonDecode(response.body);
+
+        if (dados is List) {
+          return dados;
+        }
+
+        throw const FormatException(
+          'O servidor não retornou uma lista de entregas.',
+        );
       }
 
-      print('Erro ao buscar entregas. Status: ${response.statusCode}');
-      print('Resposta: ${response.body}');
+      _registrarErro(
+        'Erro ao buscar entregas da empresa',
+        response.statusCode,
+        response.body,
+      );
 
-      return [];
+      throw Exception(
+        'Falha ao carregar entregas: HTTP ${response.statusCode}',
+      );
     } catch (e) {
-      print('Erro ao buscar entregas: $e');
-      return [];
+      debugPrint('Erro ao buscar entregas da empresa: $e');
+      rethrow;
     }
   }
 
@@ -39,11 +75,12 @@ class EmpresaListaEntregasService {
       final empresaEmail = await empresa_service.EmpresaService.empresaLogada();
 
       if (empresaEmail == null || empresaEmail.isEmpty) {
-        return [];
+        throw Exception('Empresa não autenticada.');
       }
 
-      final empresaEmailUrl = Uri.encodeComponent(empresaEmail);
+      final headers = await _headersAutenticados();
 
+      final empresaEmailUrl = Uri.encodeComponent(empresaEmail);
       final entregadorEmailUrl = Uri.encodeComponent(entregadorEmail);
 
       final response = await http.get(
@@ -52,21 +89,34 @@ class EmpresaListaEntregasService {
           '$empresaEmailUrl/entregador/'
           '$entregadorEmailUrl',
         ),
+        headers: headers,
       );
 
-      print('Entregas do entregador status: ${response.statusCode}');
-
-      print('Entregas do entregador body: ${response.body}');
-
       if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+        final dados = jsonDecode(response.body);
+
+        if (dados is List) {
+          return dados;
+        }
+
+        throw const FormatException(
+          'O servidor não retornou uma lista de entregas.',
+        );
       }
 
-      return [];
-    } catch (e) {
-      print('Erro ao buscar entregas do entregador: $e');
+      _registrarErro(
+        'Erro ao buscar entregas do entregador',
+        response.statusCode,
+        response.body,
+      );
 
-      return [];
+      throw Exception(
+        'Falha ao carregar entregas do entregador: '
+        'HTTP ${response.statusCode}',
+      );
+    } catch (e) {
+      debugPrint('Erro ao buscar entregas do entregador: $e');
+      rethrow;
     }
   }
 
@@ -78,9 +128,11 @@ class EmpresaListaEntregasService {
     required String observacao,
   }) async {
     try {
+      final headers = await _headersAutenticados();
+
       final response = await http.put(
         Uri.parse('${ApiConfig.entregas}/$id'),
-        headers: {'Content-Type': 'application/json'},
+        headers: {...headers, 'Content-Type': 'application/json'},
         body: jsonEncode({
           'cliente': cliente,
           'endereco': endereco,
@@ -93,32 +145,41 @@ class EmpresaListaEntregasService {
         return true;
       }
 
-      print('Erro ao editar entrega. Status: ${response.statusCode}');
-      print('Resposta: ${response.body}');
+      _registrarErro(
+        'Erro ao editar entrega',
+        response.statusCode,
+        response.body,
+      );
 
       return false;
     } catch (e) {
-      print('Erro ao editar entrega: $e');
+      debugPrint('Erro ao editar entrega: $e');
       return false;
     }
   }
 
   static Future<bool> cancelarEntrega(int id) async {
     try {
+      final headers = await _headersAutenticados();
+
       final response = await http.delete(
         Uri.parse('${ApiConfig.entregas}/$id'),
+        headers: headers,
       );
 
-      if (response.statusCode == 200) {
+      if (response.statusCode == 200 || response.statusCode == 204) {
         return true;
       }
 
-      print('Erro ao cancelar entrega. Status: ${response.statusCode}');
-      print('Resposta: ${response.body}');
+      _registrarErro(
+        'Erro ao cancelar entrega',
+        response.statusCode,
+        response.body,
+      );
 
       return false;
     } catch (e) {
-      print('Erro ao cancelar entrega: $e');
+      debugPrint('Erro ao cancelar entrega: $e');
       return false;
     }
   }

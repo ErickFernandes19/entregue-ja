@@ -1,11 +1,27 @@
 import 'dart:convert';
 
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api_config.dart';
 
 class AuthService {
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
+
+  static Future<String?> obterToken() async {
+    return _secureStorage.read(key: 'jwt_token');
+  }
+
+  static Future<Map<String, String>> headersAutenticados() async {
+    final token = await obterToken();
+
+    return {
+      'Content-Type': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+  }
+
   static Future<Map<String, dynamic>?> login(String email, String senha) async {
     try {
       print('Tentando login...');
@@ -19,10 +35,22 @@ class AuthService {
           .timeout(const Duration(seconds: 10));
 
       print('Status: ${response.statusCode}');
-      print('Body: ${response.body}');
 
       if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+        final data = Map<String, dynamic>.from(jsonDecode(response.body));
+
+        final token = data['token']?.toString();
+
+        if (token == null || token.isEmpty) {
+          print('Login sem token JWT retornado pelo backend.');
+          return null;
+        }
+
+        await _secureStorage.write(key: 'jwt_token', value: token);
+
+        print('Login realizado e token armazenado.');
+
+        return data;
       }
 
       return null;
@@ -39,11 +67,14 @@ class AuthService {
       if (email == null) return null;
 
       final response = await http.get(
-        Uri.parse('${ApiConfig.auth}/$email/vinculo-pendente'),
+        Uri.parse(
+          '${ApiConfig.auth}/${Uri.encodeComponent(email)}/vinculo-pendente',
+        ),
+        headers: await headersAutenticados(),
       );
 
       if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+        return Map<String, dynamic>.from(jsonDecode(response.body));
       }
 
       return null;
@@ -60,11 +91,12 @@ class AuthService {
       if (email == null) return null;
 
       final response = await http.get(
-        Uri.parse('${ApiConfig.auth}/$email/perfil'),
+        Uri.parse('${ApiConfig.auth}/${Uri.encodeComponent(email)}/perfil'),
+        headers: await headersAutenticados(),
       );
 
       if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+        return Map<String, dynamic>.from(jsonDecode(response.body));
       }
 
       return null;
@@ -82,8 +114,14 @@ class AuthService {
 
       final request = http.MultipartRequest(
         'PUT',
-        Uri.parse('${ApiConfig.auth}/$email/foto'),
+        Uri.parse('${ApiConfig.auth}/${Uri.encodeComponent(email)}/foto'),
       );
+
+      final token = await obterToken();
+
+      if (token != null && token.isNotEmpty) {
+        request.headers['Authorization'] = 'Bearer $token';
+      }
 
       request.files.add(
         await http.MultipartFile.fromPath('foto', caminhoArquivo),
@@ -93,7 +131,7 @@ class AuthService {
       final body = await response.stream.bytesToString();
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(body);
+        final data = Map<String, dynamic>.from(jsonDecode(body));
 
         final foto = data['foto']?.toString();
 
@@ -109,7 +147,6 @@ class AuthService {
       }
 
       print('Erro foto status: ${response.statusCode}');
-      print('Erro foto body: $body');
 
       return null;
     } catch (e) {
@@ -128,12 +165,13 @@ class AuthService {
     try {
       final email = await usuarioLogado();
 
-      if (email == null) {
-        return false;
-      }
+      if (email == null) return false;
 
       final response = await http.put(
-        Uri.parse('${ApiConfig.auth}/$email/aceitar-vinculo'),
+        Uri.parse(
+          '${ApiConfig.auth}/${Uri.encodeComponent(email)}/aceitar-vinculo',
+        ),
+        headers: await headersAutenticados(),
       );
 
       return response.statusCode == 200;
@@ -147,12 +185,13 @@ class AuthService {
     try {
       final email = await usuarioLogado();
 
-      if (email == null) {
-        return false;
-      }
+      if (email == null) return false;
 
       final response = await http.put(
-        Uri.parse('${ApiConfig.auth}/$email/recusar-vinculo'),
+        Uri.parse(
+          '${ApiConfig.auth}/${Uri.encodeComponent(email)}/recusar-vinculo',
+        ),
+        headers: await headersAutenticados(),
       );
 
       return response.statusCode == 200;
@@ -169,11 +208,14 @@ class AuthService {
       if (email == null) return null;
 
       final response = await http.get(
-        Uri.parse('${ApiConfig.auth}/$email/empresa-vinculada'),
+        Uri.parse(
+          '${ApiConfig.auth}/${Uri.encodeComponent(email)}/empresa-vinculada',
+        ),
+        headers: await headersAutenticados(),
       );
 
       if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+        return Map<String, dynamic>.from(jsonDecode(response.body));
       }
 
       return null;
@@ -190,13 +232,13 @@ class AuthService {
     try {
       final email = await usuarioLogado();
 
-      if (email == null) {
-        return false;
-      }
+      if (email == null) return false;
 
       final response = await http.put(
-        Uri.parse('${ApiConfig.auth}/$email/configuracoes-veiculo'),
-        headers: {'Content-Type': 'application/json'},
+        Uri.parse(
+          '${ApiConfig.auth}/${Uri.encodeComponent(email)}/configuracoes-veiculo',
+        ),
+        headers: await headersAutenticados(),
         body: jsonEncode({
           'veiculo': veiculo,
           'capacidadeCarga': capacidadeCarga,
@@ -206,7 +248,6 @@ class AuthService {
       return response.statusCode == 200;
     } catch (e) {
       print('Erro ao atualizar configurações do veículo: $e');
-
       return false;
     }
   }
@@ -220,7 +261,6 @@ class AuthService {
       );
 
       print('Cadastro status: ${response.statusCode}');
-      print('Cadastro body: ${response.body}');
 
       return response.statusCode == 200;
     } catch (e) {
@@ -236,21 +276,17 @@ class AuthService {
     try {
       final emailAtual = await usuarioLogado();
 
-      if (emailAtual == null) {
-        return null;
-      }
+      if (emailAtual == null) return null;
 
       final emailAtualUrl = Uri.encodeComponent(emailAtual);
 
       final response = await http.put(
         Uri.parse('${ApiConfig.auth}/$emailAtualUrl/perfil'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await headersAutenticados(),
         body: jsonEncode({'nome': nome, 'email': email}),
       );
 
       print('Atualizar perfil status: ${response.statusCode}');
-
-      print('Atualizar perfil body: ${response.body}');
 
       if (response.statusCode != 200) {
         return null;
@@ -259,7 +295,6 @@ class AuthService {
       final data = Map<String, dynamic>.from(jsonDecode(response.body));
 
       final novoNome = data['nome']?.toString();
-
       final novoEmail = data['email']?.toString();
 
       if (novoNome == null || novoEmail == null) {
@@ -271,7 +306,6 @@ class AuthService {
       return data;
     } catch (e) {
       print('Erro ao atualizar perfil: $e');
-
       return null;
     }
   }
@@ -280,7 +314,6 @@ class AuthService {
     final prefs = await SharedPreferences.getInstance();
 
     await prefs.setString('usuario_logado', email);
-
     await prefs.setString('usuario_nome', nome);
   }
 
@@ -297,6 +330,8 @@ class AuthService {
   }
 
   static Future<void> logout() async {
+    await _secureStorage.delete(key: 'jwt_token');
+
     final prefs = await SharedPreferences.getInstance();
 
     await prefs.remove('usuario_logado');

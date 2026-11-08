@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../services/cep_service.dart';
 import '../services/empresa_entrega_service.dart';
 import '../services/empresa_service.dart';
+import '../services/geocoding_service.dart';
 import '../theme/app_colors.dart';
 
 class CadastrarEntregaPage extends StatefulWidget {
@@ -16,7 +17,12 @@ class CadastrarEntregaPage extends StatefulWidget {
 class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
   final cepController = TextEditingController();
   final clienteController = TextEditingController();
-  final enderecoController = TextEditingController();
+  final ruaController = TextEditingController();
+  final numeroController = TextEditingController();
+  final bairroController = TextEditingController();
+  final cidadeController = TextEditingController();
+  final ufController = TextEditingController();
+  final complementoController = TextEditingController();
   final valorController = TextEditingController();
   final observacaoController = TextEditingController();
 
@@ -58,7 +64,6 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Digite um CEP válido com 8 números')),
       );
-
       return;
     }
 
@@ -78,22 +83,48 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('CEP não encontrado')));
-
       return;
     }
 
     final logradouro = dados['logradouro']?.toString().trim() ?? '';
-
     final bairro = dados['bairro']?.toString().trim() ?? '';
-
     final cidade = dados['localidade']?.toString().trim() ?? '';
-
     final uf = dados['uf']?.toString().trim() ?? '';
+
+    setState(() {
+      ruaController.text = logradouro;
+      bairroController.text = bairro;
+      cidadeController.text = cidade;
+      ufController.text = uf;
+      numeroController.clear();
+      complementoController.clear();
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Endereço encontrado. Informe o número.'),
+        backgroundColor: AppColors.success,
+      ),
+    );
+  }
+
+  String montarEnderecoCompleto() {
+    final cep = cepController.text.replaceAll(RegExp(r'[^0-9]'), '').trim();
+
+    final rua = ruaController.text.trim();
+    final numero = numeroController.text.trim();
+    final bairro = bairroController.text.trim();
+    final cidade = cidadeController.text.trim();
+    final uf = ufController.text.trim();
 
     final partes = <String>[];
 
-    if (logradouro.isNotEmpty) {
-      partes.add(logradouro);
+    if (rua.isNotEmpty) {
+      if (numero.isNotEmpty) {
+        partes.add('$rua, $numero');
+      } else {
+        partes.add(rua);
+      }
     }
 
     if (bairro.isNotEmpty) {
@@ -104,18 +135,26 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
       partes.add('$cidade - $uf');
     } else if (cidade.isNotEmpty) {
       partes.add(cidade);
+    } else if (uf.isNotEmpty) {
+      partes.add(uf);
     }
 
-    setState(() {
-      enderecoController.text = partes.join(', ');
-    });
+    if (cep.length == 8) {
+      final cepFormatado = '${cep.substring(0, 5)}-${cep.substring(5)}';
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Endereço encontrado. Complete com o número.'),
-        backgroundColor: AppColors.success,
-      ),
-    );
+      partes.add(cepFormatado);
+    }
+
+    return partes.join(', ');
+  }
+
+  String montarEnderecoParaMapa() {
+    final rua = ruaController.text.trim();
+    final numero = numeroController.text.trim();
+    final cidade = cidadeController.text.trim();
+    final uf = ufController.text.trim();
+
+    return '$rua, $numero, $cidade - $uf';
   }
 
   double? converterValor(String texto) {
@@ -126,16 +165,48 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
     if (carregando) return;
 
     final cliente = clienteController.text.trim();
-    final endereco = enderecoController.text.trim();
+    final rua = ruaController.text.trim();
+    final numero = numeroController.text.trim();
+    final bairro = bairroController.text.trim();
+    final cidade = cidadeController.text.trim();
+    final uf = ufController.text.trim();
+    final complemento = complementoController.text.trim();
     final observacao = observacaoController.text.trim();
 
     final valor = converterValor(valorController.text);
 
-    if (cliente.isEmpty || endereco.isEmpty) {
+    if (cliente.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Preencha cliente e endereço')),
+        const SnackBar(content: Text('Informe o nome do cliente')),
       );
+      return;
+    }
 
+    if (cepController.text.replaceAll(RegExp(r'[^0-9]'), '').length != 8) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Informe um CEP válido')));
+      return;
+    }
+
+    if (rua.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Informe a rua da entrega')));
+      return;
+    }
+
+    if (numero.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Informe o número do endereço')),
+      );
+      return;
+    }
+
+    if (bairro.isEmpty || cidade.isEmpty || uf.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Complete bairro, cidade e estado')),
+      );
       return;
     }
 
@@ -143,7 +214,6 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Informe um valor válido para a entrega')),
       );
-
       return;
     }
 
@@ -151,21 +221,6 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Selecione um entregador')));
-
-      return;
-    }
-
-    final empresaEmail = await EmpresaService.empresaLogada();
-
-    if (!mounted) return;
-
-    if (empresaEmail == null || empresaEmail.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Não foi possível identificar a empresa logada'),
-        ),
-      );
-
       return;
     }
 
@@ -173,13 +228,55 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
       carregando = true;
     });
 
+    final endereco = montarEnderecoCompleto();
+    final enderecoParaMapa = montarEnderecoParaMapa();
+
+    Map<String, double>? coordenadas;
+
+    coordenadas = await GeocodingService.buscarCoordenadas(enderecoParaMapa);
+
+    if (coordenadas == null) {
+      final cep = cepController.text.replaceAll(RegExp(r'[^0-9]'), '').trim();
+
+      final enderecoAlternativo = '$cep, $numero, $cidade - $uf';
+
+      coordenadas = await GeocodingService.buscarCoordenadas(
+        enderecoAlternativo,
+      );
+    }
+
+    if (!mounted) return;
+
+    final double? latitude = coordenadas?['lat'];
+    final double? longitude = coordenadas?['lng'];
+
+    final empresaEmail = await EmpresaService.empresaLogada();
+
+    if (!mounted) return;
+
+    if (empresaEmail == null || empresaEmail.isEmpty) {
+      setState(() {
+        carregando = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Não foi possível identificar a empresa logada'),
+        ),
+      );
+      return;
+    }
+
     final resultado = await EmpresaEntregaService.cadastrarEntrega(
       empresaEmail: empresaEmail,
       entregadorEmail: entregadorSelecionado!,
       cliente: cliente,
       endereco: endereco,
+      complemento: complemento,
       valor: valor,
       observacao: observacao,
+      latitude: latitude,
+      longitude: longitude,
     );
 
     if (!mounted) return;
@@ -190,9 +287,11 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
 
     if (resultado == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Não foi possível cadastrar a entrega')),
+        const SnackBar(
+          content: Text('Não foi possível cadastrar a entrega'),
+          backgroundColor: AppColors.error,
+        ),
       );
-
       return;
     }
 
@@ -355,7 +454,12 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
   void dispose() {
     cepController.dispose();
     clienteController.dispose();
-    enderecoController.dispose();
+    ruaController.dispose();
+    numeroController.dispose();
+    bairroController.dispose();
+    cidadeController.dispose();
+    ufController.dispose();
+    complementoController.dispose();
     valorController.dispose();
     observacaoController.dispose();
 
@@ -414,13 +518,9 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 22),
-
                 seletorEntregador(),
-
                 const SizedBox(height: 18),
-
                 campo(
                   controller: clienteController,
                   label: 'Cliente',
@@ -428,13 +528,11 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
                   icon: Icons.person_outline,
                   textCapitalization: TextCapitalization.words,
                 ),
-
                 const SizedBox(height: 16),
-
                 campo(
                   controller: cepController,
                   label: 'CEP',
-                  hint: 'Ex: 87000-000',
+                  hint: 'Ex: 86800000',
                   icon: Icons.location_searching,
                   keyboardType: TextInputType.number,
                   textInputAction: TextInputAction.search,
@@ -459,32 +557,56 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
                   },
                   onSubmitted: buscarCep,
                 ),
-
                 const SizedBox(height: 16),
-
                 campo(
-                  controller: enderecoController,
-                  label: 'Endereço',
-                  hint: 'Rua, número, bairro, cidade',
-                  icon: Icons.location_on_outlined,
+                  controller: ruaController,
+                  label: 'Rua',
+                  hint: 'Rua ou avenida',
+                  icon: Icons.signpost_outlined,
                   textCapitalization: TextCapitalization.words,
                 ),
-
-                const SizedBox(height: 6),
-
-                Padding(
-                  padding: const EdgeInsets.only(left: 4),
-                  child: Text(
-                    'Após buscar o CEP, complete o endereço com o número e complemento.',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-
                 const SizedBox(height: 16),
-
+                campo(
+                  controller: numeroController,
+                  label: 'Número',
+                  hint: 'Ex: 123',
+                  icon: Icons.numbers,
+                  keyboardType: TextInputType.streetAddress,
+                ),
+                const SizedBox(height: 16),
+                campo(
+                  controller: complementoController,
+                  label: 'Complemento',
+                  hint: 'Apto, bloco, casa...',
+                  icon: Icons.home_outlined,
+                  textCapitalization: TextCapitalization.words,
+                ),
+                const SizedBox(height: 16),
+                campo(
+                  controller: bairroController,
+                  label: 'Bairro',
+                  hint: 'Bairro',
+                  icon: Icons.location_city_outlined,
+                  textCapitalization: TextCapitalization.words,
+                ),
+                const SizedBox(height: 16),
+                campo(
+                  controller: cidadeController,
+                  label: 'Cidade',
+                  hint: 'Cidade',
+                  icon: Icons.location_city,
+                  textCapitalization: TextCapitalization.words,
+                ),
+                const SizedBox(height: 16),
+                campo(
+                  controller: ufController,
+                  label: 'Estado',
+                  hint: 'Ex: PR',
+                  icon: Icons.map_outlined,
+                  textCapitalization: TextCapitalization.characters,
+                  inputFormatters: [LengthLimitingTextInputFormatter(2)],
+                ),
+                const SizedBox(height: 16),
                 campo(
                   controller: valorController,
                   label: 'Valor da entrega',
@@ -495,13 +617,11 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
                     decimal: true,
                   ),
                 ),
-
                 const SizedBox(height: 16),
-
                 campo(
                   controller: observacaoController,
                   label: 'Observação',
-                  hint: 'Ex: Casa azul, deixar na portaria...',
+                  hint: 'Ex: Ligar ao chegar, deixar na portaria...',
                   icon: Icons.notes,
                   maxLines: 3,
                   textCapitalization: TextCapitalization.sentences,
@@ -509,9 +629,7 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
               ],
             ),
           ),
-
           const SizedBox(height: 24),
-
           SizedBox(
             height: 54,
             child: ElevatedButton.icon(

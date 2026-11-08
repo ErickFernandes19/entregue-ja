@@ -1,25 +1,38 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../services/empresa_lista_entregas_service.dart';
+import '../services/entrega_service.dart';
 import '../theme/app_colors.dart';
 import 'editar_entrega_page.dart';
 
-class DetalhesEntregaPage extends StatelessWidget {
+class DetalhesEntregaPage extends StatefulWidget {
   final Map<String, dynamic> entrega;
 
   const DetalhesEntregaPage({super.key, required this.entrega});
 
+  @override
+  State<DetalhesEntregaPage> createState() => _DetalhesEntregaPageState();
+}
+
+class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
+  Uint8List? bytesComprovante;
+
+  bool carregandoComprovante = false;
+  bool erroComprovante = false;
+
+  Map<String, dynamic> get entrega => widget.entrega;
+
   String statusEntrega() {
-    final status = (entrega['status'] ?? '').toString();
+    final status = (entrega['status'] ?? '').toString().trim();
 
     if (status.isNotEmpty) {
       return status;
     }
 
-    final entregue = entrega['entregue'] == true;
-
-    return entregue ? 'ENTREGUE' : 'PENDENTE';
+    return entrega['entregue'] == true ? 'ENTREGUE' : 'PENDENTE';
   }
 
   String textoStatus(String status) {
@@ -32,7 +45,6 @@ class DetalhesEntregaPage extends StatelessWidget {
         return 'Não entregue';
       case 'CANCELADA':
         return 'Cancelada';
-      case 'PENDENTE':
       default:
         return 'Pendente';
     }
@@ -48,7 +60,6 @@ class DetalhesEntregaPage extends StatelessWidget {
         return AppColors.error;
       case 'CANCELADA':
         return Colors.grey;
-      case 'PENDENTE':
       default:
         return AppColors.warning;
     }
@@ -64,29 +75,156 @@ class DetalhesEntregaPage extends StatelessWidget {
         return Icons.report_problem;
       case 'CANCELADA':
         return Icons.cancel;
-      case 'PENDENTE':
       default:
         return Icons.schedule;
     }
   }
 
-  Future<void> cancelarEntrega(BuildContext context) async {
+  String get idEntrega => (entrega['id'] ?? '').toString();
+
+  String get referenciaComprovante =>
+      (entrega['fotoComprovante'] ?? '').toString().trim();
+
+  bool get possuiComprovante =>
+      idEntrega.isNotEmpty && referenciaComprovante.isNotEmpty;
+
+  String get motivoNaoEntrega =>
+      (entrega['motivoNaoEntrega'] ?? '').toString().trim();
+
+  String get justificativaNaoEntrega =>
+      (entrega['justificativa'] ?? '').toString().trim();
+
+  String descricaoMotivo(String motivo) {
+    const motivos = {
+      'DESTINATARIO_AUSENTE': 'Destinatário ausente',
+      'LOCAL_FECHADO': 'Local fechado',
+      'ENDERECO_NAO_LOCALIZADO': 'Endereço não localizado',
+      'DESTINATARIO_RECUSOU': 'Destinatário recusou a entrega',
+      'ACESSO_NAO_PERMITIDO': 'Acesso ao local não permitido',
+      'OUTRO': 'Outro motivo',
+    };
+
+    return motivos[motivo] ??
+        (motivo.isEmpty ? 'Motivo não informado' : motivo);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+
+    if (possuiComprovante) {
+      carregarComprovante();
+    }
+  }
+
+  Future<void> carregarComprovante() async {
+    if (!possuiComprovante || carregandoComprovante) {
+      return;
+    }
+
+    setState(() {
+      carregandoComprovante = true;
+      erroComprovante = false;
+    });
+
+    try {
+      final bytes = await EntregaService.buscarBytesComprovante(
+        idEntrega: idEntrega,
+        referencia: referenciaComprovante,
+        empresa: true,
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        bytesComprovante = bytes;
+        erroComprovante = bytes == null || bytes.isEmpty;
+      });
+    } catch (e) {
+      debugPrint('Erro ao carregar comprovante: $e');
+
+      if (!mounted) return;
+
+      setState(() {
+        erroComprovante = true;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          carregandoComprovante = false;
+        });
+      }
+    }
+  }
+
+  void ampliarComprovante() {
+    final bytes = bytesComprovante;
+
+    if (bytes == null || bytes.isEmpty) return;
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return Dialog(
+          insetPadding: const EdgeInsets.all(12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text(
+                        'Comprovante da entrega',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Fechar',
+                    onPressed: () {
+                      Navigator.pop(dialogContext);
+                    },
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              Flexible(
+                child: InteractiveViewer(
+                  minScale: 0.5,
+                  maxScale: 5,
+                  child: Image.memory(bytes, fit: BoxFit.contain),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> cancelarEntrega() async {
     final confirmar = await showDialog<bool>(
       context: context,
-      builder: (context) {
+      builder: (dialogContext) {
         return AlertDialog(
           title: const Text('Cancelar entrega'),
           content: const Text('Tem certeza que deseja cancelar esta entrega?'),
           actions: [
             TextButton(
               onPressed: () {
-                Navigator.pop(context, false);
+                Navigator.pop(dialogContext, false);
               },
               child: const Text('Não'),
             ),
             ElevatedButton(
               onPressed: () {
-                Navigator.pop(context, true);
+                Navigator.pop(dialogContext, true);
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.error,
@@ -99,15 +237,13 @@ class DetalhesEntregaPage extends StatelessWidget {
       },
     );
 
-    if (confirmar != true) {
-      return;
-    }
+    if (confirmar != true) return;
 
     final sucesso = await EmpresaListaEntregasService.cancelarEntrega(
       entrega['id'],
     );
 
-    if (!context.mounted) return;
+    if (!mounted) return;
 
     if (sucesso) {
       ScaffoldMessenger.of(
@@ -123,7 +259,6 @@ class DetalhesEntregaPage extends StatelessWidget {
   }
 
   Widget linhaInformacao({
-    required BuildContext context,
     required IconData icon,
     required String titulo,
     required String valor,
@@ -193,6 +328,191 @@ class DetalhesEntregaPage extends StatelessWidget {
     );
   }
 
+  Widget secaoNaoEntrega() {
+    final theme = Theme.of(context);
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: theme.cardColor,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.error.withOpacity(0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.report_problem_outlined,
+                color: AppColors.error,
+                size: 26,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Detalhes da não entrega',
+                  style: TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.bold,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 18),
+
+          Text(
+            'Motivo informado',
+            style: TextStyle(
+              fontSize: 13,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+
+          const SizedBox(height: 6),
+
+          Text(
+            descricaoMotivo(motivoNaoEntrega),
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: theme.colorScheme.onSurface,
+            ),
+          ),
+
+          const SizedBox(height: 18),
+
+          Divider(color: theme.colorScheme.outlineVariant),
+
+          const SizedBox(height: 12),
+
+          Text(
+            'Justificativa do entregador',
+            style: TextStyle(
+              fontSize: 13,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface.withOpacity(0.65),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Text(
+              justificativaNaoEntrega.isEmpty
+                  ? 'Justificativa não informada.'
+                  : justificativaNaoEntrega,
+              style: TextStyle(
+                fontSize: 15,
+                height: 1.5,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget secaoComprovante() {
+    final theme = Theme.of(context);
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: theme.cardColor,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.photo_camera, color: AppColors.primary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Comprovante fotográfico',
+                  style: TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.bold,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 14),
+
+          if (carregandoComprovante)
+            const SizedBox(
+              height: 180,
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (bytesComprovante != null && bytesComprovante!.isNotEmpty)
+            Column(
+              children: [
+                InkWell(
+                  onTap: ampliarComprovante,
+                  borderRadius: BorderRadius.circular(16),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: Image.memory(
+                      bytesComprovante!,
+                      height: 230,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextButton.icon(
+                  onPressed: ampliarComprovante,
+                  icon: const Icon(Icons.zoom_in),
+                  label: const Text('Ampliar comprovante'),
+                ),
+              ],
+            )
+          else if (erroComprovante)
+            Column(
+              children: [
+                const Icon(
+                  Icons.broken_image_outlined,
+                  size: 42,
+                  color: AppColors.warning,
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Não foi possível carregar o comprovante.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: carregarComprovante,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Tentar novamente'),
+                ),
+              ],
+            )
+          else
+            const Text('Nenhum comprovante disponível.'),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -212,6 +532,9 @@ class DetalhesEntregaPage extends StatelessWidget {
     final podeEditar = status == 'PENDENTE';
 
     final podeCancelar = status == 'PENDENTE' || status == 'EM_ROTA';
+
+    final statusComComprovante =
+        status == 'ENTREGUE' || status == 'NAO_ENTREGUE';
 
     return Scaffold(
       appBar: AppBar(title: Text('Entrega #$id'), centerTitle: true),
@@ -266,14 +589,12 @@ class DetalhesEntregaPage extends StatelessWidget {
                 const SizedBox(height: 20),
 
                 linhaInformacao(
-                  context: context,
                   icon: Icons.location_on_outlined,
                   titulo: 'Endereço',
                   valor: endereco.isEmpty ? 'Não informado' : endereco,
                 ),
 
                 linhaInformacao(
-                  context: context,
                   icon: Icons.attach_money,
                   titulo: 'Valor',
                   valor: 'R\$ ${valor.toStringAsFixed(2)}',
@@ -281,14 +602,12 @@ class DetalhesEntregaPage extends StatelessWidget {
 
                 if (observacao.isNotEmpty)
                   linhaInformacao(
-                    context: context,
                     icon: Icons.notes,
                     titulo: 'Observação',
                     valor: observacao,
                   ),
 
                 const SizedBox(height: 4),
-
                 badgeStatus(status),
               ],
             ),
@@ -327,9 +646,7 @@ class DetalhesEntregaPage extends StatelessWidget {
             SizedBox(
               height: 52,
               child: ElevatedButton.icon(
-                onPressed: () {
-                  cancelarEntrega(context);
-                },
+                onPressed: cancelarEntrega,
                 icon: const Icon(Icons.cancel),
                 label: const Text('Cancelar Entrega'),
                 style: ElevatedButton.styleFrom(
@@ -338,6 +655,16 @@ class DetalhesEntregaPage extends StatelessWidget {
                 ),
               ),
             ),
+
+          if (status == 'NAO_ENTREGUE') ...[
+            const SizedBox(height: 18),
+            secaoNaoEntrega(),
+          ],
+
+          if (statusComComprovante) ...[
+            const SizedBox(height: 18),
+            secaoComprovante(),
+          ],
 
           const SizedBox(height: 24),
 

@@ -32,22 +32,50 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
   }
 
   Future<void> carregarEntregas() async {
-    List<dynamic> resultado;
-
-    if (widget.entregadorEmail != null && widget.entregadorEmail!.isNotEmpty) {
-      resultado = await EmpresaListaEntregasService.buscarEntregasDoEntregador(
-        widget.entregadorEmail!,
-      );
-    } else {
-      resultado = await EmpresaListaEntregasService.buscarEntregas();
-    }
-
     if (!mounted) return;
 
     setState(() {
-      entregas = resultado;
-      carregando = false;
+      carregando = true;
     });
+
+    try {
+      List<dynamic> resultado;
+
+      if (widget.entregadorEmail != null &&
+          widget.entregadorEmail!.isNotEmpty) {
+        resultado =
+            await EmpresaListaEntregasService.buscarEntregasDoEntregador(
+              widget.entregadorEmail!,
+            );
+      } else {
+        resultado = await EmpresaListaEntregasService.buscarEntregas();
+      }
+
+      if (!mounted) return;
+
+      setState(() {
+        entregas = resultado;
+      });
+    } catch (e) {
+      debugPrint('Erro ao carregar entregas da empresa: $e');
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Não foi possível carregar as entregas. Verifique sua sessão.',
+          ),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          carregando = false;
+        });
+      }
+    }
   }
 
   String statusEntrega(Map<String, dynamic> entrega) {
@@ -117,11 +145,8 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
       final mapa = Map<String, dynamic>.from(entrega);
 
       final cliente = (mapa['cliente'] ?? '').toString().toLowerCase();
-
       final endereco = (mapa['endereco'] ?? '').toString().toLowerCase();
-
       final id = (mapa['id'] ?? '').toString().toLowerCase();
-
       final status = statusEntrega(mapa);
 
       if (status == 'CANCELADA') {
@@ -218,11 +243,8 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
     final status = statusEntrega(entrega);
 
     final cliente = entrega['cliente'] ?? 'Cliente não informado';
-
     final endereco = entrega['endereco'] ?? 'Endereço não informado';
-
     final valorNum = (entrega['valor'] as num?)?.toDouble() ?? 0.0;
-
     final id = entrega['id'] ?? '-';
 
     return Container(
@@ -253,6 +275,8 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
             ),
           );
 
+          if (!mounted) return;
+
           if (resultado == true) {
             await carregarEntregas();
           }
@@ -271,9 +295,7 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
                       color: AppColors.primary,
                     ),
                   ),
-
                   const SizedBox(width: 12),
-
                   Expanded(
                     child: Text(
                       cliente.toString(),
@@ -286,15 +308,11 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
                       ),
                     ),
                   ),
-
                   const SizedBox(width: 8),
-
                   badgeStatus(status),
                 ],
               ),
-
               const SizedBox(height: 14),
-
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -303,9 +321,7 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
                     size: 19,
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
-
                   const SizedBox(width: 6),
-
                   Expanded(
                     child: Text(
                       endereco.toString(),
@@ -319,9 +335,7 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
                   ),
                 ],
               ),
-
               const SizedBox(height: 10),
-
               Row(
                 children: [
                   const Icon(
@@ -329,9 +343,7 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
                     size: 19,
                     color: AppColors.success,
                   ),
-
                   const SizedBox(width: 4),
-
                   Text(
                     'R\$ ${valorNum.toStringAsFixed(2)}',
                     style: const TextStyle(
@@ -340,9 +352,7 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
                       fontSize: 15,
                     ),
                   ),
-
                   const Spacer(),
-
                   Text(
                     'ID #$id',
                     style: TextStyle(
@@ -350,9 +360,7 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-
                   const SizedBox(width: 8),
-
                   Icon(
                     Icons.arrow_forward_ios,
                     size: 15,
@@ -414,33 +422,23 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
                             ),
                     ),
                   ),
-
                   const SizedBox(height: 14),
-
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Row(
                       children: [
                         chipFiltro('todas', 'Todas', Icons.list),
-
                         const SizedBox(width: 8),
-
                         chipFiltro('pendentes', 'Pendentes', Icons.pending),
-
                         const SizedBox(width: 8),
-
                         chipFiltro('em_rota', 'Em rota', Icons.local_shipping),
-
                         const SizedBox(width: 8),
-
                         chipFiltro(
                           'entregues',
                           'Entregues',
                           Icons.check_circle,
                         ),
-
                         const SizedBox(width: 8),
-
                         chipFiltro(
                           'nao_entregues',
                           'Não entregues',
@@ -449,9 +447,7 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
                       ],
                     ),
                   ),
-
                   const SizedBox(height: 18),
-
                   if (lista.isEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 80),

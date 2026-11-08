@@ -1,7 +1,8 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
-import '../config/api_config.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 import 'editar_empresa_perfil_page.dart';
@@ -17,8 +18,13 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
   String nome = 'Empresa';
   String email = '';
   String? fotoUrl;
+  Uint8List? fotoBytes;
+
   List<dynamic> entregadores = [];
+
   bool carregando = true;
+  bool carregandoFoto = false;
+  bool enviandoFoto = false;
 
   final ImagePicker picker = ImagePicker();
 
@@ -39,43 +45,119 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
     setState(() {
       email = empresaEmail ?? '';
       nome = empresaNome ?? 'Empresa';
-
-      fotoUrl = empresaFoto == null || empresaFoto.isEmpty
-          ? null
-          : ApiConfig.urlArquivo(empresaFoto);
-
+      fotoUrl = empresaFoto;
       entregadores = listaEntregadores;
       carregando = false;
     });
+
+    await carregarFoto(empresaFoto);
   }
 
-  Future<void> escolherFoto(ImageSource source) async {
-    final imagem = await picker.pickImage(source: source, imageQuality: 70);
+  Future<void> carregarFoto(String? referencia) async {
+    if (referencia == null || referencia.isEmpty) {
+      if (!mounted) return;
 
-    if (imagem == null) return;
-
-    final foto = await EmpresaService.atualizarFotoEmpresa(imagem.path);
-
-    if (!mounted) return;
-
-    if (foto == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Erro ao atualizar foto')));
+      setState(() {
+        fotoBytes = null;
+        carregandoFoto = false;
+      });
 
       return;
     }
 
+    if (!mounted) return;
+
     setState(() {
-      fotoUrl = ApiConfig.urlArquivo(foto);
+      carregandoFoto = true;
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Foto atualizada com sucesso')),
-    );
+    final bytes = await EmpresaService.buscarBytesFotoEmpresa(referencia);
+
+    if (!mounted) return;
+
+    setState(() {
+      if (bytes != null && bytes.isNotEmpty) {
+        fotoBytes = bytes;
+      }
+
+      carregandoFoto = false;
+    });
+  }
+
+  Future<void> escolherFoto(ImageSource source) async {
+    if (enviandoFoto) return;
+
+    try {
+      final imagem = await picker.pickImage(source: source, imageQuality: 70);
+
+      if (imagem == null) return;
+
+      if (!mounted) return;
+
+      setState(() {
+        enviandoFoto = true;
+      });
+
+      final bytes = await imagem.readAsBytes();
+
+      if (bytes.isEmpty) {
+        throw Exception('A imagem selecionada está vazia.');
+      }
+
+      String nomeArquivo = imagem.name;
+
+      final nomeMinusculo = nomeArquivo.toLowerCase();
+
+      if (!nomeMinusculo.endsWith('.jpg') &&
+          !nomeMinusculo.endsWith('.jpeg') &&
+          !nomeMinusculo.endsWith('.png') &&
+          !nomeMinusculo.endsWith('.webp')) {
+        nomeArquivo = 'perfil.jpg';
+      }
+
+      final foto = await EmpresaService.atualizarFotoEmpresaBytes(
+        bytes: bytes,
+        nomeArquivo: nomeArquivo,
+      );
+
+      if (!mounted) return;
+
+      if (foto == null || foto.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Erro ao atualizar foto da empresa')),
+        );
+
+        return;
+      }
+
+      setState(() {
+        fotoUrl = foto;
+        fotoBytes = bytes;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Foto atualizada com sucesso')),
+      );
+
+      await carregarFoto(foto);
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erro ao selecionar ou enviar foto: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          enviandoFoto = false;
+        });
+      }
+    }
   }
 
   Future<void> abrirOpcoesFoto() async {
+    if (enviandoFoto) return;
+
     await showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -163,7 +245,7 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
 
     return Center(
       child: GestureDetector(
-        onTap: abrirOpcoesFoto,
+        onTap: enviandoFoto ? null : abrirOpcoesFoto,
         child: Stack(
           alignment: Alignment.bottomRight,
           children: [
@@ -187,10 +269,12 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
               child: CircleAvatar(
                 radius: 62,
                 backgroundColor: theme.cardColor,
-                backgroundImage: fotoUrl == null
+                backgroundImage: fotoBytes == null
                     ? null
-                    : NetworkImage(fotoUrl!),
-                child: fotoUrl == null
+                    : MemoryImage(fotoBytes!),
+                child: enviandoFoto || carregandoFoto
+                    ? const CircularProgressIndicator(color: AppColors.primary)
+                    : fotoBytes == null
                     ? const Icon(
                         Icons.business,
                         color: AppColors.primary,
@@ -400,7 +484,7 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
                   SizedBox(
                     height: 52,
                     child: OutlinedButton.icon(
-                      onPressed: abrirOpcoesFoto,
+                      onPressed: enviandoFoto ? null : abrirOpcoesFoto,
                       icon: const Icon(Icons.photo_camera),
                       label: const Text('Alterar Logo'),
                       style: OutlinedButton.styleFrom(

@@ -18,49 +18,30 @@ public class Entrega {
 
     private Double valor;
 
+    private String complemento;
+
     private String observacao;
 
     private Boolean entregue = false;
 
     private String status = "PENDENTE";
 
-    /*
-     * Caminho da foto usada como comprovante da entrega
-     * ou da tentativa de entrega.
-     *
-     * Exemplo:
-     * /uploads/entregas/15_1723650000_foto.jpg
-     */
+    private Double latitude;
+
+    private Double longitude;
+
     private String fotoComprovante;
 
-    /*
-     * Motivo padronizado quando a entrega não for concluída.
-     *
-     * Exemplos:
-     * DESTINATARIO_AUSENTE
-     * ENDERECO_NAO_LOCALIZADO
-     * DESTINATARIO_RECUSOU
-     * LOCAL_FECHADO
-     * OUTRO
-     */
+
     private String motivoNaoEntrega;
 
-    /*
-     * Texto informado pelo entregador.
-     */
     @Column(length = 1000)
     private String justificativa;
 
-    /*
-     * Data e hora em que a entrega ou tentativa
-     * foi registrada.
-     */
+
     private LocalDateTime dataFinalizacao;
 
-    /*
-     * Localização do entregador no momento
-     * em que registrou o comprovante.
-     */
+
     private Double latitudeComprovante;
 
     private Double longitudeComprovante;
@@ -212,5 +193,27 @@ public class Entrega {
 
     public void setEntregador(Usuario entregador) {
         this.entregador = entregador;
+    }
+
+    public String getComplemento() {
+        return complemento;
+    }
+
+    public void setComplemento(String complemento) {this.complemento = complemento;
+    }
+    public Double getLatitude() {
+        return latitude;
+    }
+
+    public void setLatitude(Double latitude) {
+        this.latitude = latitude;
+    }
+
+    public Double getLongitude() {
+        return longitude;
+    }
+
+    public void setLongitude(Double longitude) {
+        this.longitude = longitude;
     }
 }

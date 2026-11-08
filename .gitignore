@@ -1,4 +1,4 @@
-# Flutter
+
 .dart_tool/
 .packages
 .pub/
@@ -6,20 +6,41 @@ build/
 .flutter-plugins
 .flutter-plugins-dependencies
 
-# Android/IDE
 .gradle/
 .idea/
 .vscode/
 *.iml
 
-# Spring Boot / Java
 backend/target/
+target/
 *.class
+*.log
+logs/
 
-# Arquivos do sistema
 .DS_Store
 Thumbs.db
 
-# Dados sensíveis
 .env
+.env.*
+!.env.example
+
 application-local.properties
+application-prod.properties
+**/application-local.properties
+**/application-prod.properties
+
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+backend/uploads/
+uploads/
+
+
+
+coverage/
+*.tmp
+*.bak

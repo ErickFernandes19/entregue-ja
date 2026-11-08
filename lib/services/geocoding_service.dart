@@ -1,65 +1,95 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
-import '../config/google_api_config.dart';
+import '../config/api_config.dart';
+import 'auth_service.dart';
+import 'empresa_service.dart' as empresa_service;
 
 class GeocodingService {
+  static Future<Map<String, String>> _headersAutenticados() async {
+    // Primeiro verifica se existe uma sessão de entregador.
+    final tokenEntregador = await AuthService.obterToken();
+
+    if (tokenEntregador != null && tokenEntregador.isNotEmpty) {
+      return AuthService.headersAutenticados();
+    }
+
+    // Caso contrário, utiliza a autenticação da empresa.
+    return empresa_service.EmpresaService.headersAutenticados();
+  }
+
   static Future<Map<String, double>?> buscarCoordenadas(String endereco) async {
     try {
-      if (endereco.trim().isEmpty) {
+      final enderecoLimpo = endereco.trim();
+
+      if (enderecoLimpo.isEmpty) {
         return null;
       }
 
-      final uri = Uri.https('maps.googleapis.com', '/maps/api/geocode/json', {
-        'address': endereco.trim(),
-        'region': 'br',
-        'language': 'pt-BR',
-        'key': GoogleApiConfig.apiKey,
-      });
+      final headers = await _headersAutenticados();
 
-      print('Buscando coordenadas: $endereco');
+      final uri = Uri.parse(
+        '${ApiConfig.baseUrl}/rotas/geocodificar',
+      ).replace(queryParameters: {'endereco': enderecoLimpo});
 
-      final response = await http.get(uri);
+      debugPrint('Buscando coordenadas para: $enderecoLimpo');
 
-      print('Google Geocoding status HTTP: ${response.statusCode}');
+      final response = await http
+          .get(uri, headers: headers)
+          .timeout(const Duration(seconds: 15));
+
+      debugPrint('Geocodificação HTTP: ${response.statusCode}');
+
+      if (response.statusCode == 401) {
+        debugPrint('Sessão inválida ou token JWT expirado.');
+        return null;
+      }
+
+      if (response.statusCode == 403) {
+        debugPrint('Usuário sem permissão para geocodificação.');
+        return null;
+      }
 
       if (response.statusCode != 200) {
-        print('Erro HTTP Google Geocoding: ${response.body}');
+        debugPrint(
+          'Falha na geocodificação: '
+          'HTTP ${response.statusCode}',
+        );
         return null;
       }
 
-      final Map<String, dynamic> data = jsonDecode(response.body);
+      final data = jsonDecode(response.body);
 
-      final status = data['status'];
-
-      if (status != 'OK') {
-        print('Google Geocoding status: $status');
-
-        if (data['error_message'] != null) {
-          print('Google Geocoding erro: ${data['error_message']}');
-        }
-
+      if (data is! Map<String, dynamic>) {
+        debugPrint('Resposta inválida da geocodificação.');
         return null;
       }
 
-      final resultados = data['results'];
+      final latitude = data['lat'];
+      final longitude = data['lng'];
 
-      if (resultados == null || resultados.isEmpty) {
-        print('Nenhuma coordenada encontrada para: $endereco');
+      if (latitude is! num || longitude is! num) {
+        debugPrint('Coordenadas ausentes na resposta.');
         return null;
       }
 
-      final location = resultados[0]['geometry']['location'];
+      final coordenadas = {
+        'lat': latitude.toDouble(),
+        'lng': longitude.toDouble(),
+      };
 
-      final latitude = (location['lat'] as num).toDouble();
-      final longitude = (location['lng'] as num).toDouble();
+      debugPrint(
+        'Coordenadas encontradas: '
+        '${coordenadas['lat']}, '
+        '${coordenadas['lng']}',
+      );
 
-      print('Coordenadas encontradas: $latitude, $longitude');
-
-      return {'lat': latitude, 'lng': longitude};
+      return coordenadas;
     } catch (e) {
-      print('Erro Google Geocoding: $e');
+      debugPrint('Erro ao buscar coordenadas: $e');
+
       return null;
     }
   }

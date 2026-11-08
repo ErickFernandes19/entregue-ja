@@ -1,86 +1,227 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 
 import '../config/api_config.dart';
+import 'auth_service.dart';
 
 class ApiService {
+  static Future<Map<String, String>> _headersAutenticados() async {
+    return await AuthService.headersAutenticados();
+  }
+
+  static void _registrarErro(String operacao, int statusCode, String body) {
+    debugPrint('$operacao: HTTP $statusCode');
+
+    if (statusCode == 401) {
+      debugPrint('Sessão inválida ou token JWT expirado.');
+    } else if (statusCode == 403) {
+      debugPrint('Acesso negado pelo servidor.');
+    } else {
+      debugPrint('Resposta: $body');
+    }
+  }
+
+  static MediaType _tipoImagem(String caminhoFoto) {
+    final caminho = caminhoFoto.toLowerCase();
+
+    if (caminho.endsWith('.png')) {
+      return MediaType('image', 'png');
+    }
+
+    if (caminho.endsWith('.webp')) {
+      return MediaType('image', 'webp');
+    }
+
+    return MediaType('image', 'jpeg');
+  }
+
+  static Future<Map<String, dynamic>> cadastrarEntregaEntregador({
+    required String cliente,
+    required String endereco,
+    double? valor,
+    String? complemento,
+    String? observacao,
+    double? latitude,
+    double? longitude,
+  }) async {
+    if (cliente.trim().isEmpty || endereco.trim().isEmpty) {
+      throw ArgumentError('Informe o cliente e o endereço da entrega.');
+    }
+
+    final headers = await _headersAutenticados();
+    final response = await http.post(
+      Uri.parse('${ApiConfig.entregas}/entregador'),
+      headers: {...headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'cliente': cliente.trim(),
+        'endereco': endereco.trim(),
+        'valor': valor,
+        'complemento': complemento,
+        'observacao': observacao,
+        'latitude': latitude,
+        'longitude': longitude,
+      }),
+    );
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      final dados = jsonDecode(response.body);
+      if (dados is Map<String, dynamic> && dados['id'] != null) {
+        return dados;
+      }
+      throw const FormatException(
+        'O servidor não retornou uma entrega salva com ID.',
+      );
+    }
+
+    _registrarErro(
+      'Erro ao cadastrar entrega do entregador',
+      response.statusCode,
+      response.body,
+    );
+    throw Exception('Falha ao cadastrar entrega: HTTP ${response.statusCode}');
+  }
+
   static Future<Map<String, dynamic>?> buscarEntrega(String id) async {
     try {
-      final response = await http.get(Uri.parse('${ApiConfig.entregas}/$id'));
+      final headers = await _headersAutenticados();
+
+      final response = await http.get(
+        Uri.parse('${ApiConfig.entregas}/${Uri.encodeComponent(id)}'),
+        headers: headers,
+      );
 
       if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+        return Map<String, dynamic>.from(jsonDecode(response.body));
       }
 
-      print('Erro buscar entrega: ${response.statusCode}');
-      print('Resposta: ${response.body}');
+      _registrarErro(
+        'Erro ao buscar entrega',
+        response.statusCode,
+        response.body,
+      );
 
       return null;
     } catch (e) {
-      print('Erro API: $e');
+      debugPrint('Erro ao buscar entrega: $e');
       return null;
     }
   }
 
   static Future<List<dynamic>> buscarEntregasDoEntregador(String email) async {
     try {
+      final headers = await _headersAutenticados();
+
       final response = await http.get(
         Uri.parse(
           '${ApiConfig.entregas}/entregador/${Uri.encodeComponent(email)}',
         ),
+        headers: headers,
       );
 
       if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+        final dados = jsonDecode(response.body);
+
+        if (dados is List) {
+          return dados;
+        }
+
+        throw const FormatException(
+          'O servidor não retornou uma lista de entregas.',
+        );
       }
 
-      print('Erro ao buscar entregas do entregador: ${response.statusCode}');
-      print('Resposta: ${response.body}');
+      _registrarErro(
+        'Erro ao buscar entregas do entregador',
+        response.statusCode,
+        response.body,
+      );
 
-      return [];
+      throw Exception(
+        'Falha ao carregar entregas: HTTP ${response.statusCode}',
+      );
     } catch (e) {
-      print('Erro ao buscar entregas do entregador: $e');
-      return [];
+      debugPrint('Erro ao buscar entregas do entregador: $e');
+      rethrow;
+    }
+  }
+
+  static Future<bool> excluirEntrega(int id) async {
+    try {
+      final headers = await _headersAutenticados();
+
+      final response = await http.delete(
+        Uri.parse('${ApiConfig.entregas}/$id'),
+        headers: headers,
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        return true;
+      }
+
+      _registrarErro(
+        'Erro ao excluir entrega',
+        response.statusCode,
+        response.body,
+      );
+
+      return false;
+    } catch (e) {
+      debugPrint('Erro ao excluir entrega: $e');
+      return false;
     }
   }
 
   static Future<bool> marcarEntregaEmRota(int id) async {
     try {
+      final headers = await _headersAutenticados();
+
       final response = await http.put(
         Uri.parse('${ApiConfig.entregas}/$id/em-rota'),
+        headers: headers,
       );
 
       if (response.statusCode == 200) {
         return true;
       }
 
-      print('Erro ao marcar entrega em rota: ${response.statusCode}');
-      print('Resposta: ${response.body}');
+      _registrarErro(
+        'Erro ao marcar entrega em rota',
+        response.statusCode,
+        response.body,
+      );
 
       return false;
     } catch (e) {
-      print('Erro ao marcar entrega em rota: $e');
+      debugPrint('Erro ao marcar entrega em rota: $e');
       return false;
     }
   }
 
   static Future<bool> atualizarStatusEntrega(int id) async {
     try {
+      final headers = await _headersAutenticados();
+
       final response = await http.put(
         Uri.parse('${ApiConfig.entregas}/$id/status'),
+        headers: headers,
       );
 
       if (response.statusCode == 200) {
         return true;
       }
 
-      print('Erro ao atualizar status: ${response.statusCode}');
-      print('Resposta: ${response.body}');
+      _registrarErro(
+        'Erro ao atualizar status',
+        response.statusCode,
+        response.body,
+      );
 
       return false;
     } catch (e) {
-      print('Erro status: $e');
+      debugPrint('Erro ao atualizar status: $e');
       return false;
     }
   }
@@ -93,10 +234,21 @@ class ApiService {
     String observacao = '',
   }) async {
     try {
+      final headers = await _headersAutenticados();
+
       final request = http.MultipartRequest(
         'PUT',
         Uri.parse('${ApiConfig.entregas}/$id/concluir'),
       );
+
+      final autorizacao = headers['Authorization'];
+
+      if (autorizacao == null || autorizacao.isEmpty) {
+        debugPrint('Não foi possível concluir: token JWT ausente.');
+        return null;
+      }
+
+      request.headers['Authorization'] = autorizacao;
 
       request.fields['latitude'] = latitude.toString();
       request.fields['longitude'] = longitude.toString();
@@ -105,33 +257,36 @@ class ApiService {
         request.fields['observacao'] = observacao.trim();
       }
 
-      request.files.add(await http.MultipartFile.fromPath('foto', caminhoFoto));
-
-      print('Enviando comprovante da entrega #$id...');
-
-      final streamedResponse = await request.send();
-
-      final body = await streamedResponse.stream.bytesToString();
-
-      print(
-        'Concluir entrega status: '
-        '${streamedResponse.statusCode}',
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'foto',
+          caminhoFoto,
+          contentType: _tipoImagem(caminhoFoto),
+        ),
       );
 
-      print('Concluir entrega body: $body');
+      debugPrint('Enviando comprovante da entrega #$id...');
+
+      final streamedResponse = await request.send();
+      final body = await streamedResponse.stream.bytesToString();
 
       if (streamedResponse.statusCode == 200) {
         if (body.isEmpty) {
           return {'sucesso': true, 'status': 'ENTREGUE'};
         }
 
-        return jsonDecode(body);
+        return Map<String, dynamic>.from(jsonDecode(body));
       }
+
+      _registrarErro(
+        'Erro ao concluir entrega',
+        streamedResponse.statusCode,
+        body,
+      );
 
       return null;
     } catch (e) {
-      print('Erro ao concluir entrega: $e');
-
+      debugPrint('Erro ao concluir entrega: $e');
       return null;
     }
   }
@@ -146,57 +301,66 @@ class ApiService {
   }) async {
     try {
       if (motivo.trim().isEmpty) {
-        print('Não entrega não enviada: motivo vazio');
-
+        debugPrint('Não entrega não enviada: motivo vazio');
         return null;
       }
 
       if (justificativa.trim().isEmpty) {
-        print('Não entrega não enviada: justificativa vazia');
-
+        debugPrint('Não entrega não enviada: justificativa vazia');
         return null;
       }
+
+      final headers = await _headersAutenticados();
 
       final request = http.MultipartRequest(
         'PUT',
         Uri.parse('${ApiConfig.entregas}/$id/nao-entregue'),
       );
 
+      final autorizacao = headers['Authorization'];
+
+      if (autorizacao == null || autorizacao.isEmpty) {
+        debugPrint('Não foi possível registrar: token JWT ausente.');
+        return null;
+      }
+
+      request.headers['Authorization'] = autorizacao;
+
       request.fields['motivo'] = motivo.trim();
-
       request.fields['justificativa'] = justificativa.trim();
-
       request.fields['latitude'] = latitude.toString();
-
       request.fields['longitude'] = longitude.toString();
 
-      request.files.add(await http.MultipartFile.fromPath('foto', caminhoFoto));
-
-      print('Registrando tentativa da entrega #$id...');
-
-      final streamedResponse = await request.send();
-
-      final body = await streamedResponse.stream.bytesToString();
-
-      print(
-        'Não entrega status: '
-        '${streamedResponse.statusCode}',
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'foto',
+          caminhoFoto,
+          contentType: _tipoImagem(caminhoFoto),
+        ),
       );
 
-      print('Não entrega body: $body');
+      debugPrint('Registrando tentativa da entrega #$id...');
+
+      final streamedResponse = await request.send();
+      final body = await streamedResponse.stream.bytesToString();
 
       if (streamedResponse.statusCode == 200) {
         if (body.isEmpty) {
           return {'sucesso': true, 'status': 'NAO_ENTREGUE'};
         }
 
-        return jsonDecode(body);
+        return Map<String, dynamic>.from(jsonDecode(body));
       }
+
+      _registrarErro(
+        'Erro ao registrar não entrega',
+        streamedResponse.statusCode,
+        body,
+      );
 
       return null;
     } catch (e) {
-      print('Erro ao registrar não entrega: $e');
-
+      debugPrint('Erro ao registrar não entrega: $e');
       return null;
     }
   }

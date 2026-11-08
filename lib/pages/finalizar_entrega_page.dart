@@ -1,10 +1,10 @@
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 
-import '../services/api_service.dart';
+import '../services/entrega_service.dart';
 import '../theme/app_colors.dart';
 
 class FinalizarEntregaPage extends StatefulWidget {
@@ -31,13 +31,14 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
   final TextEditingController observacaoController = TextEditingController();
 
   XFile? foto;
+  Uint8List? fotoBytes;
 
   String tipoFinalizacao = 'ENTREGUE';
-
   String motivoSelecionado = 'DESTINATARIO_AUSENTE';
 
   bool enviando = false;
   bool buscandoLocalizacao = false;
+  bool carregandoFoto = false;
 
   double? latitude;
   double? longitude;
@@ -57,28 +58,103 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
     obterLocalizacao();
   }
 
-  Future<void> tirarFoto() async {
+  void mostrarMensagem(String mensagem) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(mensagem)));
+  }
+
+  Future<void> selecionarFoto(ImageSource origem) async {
+    if (enviando || carregandoFoto) return;
+
     try {
       final imagem = await picker.pickImage(
-        source: ImageSource.camera,
+        source: origem,
         imageQuality: 75,
         preferredCameraDevice: CameraDevice.rear,
       );
 
-      if (imagem == null) return;
+      if (imagem == null || !mounted) return;
+
+      setState(() {
+        carregandoFoto = true;
+      });
+
+      final bytes = await imagem.readAsBytes();
 
       if (!mounted) return;
+
+      if (bytes.isEmpty) {
+        mostrarMensagem('A imagem selecionada está vazia.');
+        return;
+      }
+
+      if (bytes.length > 10 * 1024 * 1024) {
+        mostrarMensagem('A imagem deve ter no máximo 10 MB.');
+        return;
+      }
 
       setState(() {
         foto = imagem;
+        fotoBytes = bytes;
       });
     } catch (e) {
-      if (!mounted) return;
+      debugPrint('Erro ao selecionar foto: $e');
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Não foi possível abrir a câmera: $e')),
-      );
+      mostrarMensagem('Não foi possível selecionar a imagem.');
+    } finally {
+      if (mounted) {
+        setState(() {
+          carregandoFoto = false;
+        });
+      }
     }
+  }
+
+  Future<void> tirarFoto() async {
+    await selecionarFoto(ImageSource.camera);
+  }
+
+  Future<void> escolherDaGaleria() async {
+    await selecionarFoto(ImageSource.gallery);
+  }
+
+  void abrirOpcoesFoto() {
+    if (enviando || carregandoFoto) return;
+
+    showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.camera_alt),
+                  title: const Text('Tirar foto'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    tirarFoto();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.photo_library),
+                  title: const Text('Escolher da galeria'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    escolherDaGaleria();
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<bool> obterLocalizacao() async {
@@ -86,22 +162,18 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
 
     setState(() {
       buscandoLocalizacao = true;
+      latitude = null;
+      longitude = null;
     });
 
     try {
       final servicoAtivo = await Geolocator.isLocationServiceEnabled();
 
       if (!servicoAtivo) {
-        if (!mounted) return false;
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Ative a localização do celular para registrar a entrega.',
-            ),
-          ),
+        mostrarMensagem(
+          'Ative a localização do dispositivo '
+          'para registrar a entrega.',
         );
-
         return false;
       }
 
@@ -112,14 +184,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
       }
 
       if (permissao == LocationPermission.denied) {
-        if (!mounted) return false;
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('A permissão de localização é necessária.'),
-          ),
-        );
-
+        mostrarMensagem('A permissão de localização é necessária.');
         return false;
       }
 
@@ -134,7 +199,9 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
             ),
             action: SnackBarAction(
               label: 'Abrir',
-              onPressed: Geolocator.openAppSettings,
+              onPressed: () {
+                Geolocator.openAppSettings();
+              },
             ),
           ),
         );
@@ -155,11 +222,9 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
 
       return true;
     } catch (e) {
-      if (!mounted) return false;
+      debugPrint('Erro ao obter localização: $e');
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Erro ao obter localização: $e')));
+      mostrarMensagem('Não foi possível obter a localização.');
 
       return false;
     } finally {
@@ -172,51 +237,34 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
   }
 
   Future<void> finalizar() async {
-    if (enviando) return;
+    if (enviando || carregandoFoto) return;
 
-    if (foto == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            tipoFinalizacao == 'ENTREGUE'
-                ? 'Tire uma foto para comprovar a entrega.'
-                : 'Tire uma foto do local para comprovar a tentativa.',
-          ),
-        ),
+    if (foto == null || fotoBytes == null || fotoBytes!.isEmpty) {
+      mostrarMensagem(
+        tipoFinalizacao == 'ENTREGUE'
+            ? 'Tire ou selecione uma foto para comprovar a entrega.'
+            : 'Tire ou selecione uma foto para comprovar a tentativa.',
       );
-
       return;
     }
 
     if (tipoFinalizacao == 'NAO_ENTREGUE' &&
         justificativaController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Escreva uma justificativa para a não entrega.'),
-        ),
-      );
-
+      mostrarMensagem('Escreva uma justificativa para a não entrega.');
       return;
     }
 
     final localizacaoObtida = await obterLocalizacao();
 
+    if (!mounted) return;
+
     if (!localizacaoObtida || latitude == null || longitude == null) {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Não foi possível obter sua localização. '
-            'Tente novamente.',
-          ),
-        ),
+      mostrarMensagem(
+        'Não foi possível obter sua localização. '
+        'Tente novamente.',
       );
-
       return;
     }
-
-    if (!mounted) return;
 
     setState(() {
       enviando = true;
@@ -225,18 +273,22 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
     Map<String, dynamic>? resultado;
 
     try {
+      final nomeArquivo = foto!.name;
+
       if (tipoFinalizacao == 'ENTREGUE') {
-        resultado = await ApiService.concluirEntrega(
-          id: widget.entregaId,
-          caminhoFoto: foto!.path,
+        resultado = await EntregaService.concluirEntrega(
+          idEntrega: widget.entregaId.toString(),
+          fotoBytes: fotoBytes!,
+          nomeArquivo: nomeArquivo,
           latitude: latitude!,
           longitude: longitude!,
           observacao: observacaoController.text.trim(),
         );
       } else {
-        resultado = await ApiService.registrarNaoEntrega(
-          id: widget.entregaId,
-          caminhoFoto: foto!.path,
+        resultado = await EntregaService.registrarNaoEntrega(
+          idEntrega: widget.entregaId.toString(),
+          fotoBytes: fotoBytes!,
+          nomeArquivo: nomeArquivo,
           motivo: motivoSelecionado,
           justificativa: justificativaController.text.trim(),
           latitude: latitude!,
@@ -244,8 +296,6 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
         );
       }
     } catch (e) {
-      resultado = null;
-
       debugPrint('Erro ao finalizar entrega: $e');
     }
 
@@ -256,15 +306,10 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
     });
 
     if (resultado == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Não foi possível registrar a entrega. '
-            'Verifique a conexão e tente novamente.',
-          ),
-        ),
+      mostrarMensagem(
+        'Não foi possível registrar a entrega. '
+        'Verifique a conexão e tente novamente.',
       );
-
       return;
     }
 
@@ -292,7 +337,6 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
     required Color color,
   }) {
     final theme = Theme.of(context);
-
     final selecionado = tipoFinalizacao == valor;
 
     return InkWell(
@@ -321,9 +365,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
               backgroundColor: color.withOpacity(0.15),
               child: Icon(icon, color: color),
             ),
-
             const SizedBox(width: 12),
-
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -344,7 +386,6 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
                 ],
               ),
             ),
-
             Radio<String>(
               value: valor,
               groupValue: tipoFinalizacao,
@@ -352,9 +393,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
               onChanged: enviando
                   ? null
                   : (novoValor) {
-                      if (novoValor == null) {
-                        return;
-                      }
+                      if (novoValor == null) return;
 
                       setState(() {
                         tipoFinalizacao = novoValor;
@@ -370,13 +409,20 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
   Widget areaFoto() {
     final theme = Theme.of(context);
 
-    if (foto != null) {
+    if (carregandoFoto) {
+      return const SizedBox(
+        height: 180,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (fotoBytes != null) {
       return Column(
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(18),
-            child: Image.file(
-              File(foto!.path),
+            child: Image.memory(
+              fotoBytes!,
               height: 230,
               width: double.infinity,
               fit: BoxFit.cover,
@@ -384,9 +430,9 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
           ),
           const SizedBox(height: 10),
           OutlinedButton.icon(
-            onPressed: enviando ? null : tirarFoto,
+            onPressed: enviando ? null : abrirOpcoesFoto,
             icon: const Icon(Icons.refresh),
-            label: const Text('Tirar outra foto'),
+            label: const Text('Alterar foto'),
           ),
         ],
       );
@@ -394,7 +440,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
 
     return InkWell(
       borderRadius: BorderRadius.circular(20),
-      onTap: enviando ? null : tirarFoto,
+      onTap: enviando ? null : abrirOpcoesFoto,
       child: Container(
         width: double.infinity,
         height: 180,
@@ -409,7 +455,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
             const Icon(Icons.add_a_photo, size: 48, color: AppColors.primary),
             const SizedBox(height: 10),
             const Text(
-              'Tirar foto',
+              'Adicionar foto',
               style: TextStyle(
                 fontSize: 17,
                 fontWeight: FontWeight.bold,
@@ -420,7 +466,8 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Text(
-                'A foto será usada como comprovante.',
+                'Use a câmera ou selecione '
+                'uma imagem da galeria.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
               ),
@@ -458,9 +505,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
               possuiLocalizacao ? Icons.location_on : Icons.location_off,
               color: cor,
             ),
-
           const SizedBox(width: 10),
-
           Expanded(
             child: Text(
               buscandoLocalizacao
@@ -471,7 +516,6 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
               style: TextStyle(fontWeight: FontWeight.w600, color: cor),
             ),
           ),
-
           if (!possuiLocalizacao && !buscandoLocalizacao)
             IconButton(
               tooltip: 'Tentar novamente',
@@ -520,9 +564,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
-
                 const SizedBox(height: 5),
-
                 Text(
                   widget.cliente,
                   style: TextStyle(
@@ -531,9 +573,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
                     color: theme.colorScheme.onSurface,
                   ),
                 ),
-
                 const SizedBox(height: 10),
-
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -558,9 +598,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
           ),
 
           const SizedBox(height: 16),
-
           statusLocalizacao(),
-
           const SizedBox(height: 24),
 
           Text(
@@ -592,7 +630,6 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
 
           if (naoEntregue) ...[
             const SizedBox(height: 8),
-
             DropdownButtonFormField<String>(
               value: motivoSelecionado,
               dropdownColor: theme.cardColor,
@@ -610,9 +647,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
               onChanged: enviando
                   ? null
                   : (valor) {
-                      if (valor == null) {
-                        return;
-                      }
+                      if (valor == null) return;
 
                       setState(() {
                         motivoSelecionado = valor;
@@ -677,9 +712,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
           ),
 
           const SizedBox(height: 14),
-
           areaFoto(),
-
           const SizedBox(height: 30),
 
           SizedBox(
