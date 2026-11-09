@@ -40,7 +40,7 @@ public class SecurityConfig {
                 "http://127.0.0.1:*",
                 "https://localhost:*",
                 "https://127.0.0.1:*",
-                "https://glittering-stroopwafel-3496c3.netlify.app"
+                "https://entregueja.netlify.app"
         ));
 
         configuration.setAllowedMethods(List.of(
