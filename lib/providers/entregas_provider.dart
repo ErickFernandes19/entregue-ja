@@ -73,7 +73,10 @@ class EntregasProvider extends ChangeNotifier {
         cliente: entrega.cliente,
         endereco: entrega.endereco,
         valor: entrega.valor,
+        complemento: entrega.complemento,
         observacao: entrega.observacao,
+        latitude: entrega.latitude,
+        longitude: entrega.longitude,
       );
 
       await carregarEntregasDoBackend();

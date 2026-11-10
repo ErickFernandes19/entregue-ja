@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/entrega_model.dart';
+import '../services/api_service.dart';
+import '../services/auth_service.dart';
 import '../services/cep_service.dart';
 import '../services/geocoding_service.dart';
 import '../theme/app_colors.dart';
@@ -99,12 +101,36 @@ class _CadastrarEntregaManualPageState
   }
 
   String montarEnderecoParaMapa() {
+    final cep = cepController.text.replaceAll(RegExp(r'[^0-9]'), '');
     final rua = ruaController.text.trim();
     final numero = numeroController.text.trim();
+    final bairro = bairroController.text.trim();
     final cidade = cidadeController.text.trim();
     final uf = ufController.text.trim().toUpperCase();
 
-    return '$rua, $numero, $cidade - $uf';
+    final partes = <String>['$rua, $numero', bairro, cidade, uf];
+
+    if (cep.length == 8) {
+      partes.add(cep);
+    }
+
+    partes.add('Brasil');
+
+    return partes.join(', ');
+  }
+
+  // O complemento não integra a localização geográfica: apartamentos e
+  // unidades diferentes do mesmo prédio podem compartilhar coordenadas.
+  String normalizarEndereco(String endereco) {
+    const acentos = 'áàâãäéèêëíìîïóòôõöúùûüç';
+    const semAcentos = 'aaaaaeeeeiiiiooooouuuuc';
+    var texto = endereco.toLowerCase().trim();
+
+    for (var i = 0; i < acentos.length; i++) {
+      texto = texto.replaceAll(acentos[i], semAcentos[i]);
+    }
+
+    return texto.replaceAll(RegExp(r'[^a-z0-9]'), '');
   }
 
   double? converterValor(String texto) {
@@ -153,37 +179,121 @@ class _CadastrarEntregaManualPageState
 
     setState(() => salvando = true);
 
-    Map<String, double>? coordenadas;
-
     try {
-      coordenadas = await GeocodingService.buscarCoordenadas(
-        montarEnderecoParaMapa(),
-      );
+      // Busca diretamente no backend: se a consulta falhar, não tratamos
+      // uma lista antiga/incompleta como se não existissem duplicatas.
+      final email = await AuthService.usuarioLogado();
+      if (email == null || email.isEmpty) {
+        throw StateError('Entregador não autenticado');
+      }
+
+      final dados = await ApiService.buscarEntregasDoEntregador(email);
+      if (!mounted) return;
+
+      final endereco = montarEnderecoCompleto();
+      final enderecoNormalizado = normalizarEndereco(endereco);
+      final mesmoEndereco = <EntregaModel>[];
+      final duplicadasAtivas = <EntregaModel>[];
+
+      for (final item in dados) {
+        final existente = EntregaModel.fromJson(
+          Map<String, dynamic>.from(item as Map),
+        );
+        if (normalizarEndereco(existente.endereco) == enderecoNormalizado) {
+          mesmoEndereco.add(existente);
+          final status = existente.status.trim().toUpperCase();
+          if (!existente.entregue &&
+              (status == 'PENDENTE' || status == 'EM_ROTA')) {
+            duplicadasAtivas.add(existente);
+          }
+        }
+      }
+
+      if (duplicadasAtivas.isNotEmpty) {
+        final quantidade = duplicadasAtivas.length;
+        final confirmar = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Endereço já cadastrado'),
+            content: Text(
+              'Já ${quantidade == 1 ? 'existe 1 entrega' : 'existem $quantidade entregas'} '
+              'ativa${quantidade == 1 ? '' : 's'} neste endereço.\n\n'
+              '$endereco\n\n'
+              'Deseja cadastrar mais uma entrega neste local?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cancelar'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Cadastrar outra'),
+              ),
+            ],
+          ),
+        );
+
+        if (!mounted || confirmar != true) return;
+      }
+
+      Map<String, double>? coordenadas;
+
+      for (final existente in mesmoEndereco) {
+        final lat = existente.latitude;
+        final lng = existente.longitude;
+        if (lat != null &&
+            lng != null &&
+            lat.isFinite &&
+            lng.isFinite &&
+            lat >= -90 &&
+            lat <= 90 &&
+            lng >= -180 &&
+            lng <= 180) {
+          coordenadas = {'lat': lat, 'lng': lng};
+          debugPrint('Reutilizando coordenadas de entrega no mesmo endereço.');
+          break;
+        }
+      }
 
       if (coordenadas == null) {
         coordenadas = await GeocodingService.buscarCoordenadas(
-          '$cep, $numero, $cidade - $uf',
+          montarEnderecoParaMapa(),
         );
+
+        // Mantém o fallback original, caso a consulta principal falhe.
+        if (coordenadas == null) {
+          coordenadas = await GeocodingService.buscarCoordenadas(
+            '$cep, $numero, $cidade - $uf',
+          );
+        }
       }
+
+      if (!mounted) return;
+
+      final entrega = EntregaModel(
+        cliente: cliente,
+        endereco: endereco,
+        complemento: complemento,
+        valor: valor,
+        observacao: observacao,
+        entregue: false,
+        status: 'PENDENTE',
+        latitude: coordenadas?['lat'],
+        longitude: coordenadas?['lng'],
+      );
+
+      Navigator.pop(context, entrega);
     } catch (e) {
-      debugPrint('Erro ao buscar coordenadas: $e');
+      debugPrint('Erro ao preparar entrega: $e');
+      mostrarMensagem(
+        'Não foi possível verificar as entregas existentes. Tente novamente.',
+        erro: true,
+      );
+    } finally {
+      if (mounted) setState(() => salvando = false);
     }
-
-    if (!mounted) return;
-
-    final entrega = EntregaModel(
-      cliente: cliente,
-      endereco: montarEnderecoCompleto(),
-      complemento: complemento,
-      valor: valor,
-      observacao: observacao,
-      entregue: false,
-      status: 'PENDENTE',
-      latitude: coordenadas?['lat'],
-      longitude: coordenadas?['lng'],
-    );
-
-    Navigator.pop(context, entrega);
   }
 
   Widget campo({

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 
@@ -17,6 +18,7 @@ import '../services/directions_service.dart';
 import '../services/geocoding_service.dart';
 
 import '../theme/app_colors.dart';
+import 'finalizar_entrega_page.dart';
 
 class MapaPage extends StatefulWidget {
   const MapaPage({super.key});
@@ -45,6 +47,26 @@ class _MapaPageState extends State<MapaPage> {
   int duracaoRotaMinutos = 0;
 
   DateTime? _ultimaAtualizacaoRota;
+  DateTime? _ultimaAtualizacaoCamera;
+  static const Duration _intervaloMinimoCamera = Duration(milliseconds: 800);
+  // Referências da última rota calculada pela API (não são alteradas pelo GPS).
+  double _distanciaInicialRotaMetros = 0;
+  int _duracaoInicialRotaSegundos = 0;
+  double _distanciaInicialPrimeiraEntregaMetros = 0;
+  int _duracaoInicialPrimeiraEntregaSegundos = 0;
+  double _progressoMaximoRotaMetros = 0;
+
+  // Aviso de chegada: duas leituras GPS confiáveis dentro de 50 metros.
+  static const double _raioChegadaMetros = 50;
+  static const int _leiturasParaConfirmarChegada = 2;
+  int _leiturasPertoDestino = 0;
+  String? _destinoMonitorado;
+  String? _destinoAvisado;
+
+  int _leiturasForaDaRota = 0;
+  static const double _limiteDesvioMetros = 50;
+  static const int _leiturasParaConfirmarDesvio = 2;
+  static const Duration _intervaloMinimoRecalculo = Duration(seconds: 30);
 
   dynamic proximaEntrega;
   LatLng? coordenadaProximaEntrega;
@@ -56,206 +78,16 @@ class _MapaPageState extends State<MapaPage> {
   List<Map<String, dynamic>> passosNavegacao = [];
   Timer? _timerSincronizacao;
   bool _sincronizandoEntregas = false;
+  bool _sincronizacaoPendente = false;
   bool _calculandoRota = false;
+  bool _abrindoFinalizacao = false;
   String _assinaturaEntregas = '';
-
-  static const String estiloMapaEscuro = '''
-
-[
-
-  {
-
-    "elementType": "geometry",
-
-    "stylers": [{"color": "#212121"}]
-
-  },
-
-  {
-
-    "elementType": "labels.icon",
-
-    "stylers": [{"visibility": "off"}]
-
-  },
-
-  {
-
-    "elementType": "labels.text.fill",
-
-    "stylers": [{"color": "#757575"}]
-
-  },
-
-  {
-
-    "elementType": "labels.text.stroke",
-
-    "stylers": [{"color": "#212121"}]
-
-  },
-
-  {
-
-    "featureType": "administrative",
-
-    "elementType": "geometry",
-
-    "stylers": [{"color": "#757575"}]
-
-  },
-
-  {
-
-    "featureType": "administrative.country",
-
-    "elementType": "labels.text.fill",
-
-    "stylers": [{"color": "#9e9e9e"}]
-
-  },
-
-  {
-
-    "featureType": "administrative.land_parcel",
-
-    "stylers": [{"visibility": "off"}]
-
-  },
-
-  {
-
-    "featureType": "administrative.locality",
-
-    "elementType": "labels.text.fill",
-
-    "stylers": [{"color": "#bdbdbd"}]
-
-  },
-
-  {
-
-    "featureType": "poi",
-
-    "elementType": "labels.text.fill",
-
-    "stylers": [{"color": "#757575"}]
-
-  },
-
-  {
-
-    "featureType": "poi.park",
-
-    "elementType": "geometry",
-
-    "stylers": [{"color": "#181818"}]
-
-  },
-
-  {
-
-    "featureType": "poi.park",
-
-    "elementType": "labels.text.fill",
-
-    "stylers": [{"color": "#616161"}]
-
-  },
-
-  {
-
-    "featureType": "road",
-
-    "elementType": "geometry.fill",
-
-    "stylers": [{"color": "#2c2c2c"}]
-
-  },
-
-  {
-
-    "featureType": "road",
-
-    "elementType": "labels.text.fill",
-
-    "stylers": [{"color": "#8a8a8a"}]
-
-  },
-
-  {
-
-    "featureType": "road.arterial",
-
-    "elementType": "geometry",
-
-    "stylers": [{"color": "#373737"}]
-
-  },
-
-  {
-
-    "featureType": "road.highway",
-
-    "elementType": "geometry",
-
-    "stylers": [{"color": "#3c3c3c"}]
-
-  },
-
-  {
-
-    "featureType": "road.highway.controlled_access",
-
-    "elementType": "geometry",
-
-    "stylers": [{"color": "#4e4e4e"}]
-
-  },
-
-  {
-
-    "featureType": "road.local",
-
-    "elementType": "labels.text.fill",
-
-    "stylers": [{"color": "#616161"}]
-
-  },
-
-  {
-
-    "featureType": "transit",
-
-    "elementType": "labels.text.fill",
-
-    "stylers": [{"color": "#757575"}]
-
-  },
-
-  {
-
-    "featureType": "water",
-
-    "elementType": "geometry",
-
-    "stylers": [{"color": "#000000"}]
-
-  },
-
-  {
-
-    "featureType": "water",
-
-    "elementType": "labels.text.fill",
-
-    "stylers": [{"color": "#3d3d3d"}]
-
-  }
-
-]
-
-''';
+  // Mantém o destino escolhido nos recálculos por desvio de GPS.
+  String? _destinoOtimizado;
+  String? _chavePontosOtimizados;
+  // IDs das entregas presentes quando esta sessão de rota começou.
+  // O resumo considera apenas essas entregas, não todo o histórico.
+  final Set<String> _idsEntregasDaRota = {};
 
   @override
   void initState() {
@@ -267,18 +99,10 @@ class _MapaPageState extends State<MapaPage> {
   }
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-
-    if (mapController != null) {
-      aplicarEstiloMapa();
-    }
-  }
-
-  @override
   void dispose() {
     _timerSincronizacao?.cancel();
     _positionSubscription?.cancel();
+    _sincronizacaoPendente = false;
 
     mapController?.dispose();
 
@@ -305,14 +129,6 @@ class _MapaPageState extends State<MapaPage> {
         longitude >= -180 &&
         longitude <= 180 &&
         !(latitude == 0 && longitude == 0);
-  }
-
-  Future<void> aplicarEstiloMapa() async {
-    final controller = mapController;
-
-    if (controller == null) return;
-
-    await controller.setMapStyle(null);
   }
 
   Future<bool> verificarPermissaoLocalizacao() async {
@@ -375,6 +191,14 @@ class _MapaPageState extends State<MapaPage> {
       rotaIniciada = entregasProvider.entregas.any(
         (e) => e.status.toString().trim().toUpperCase() == 'EM_ROTA',
       );
+      if (rotaIniciada) {
+        // Preserva o resumo durante atualizações na mesma sessão.
+        if (_idsEntregasDaRota.isEmpty) {
+          _registrarEntregasDaRota(entregasProvider);
+        }
+      } else {
+        _idsEntregasDaRota.clear();
+      }
 
       await buscarLocalizacaoAtual();
 
@@ -434,9 +258,13 @@ class _MapaPageState extends State<MapaPage> {
   Future<void> iniciarMonitoramentoLocalizacao() async {
     final permitido = await verificarPermissaoLocalizacao();
 
-    if (!permitido) return;
+    if (!permitido || !mounted || !rotaIniciada) return;
 
     await _positionSubscription?.cancel();
+    if (!mounted || !rotaIniciada) return;
+    _ultimaAtualizacaoCamera = null;
+    _leiturasForaDaRota = 0;
+    _ultimaAtualizacaoRota = null;
     _timerSincronizacao?.cancel();
     _timerSincronizacao = Timer.periodic(
       const Duration(seconds: 12),
@@ -451,8 +279,18 @@ class _MapaPageState extends State<MapaPage> {
 
     _positionSubscription =
         Geolocator.getPositionStream(locationSettings: settings).listen(
-          (Position position) async {
+          (Position position) {
             if (!mounted || !rotaIniciada) return;
+
+            // Descarta coordenadas inválidas antes de atualizar mapa ou rota.
+            if (!position.latitude.isFinite ||
+                !position.longitude.isFinite ||
+                position.latitude < -90 ||
+                position.latitude > 90 ||
+                position.longitude < -180 ||
+                position.longitude > 180) {
+              return;
+            }
 
             final novaPosicao = LatLng(position.latitude, position.longitude);
 
@@ -482,35 +320,98 @@ class _MapaPageState extends State<MapaPage> {
               markers = novosMarkers;
             });
             atualizarInstrucaoNavegacao();
+            // Apenas cálculos locais: não chama a API do Google a cada GPS.
+            if (position.accuracy <= 35 && !_calculandoRota) {
+              atualizarDistanciasRestantes(novaPosicao);
+            }
 
-            await mapController?.animateCamera(
-              CameraUpdate.newCameraPosition(
-                CameraPosition(
-                  target: novaPosicao,
+            verificarChegadaAoDestino(position, novaPosicao);
 
-                  zoom: 17,
+            // A animação da câmera não deve bloquear as leituras do GPS.
+            // Limita animações para evitar sobreposição em atualizações rápidas.
+            final agoraCamera = DateTime.now();
+            if (_ultimaAtualizacaoCamera == null ||
+                agoraCamera.difference(_ultimaAtualizacaoCamera!) >=
+                    _intervaloMinimoCamera) {
+              _ultimaAtualizacaoCamera = agoraCamera;
+              unawaited(_acompanharCamera(novaPosicao, position.heading));
+            }
 
-                  bearing: position.heading >= 0 ? position.heading : 0,
+            if (!position.accuracy.isFinite ||
+                position.accuracy > 35 ||
+                polylines.isEmpty) {
+              _leiturasForaDaRota = 0;
+              return;
+            }
 
-                  tilt: 45,
-                ),
-              ),
-            );
+            final distanciaDaRota = distanciaDaRotaEmMetros(novaPosicao);
+
+            if (distanciaDaRota <= _limiteDesvioMetros) {
+              _leiturasForaDaRota = 0;
+              return;
+            }
+
+            _leiturasForaDaRota++;
+
+            if (_leiturasForaDaRota < _leiturasParaConfirmarDesvio ||
+                _calculandoRota) {
+              return;
+            }
 
             final agora = DateTime.now();
 
-            if (_ultimaAtualizacaoRota == null ||
-                agora.difference(_ultimaAtualizacaoRota!).inSeconds >= 20) {
-              _ultimaAtualizacaoRota = agora;
-
-              await carregarRota(ajustarCamera: false);
+            if (_ultimaAtualizacaoRota != null &&
+                agora.difference(_ultimaAtualizacaoRota!) <
+                    _intervaloMinimoRecalculo) {
+              return;
             }
+
+            _ultimaAtualizacaoRota = agora;
+            _leiturasForaDaRota = 0;
+            debugPrint(
+              'Desvio confirmado: ${distanciaDaRota.toStringAsFixed(0)} m da rota. Recalculando...',
+            );
+            unawaited(
+              carregarRota(ajustarCamera: false, compararDestinos: false),
+            );
           },
 
           onError: (erro) {
             debugPrint('Erro no GPS em tempo real: $erro');
           },
         );
+  }
+
+  Future<void> _acompanharCamera(LatLng posicao, double heading) async {
+    final controller = mapController;
+    if (!mounted || !rotaIniciada || controller == null) return;
+
+    try {
+      await controller.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: posicao,
+            zoom: 17,
+            bearing: heading.isFinite && heading >= 0 ? heading : 0,
+            tilt: 45,
+          ),
+        ),
+      );
+    } catch (e) {
+      // O mapa pode ser fechado enquanto uma animação está em andamento.
+      debugPrint('Não foi possível atualizar a câmera do mapa: $e');
+    }
+  }
+
+  void _registrarEntregasDaRota(EntregasProvider provider) {
+    _idsEntregasDaRota
+      ..clear()
+      ..addAll(
+        provider.entregas
+            .where(entregaAtivaParaRota)
+            .where((e) => e.id != null)
+            .map((e) => e.id.toString()),
+      );
   }
 
   String assinaturaEntregasAtivas() {
@@ -524,8 +425,14 @@ class _MapaPageState extends State<MapaPage> {
     return ids.join('|');
   }
 
-  Future<void> sincronizarEntregasEmRota() async {
-    if (!mounted || !rotaIniciada || _sincronizandoEntregas) return;
+  Future<void> sincronizarEntregasEmRota({bool forcar = false}) async {
+    if (!mounted || !rotaIniciada) return;
+    if (_sincronizandoEntregas) {
+      // Uma finalização pode ocorrer durante a consulta periódica.
+      // Nesse caso, garante uma nova consulta logo após a atual.
+      if (forcar) _sincronizacaoPendente = true;
+      return;
+    }
     _sincronizandoEntregas = true;
     try {
       final provider = Provider.of<EntregasProvider>(context, listen: false);
@@ -534,12 +441,24 @@ class _MapaPageState extends State<MapaPage> {
       final assinaturaAtual = assinaturaEntregasAtivas();
       if (assinaturaAtual == _assinaturaEntregas) return;
       _assinaturaEntregas = assinaturaAtual;
+      _leiturasForaDaRota = 0;
+      _leiturasPertoDestino = 0;
+      _destinoMonitorado = null;
       if (assinaturaAtual.isEmpty) {
         _timerSincronizacao?.cancel();
         await _positionSubscription?.cancel();
+        _ultimaAtualizacaoCamera = null;
         if (!mounted) return;
         setState(() {
           rotaIniciada = false;
+          _destinoAvisado = null;
+          _progressoMaximoRotaMetros = 0;
+          _distanciaInicialRotaMetros = 0;
+          _duracaoInicialRotaSegundos = 0;
+          _distanciaInicialPrimeiraEntregaMetros = 0;
+          _duracaoInicialPrimeiraEntregaSegundos = 0;
+          distanciaRotaKm = 0;
+          duracaoRotaMinutos = 0;
           proximaEntrega = null;
           coordenadaProximaEntrega = null;
           distanciaProximaEntregaKm = 0;
@@ -557,12 +476,147 @@ class _MapaPageState extends State<MapaPage> {
         return;
       }
       await carregarMarkers();
-      await carregarRota(ajustarCamera: false);
+      if (_calculandoRota) {
+        // Uma rota antiga ainda está sendo calculada. Revalida os dados
+        // no próximo ciclo, sem disparar duas chamadas simultâneas.
+        _assinaturaEntregas = '';
+      } else {
+        await carregarRota(ajustarCamera: false);
+      }
     } catch (e) {
       debugPrint('Erro ao sincronizar entregas: $e');
     } finally {
       _sincronizandoEntregas = false;
+      if (_sincronizacaoPendente) {
+        _sincronizacaoPendente = false;
+        if (mounted && rotaIniciada) {
+          unawaited(sincronizarEntregasEmRota());
+        }
+      }
     }
+  }
+
+  // Permite finalizar qualquer entrega da parada, mantendo IDs independentes.
+  Future<void> _finalizarEntregaSelecionada(dynamic entrega) async {
+    if (!mounted || _abrindoFinalizacao) return;
+    final int? id = entrega.id;
+    if (id == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Entrega sem ID para finalização.')),
+      );
+      return;
+    }
+    setState(() => _abrindoFinalizacao = true);
+    try {
+      final resultado = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => FinalizarEntregaPage(
+            entregaId: id,
+            cliente: entrega.cliente,
+            endereco: entrega.endereco,
+          ),
+        ),
+      );
+      if (!mounted) return;
+      if (resultado == true) {
+        // Também atualiza o mapa antes de iniciar a rota.
+        if (rotaIniciada) {
+          await sincronizarEntregasEmRota(forcar: true);
+        } else {
+          await carregarMapaCompleto();
+        }
+      }
+    } catch (e) {
+      debugPrint('Erro ao abrir finalização pelo mapa: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Não foi possível abrir a finalização.'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _abrindoFinalizacao = false);
+    }
+  }
+
+  Future<void> finalizarProximaEntregaPeloMapa() async {
+    if (proximaEntrega == null) return;
+    final pontos = await buscarPontosPendentes();
+    if (!mounted) return;
+    for (final ponto in pontos) {
+      if (ponto.entregas.any((e) => e.id == proximaEntrega.id)) {
+        await _mostrarEntregasDaParada(ponto.entregas);
+        return;
+      }
+    }
+    await _finalizarEntregaSelecionada(proximaEntrega);
+  }
+
+  Future<void> _mostrarEntregasDaParada(List<dynamic> entregas) async {
+    if (!mounted || entregas.isEmpty) return;
+    final endereco = entregas.first.endereco.toString();
+    final selecionada = await showModalBottomSheet<dynamic>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Entregas nesta parada (${entregas.length})',
+                style: Theme.of(sheetContext).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 6),
+              Text(endereco),
+              const SizedBox(height: 12),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: entregas.length,
+                  itemBuilder: (context, index) {
+                    final entrega = entregas[index];
+                    final complemento =
+                        entrega.complemento?.toString().trim() ?? '';
+                    return ListTile(
+                      leading: const Icon(Icons.inventory_2_outlined),
+                      title: Text(entrega.cliente.toString()),
+                      subtitle: Text(
+                        'Entrega #${entrega.id ?? '-'}'
+                        '${complemento.isNotEmpty ? ' • $complemento' : ''}'
+                        ' • ${entrega.status}',
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.pop(sheetContext, entrega),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted || selecionada == null) return;
+    await _finalizarEntregaSelecionada(selecionada);
+  }
+
+  String _chaveEndereco(dynamic entrega) {
+    var endereco = entrega.endereco.toString().trim().toLowerCase();
+    const origem = 'áàâãäéèêëíìîïóòôõöúùûüç';
+    const destino = 'aaaaaeeeeiiiiooooouuuuc';
+    for (var i = 0; i < origem.length; i++) {
+      endereco = endereco.replaceAll(origem[i], destino[i]);
+    }
+    return endereco
+        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+        .trim()
+        .replaceAll(RegExp(r'\s+'), ' ');
   }
 
   LatLng? coordenadaDeLocalizacao(dynamic location) {
@@ -618,8 +672,9 @@ class _MapaPageState extends State<MapaPage> {
     final instrucao = passo['instruction']?.toString() ?? '';
     final manobra = passo['maneuver']?.toString() ?? '';
     if (instrucao == instrucaoNavegacao &&
-        (distancia - distanciaProximaManobraMetros).abs() < 10)
+        (distancia - distanciaProximaManobraMetros).abs() < 10) {
       return;
+    }
     setState(() {
       instrucaoNavegacao = instrucao;
       manobraNavegacao = manobra;
@@ -674,126 +729,81 @@ class _MapaPageState extends State<MapaPage> {
   }
 
   Future<List<PontoEntrega>> buscarPontosPendentes() async {
-    final entregasProvider = Provider.of<EntregasProvider>(
-      context,
-      listen: false,
-    );
-
-    final entregasAtivas = entregasProvider.entregas
-        .where(entregaAtivaParaRota)
-        .toList();
-
-    final List<PontoEntrega> pontos = [];
-    final Set<String> processados = {};
-
-    for (final entrega in entregasAtivas) {
-      final latLng = await obterCoordenadaEntrega(entrega);
-
-      if (latLng == null) continue;
-
-      final chave =
-          '${latLng.latitude.toStringAsFixed(6)},'
-          '${latLng.longitude.toStringAsFixed(6)}';
-
-      if (!processados.add(chave)) continue;
-
-      pontos.add(
-        PontoEntrega(
-          coordenada: '${latLng.latitude},${latLng.longitude}',
-          latLng: latLng,
-          entrega: entrega,
-        ),
+    final provider = Provider.of<EntregasProvider>(context, listen: false);
+    final pontosPorEndereco = <String, PontoEntrega>{};
+    for (final entrega in provider.entregas.where(entregaAtivaParaRota)) {
+      final chave = _chaveEndereco(entrega);
+      if (chave.isEmpty) continue;
+      final existente = pontosPorEndereco[chave];
+      if (existente != null) {
+        existente.entregas.add(entrega);
+        continue;
+      }
+      final coordenada = await obterCoordenadaEntrega(entrega);
+      if (coordenada == null) continue;
+      pontosPorEndereco[chave] = PontoEntrega(
+        coordenada: '${coordenada.latitude},${coordenada.longitude}',
+        latLng: coordenada,
+        entrega: entrega,
+        entregas: [entrega],
       );
     }
-
-    return pontos;
+    return pontosPorEndereco.values.toList();
   }
 
   Future<void> carregarMarkers() async {
-    final entregasProvider = Provider.of<EntregasProvider>(
-      context,
-
-      listen: false,
-    );
-
-    final entregasAtivas = entregasProvider.entregas
-        .where(entregaAtivaParaRota)
-        .toList();
-
-    final Set<Marker> novosMarkers = {};
-
-    novosMarkers.add(
+    final pontos = await buscarPontosPendentes();
+    final novosMarkers = <Marker>{
       Marker(
         markerId: const MarkerId('entregador'),
-
         position: posicaoAtual,
-
         infoWindow: const InfoWindow(title: 'Você está aqui'),
-
         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
       ),
-    );
-
-    final Set<String> processados = {};
-
-    for (int i = 0; i < entregasAtivas.length; i++) {
-      final entrega = entregasAtivas[i];
-
-      final posicaoEntrega = await obterCoordenadaEntrega(entrega);
-
-      if (posicaoEntrega == null) continue;
-
-      final chave =
-          '${posicaoEntrega.latitude.toStringAsFixed(6)},'
-          '${posicaoEntrega.longitude.toStringAsFixed(6)}';
-
-      if (!processados.add(chave)) continue;
-
-      final status = entrega.status.toString().trim().toUpperCase();
-
-      final complemento = entrega.complemento.toString().trim();
-
+    };
+    for (var i = 0; i < pontos.length; i++) {
+      final ponto = pontos[i];
+      final entregas = ponto.entregas;
+      final emRota = entregas.any(
+        (e) => e.status.toString().trim().toUpperCase() == 'EM_ROTA',
+      );
       novosMarkers.add(
         Marker(
-          markerId: MarkerId('entrega_${entrega.id ?? i}'),
-
-          position: posicaoEntrega,
-
+          markerId: MarkerId('parada_${i}_${ponto.entrega.id ?? i}'),
+          position: ponto.latLng,
           infoWindow: InfoWindow(
-            title: entrega.cliente,
-
-            snippet: complemento.isNotEmpty
-                ? '${entrega.endereco} - $complemento'
-                : entrega.endereco,
+            title: entregas.length == 1
+                ? ponto.entrega.cliente.toString()
+                : '${entregas.length} entregas nesta parada',
+            snippet: ponto.entrega.endereco.toString(),
           ),
-
           icon: BitmapDescriptor.defaultMarkerWithHue(
-            status == 'EM_ROTA'
-                ? BitmapDescriptor.hueOrange
-                : BitmapDescriptor.hueRed,
+            emRota ? BitmapDescriptor.hueOrange : BitmapDescriptor.hueRed,
           ),
         ),
       );
     }
-
     if (!mounted) return;
-
-    setState(() {
-      markers = novosMarkers;
-    });
+    setState(() => markers = novosMarkers);
   }
 
-  Future<void> carregarRota({bool ajustarCamera = true}) async {
+  Future<void> carregarRota({
+    bool ajustarCamera = true,
+    bool compararDestinos = true,
+  }) async {
     if (_calculandoRota) return;
     _calculandoRota = true;
     try {
       final pontos = await buscarPontosPendentes();
+
+      if (!mounted) return;
 
       if (pontos.isEmpty) {
         if (!mounted) return;
 
         setState(() {
           polylines.clear();
+          _progressoMaximoRotaMetros = 0;
           distanciaRotaKm = 0;
           duracaoRotaMinutos = 0;
           proximaEntrega = null;
@@ -808,31 +818,123 @@ class _MapaPageState extends State<MapaPage> {
       }
 
       final origem = '${posicaoAtual.latitude},${posicaoAtual.longitude}';
-      final destino = pontos.last.coordenada;
+      final chavePontos = (pontos.map((p) => p.coordenada).toList()..sort())
+          .join('|');
 
-      final waypoints = pontos.length > 1
-          ? pontos
-                .sublist(0, pontos.length - 1)
-                .map((ponto) => ponto.coordenada)
-                .toList()
-          : <String>[];
+      // O Google otimiza somente as paradas intermediárias; o destino final
+      // permanece fixo. Testamos até três possíveis destinos finais e
+      // selecionamos a rota com menor duração estimada, sem multiplicar
+      // indefinidamente as consultas pagas à API.
+      final candidatos = List<PontoEntrega>.from(pontos)
+        ..sort((a, b) {
+          final distanciaA = Geolocator.distanceBetween(
+            posicaoAtual.latitude,
+            posicaoAtual.longitude,
+            a.latLng.latitude,
+            a.latLng.longitude,
+          );
+          final distanciaB = Geolocator.distanceBetween(
+            posicaoAtual.latitude,
+            posicaoAtual.longitude,
+            b.latLng.latitude,
+            b.latLng.longitude,
+          );
+          return distanciaB.compareTo(distanciaA);
+        });
 
-      final rota = await DirectionsService.buscarRota(
-        origem,
-        destino,
-        waypoints,
+      final reutilizarDestino =
+          !compararDestinos &&
+          _chavePontosOtimizados == chavePontos &&
+          _destinoOtimizado != null &&
+          pontos.any((p) => p.coordenada == _destinoOtimizado);
+
+      final finais = reutilizarDestino
+          ? candidatos.where((p) => p.coordenada == _destinoOtimizado).toList()
+          : candidatos.take(min(3, candidatos.length)).toList();
+
+      Map<String, dynamic>? rota;
+      List<PontoEntrega> pontosOrdenados = [];
+      PontoEntrega? melhorFinal;
+      int? menorDuracao;
+      double? menorDistancia;
+
+      for (final finalCandidato in finais) {
+        final intermediarios = pontos
+            .where((p) => p.coordenada != finalCandidato.coordenada)
+            .toList();
+        final resultado = await DirectionsService.buscarRota(
+          origem,
+          finalCandidato.coordenada,
+          intermediarios.map((p) => p.coordenada).toList(),
+        );
+        if (!mounted) return;
+        if (resultado == null) continue;
+
+        final ordem = resultado['optimizedIntermediateWaypointIndex'];
+        final ordenados = <PontoEntrega>[];
+        if (intermediarios.isNotEmpty) {
+          // Não associar o primeiro trecho à entrega errada se a API
+          // não informar uma permutação completa e válida.
+          if (ordem is! List || ordem.length != intermediarios.length) {
+            debugPrint('Ordem otimizada ausente ou incompleta.');
+            continue;
+          }
+          final indices = <int>{};
+          var valida = true;
+          for (final indice in ordem) {
+            if (indice is! int ||
+                indice < 0 ||
+                indice >= intermediarios.length ||
+                !indices.add(indice)) {
+              valida = false;
+              break;
+            }
+            ordenados.add(intermediarios[indice]);
+          }
+          if (!valida) continue;
+        }
+        ordenados.add(finalCandidato);
+
+        final duracao = converterDuracaoParaSegundos(
+          resultado['duration']?.toString() ?? '',
+        );
+        final distancia = (resultado['distanceMeters'] as num?)?.toDouble();
+        if (duracao <= 0 || distancia == null || distancia < 0) continue;
+        if (menorDuracao == null ||
+            duracao < menorDuracao ||
+            (duracao == menorDuracao &&
+                (menorDistancia == null || distancia < menorDistancia))) {
+          menorDuracao = duracao;
+          menorDistancia = distancia;
+          melhorFinal = finalCandidato;
+          rota = resultado;
+          pontosOrdenados = ordenados;
+        }
+      }
+
+      final rotaConfirmada = rota;
+      if (rotaConfirmada == null || melhorFinal == null) {
+        debugPrint('Nenhuma sequência otimizada válida foi retornada.');
+        return;
+      }
+      _destinoOtimizado = melhorFinal.coordenada;
+      _chavePontosOtimizados = chavePontos;
+      debugPrint(
+        'Rota otimizada: ${pontosOrdenados.map((p) => p.entrega.id).join(' -> ')}',
       );
 
-      if (rota == null) {
-        debugPrint('API de rotas não retornou uma rota.');
+      final polyline = rotaConfirmada['overview_polyline']?['points'];
+
+      if (polyline == null || polyline.toString().isEmpty) {
+        debugPrint('Rota retornada sem polyline.');
         return;
       }
 
-      final polyline = rota['overview_polyline']?['points'];
-
       final encoded = polyline.toString();
 
-      debugPrint('Primeiros caracteres: ${encoded.substring(0, 15)}');
+      debugPrint(
+        'Primeiros caracteres: ${encoded.substring(0, min(15, encoded.length))}',
+      );
 
       debugPrint(
         'Códigos dos caracteres: ${encoded.codeUnits.take(15).toList()}',
@@ -842,11 +944,7 @@ class _MapaPageState extends State<MapaPage> {
         'Início da polyline: ${polyline.toString().substring(0, polyline.toString().length > 50 ? 50 : polyline.toString().length)}',
       );
 
-      if (polyline == null || polyline.toString().isEmpty) {
-        debugPrint('Rota retornada sem polyline.');
-        return;
-      }
-      final coordenadasRota = decodificarPolyline(polyline.toString());
+      final coordenadasRota = decodificarPolyline(encoded);
 
       debugPrint('Quantidade de pontos da rota: ${coordenadasRota.length}');
 
@@ -857,43 +955,16 @@ class _MapaPageState extends State<MapaPage> {
 
       debugPrint('Posição atual: $posicaoAtual');
 
-      final ordemOtimizada = rota['optimizedIntermediateWaypointIndex'];
-      final List<PontoEntrega> pontosOrdenados = [];
-
-      if (pontos.length == 1) {
-        pontosOrdenados.add(pontos.first);
-      } else {
-        if (ordemOtimizada is List) {
-          for (final indice in ordemOtimizada) {
-            if (indice is int && indice >= 0 && indice < pontos.length - 1) {
-              pontosOrdenados.add(pontos[indice]);
-            }
-          }
-        }
-
-        final intermediariosAdicionados = pontosOrdenados
-            .map((e) => e.coordenada)
-            .toSet();
-
-        for (int i = 0; i < pontos.length - 1; i++) {
-          if (!intermediariosAdicionados.contains(pontos[i].coordenada)) {
-            pontosOrdenados.add(pontos[i]);
-          }
-        }
-
-        pontosOrdenados.add(pontos.last);
-      }
-
       double distanceMeters = 0;
       int segundos = 0;
 
-      if (rota['distanceMeters'] != null) {
-        distanceMeters = (rota['distanceMeters'] as num).toDouble();
+      if (rotaConfirmada['distanceMeters'] != null) {
+        distanceMeters = (rotaConfirmada['distanceMeters'] as num).toDouble();
 
-        final duration = rota['duration']?.toString() ?? '0s';
+        final duration = rotaConfirmada['duration']?.toString() ?? '0s';
         segundos = converterDuracaoParaSegundos(duration);
-      } else if (rota['legs'] is List) {
-        final legs = rota['legs'] as List;
+      } else if (rotaConfirmada['legs'] is List) {
+        final legs = rotaConfirmada['legs'] as List;
 
         for (final leg in legs) {
           final distancia = leg['distance']?['value'];
@@ -909,7 +980,7 @@ class _MapaPageState extends State<MapaPage> {
         }
       }
 
-      final legs = rota['legs'];
+      final legs = rotaConfirmada['legs'];
       final primeiraLeg = legs is List && legs.isNotEmpty && legs.first is Map
           ? Map<String, dynamic>.from(legs.first as Map)
           : <String, dynamic>{};
@@ -933,7 +1004,7 @@ class _MapaPageState extends State<MapaPage> {
             (converterDuracaoParaSegundos(
                       primeiraLeg.isNotEmpty
                           ? duracaoPrimeiraLeg
-                          : rota['duration']?.toString() ?? '0s',
+                          : rotaConfirmada['duration']?.toString() ?? '0s',
                     ) /
                     60)
                 .ceil();
@@ -941,6 +1012,17 @@ class _MapaPageState extends State<MapaPage> {
         if (novosPassos.isEmpty) {
           instrucaoNavegacao = '';
         }
+        _distanciaInicialRotaMetros = distanceMeters;
+        _duracaoInicialRotaSegundos = segundos;
+        _distanciaInicialPrimeiraEntregaMetros = distanciaPrimeiraLeg is num
+            ? distanciaPrimeiraLeg.toDouble()
+            : distanceMeters;
+        _duracaoInicialPrimeiraEntregaSegundos = converterDuracaoParaSegundos(
+          primeiraLeg.isNotEmpty
+              ? duracaoPrimeiraLeg
+              : rotaConfirmada['duration']?.toString() ?? '0s',
+        );
+        _progressoMaximoRotaMetros = 0;
         distanciaRotaKm = distanceMeters / 1000;
         duracaoRotaMinutos = (segundos / 60).ceil();
 
@@ -952,6 +1034,7 @@ class _MapaPageState extends State<MapaPage> {
           coordenadaProximaEntrega = null;
         }
 
+        _leiturasForaDaRota = 0;
         polylines = {
           Polyline(
             polylineId: const PolylineId('rota_completa'),
@@ -971,6 +1054,221 @@ class _MapaPageState extends State<MapaPage> {
     } finally {
       _calculandoRota = false;
     }
+  }
+
+  // O aviso nao conclui a entrega: apenas informa a proximidade.
+  void verificarChegadaAoDestino(Position gps, LatLng posicao) {
+    if (!mounted ||
+        !rotaIniciada ||
+        coordenadaProximaEntrega == null ||
+        proximaEntrega == null) {
+      _leiturasPertoDestino = 0;
+      _destinoMonitorado = null;
+      return;
+    }
+
+    final destino = coordenadaProximaEntrega!;
+    final chaveDestino =
+        '${proximaEntrega.id}:${destino.latitude},${destino.longitude}';
+    if (_destinoMonitorado != chaveDestino) {
+      _destinoMonitorado = chaveDestino;
+      _leiturasPertoDestino = 0;
+    }
+    if (_destinoAvisado == chaveDestino) return;
+
+    // Precisao ruim nao confirma chegada nem acumula leituras.
+    if (!gps.accuracy.isFinite || gps.accuracy > 35) {
+      _leiturasPertoDestino = 0;
+      return;
+    }
+
+    final distancia = Geolocator.distanceBetween(
+      posicao.latitude,
+      posicao.longitude,
+      destino.latitude,
+      destino.longitude,
+    );
+    if (distancia > _raioChegadaMetros) {
+      _leiturasPertoDestino = 0;
+      return;
+    }
+
+    _leiturasPertoDestino++;
+    if (_leiturasPertoDestino < _leiturasParaConfirmarChegada) return;
+
+    _destinoAvisado = chaveDestino;
+    _leiturasPertoDestino = 0;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Voce chegou perto da proxima entrega! Confira o endereco antes de finalizar.',
+        ),
+        duration: Duration(seconds: 6),
+        backgroundColor: AppColors.success,
+      ),
+    );
+  }
+
+  // Projeta o GPS sobre a linha da rota e mede o progresso em metros.
+  // A distância total e a duração vêm da API; o GPS apenas reduz os valores.
+  void atualizarDistanciasRestantes(LatLng posicao) {
+    if (!mounted || !rotaIniciada || polylines.isEmpty) return;
+    final pontos = polylines.first.points;
+    if (pontos.length < 2 || _distanciaInicialRotaMetros <= 0) return;
+
+    final progresso = _progressoNaPolyline(posicao, pontos);
+    if (progresso == null || progresso.distanciaAteLinha > 50) return;
+
+    // Evita que pequenas oscilações do GPS façam a distância aumentar.
+    _progressoMaximoRotaMetros = max(
+      _progressoMaximoRotaMetros,
+      progresso.percorrido,
+    );
+    final proporcaoRestante = (1 - _progressoMaximoRotaMetros / progresso.total)
+        .clamp(0.0, 1.0);
+
+    double proporcaoPrimeiraEntrega = proporcaoRestante;
+    if (coordenadaProximaEntrega != null) {
+      final pontoEntrega = _progressoNaPolyline(
+        coordenadaProximaEntrega!,
+        pontos,
+      );
+      if (pontoEntrega != null && pontoEntrega.percorrido > 1) {
+        proporcaoPrimeiraEntrega =
+            (1 - _progressoMaximoRotaMetros / pontoEntrega.percorrido).clamp(
+              0.0,
+              1.0,
+            );
+      }
+    }
+
+    setState(() {
+      distanciaRotaKm = _distanciaInicialRotaMetros * proporcaoRestante / 1000;
+      duracaoRotaMinutos =
+          (_duracaoInicialRotaSegundos * proporcaoRestante / 60).ceil();
+      distanciaProximaEntregaKm =
+          _distanciaInicialPrimeiraEntregaMetros *
+          proporcaoPrimeiraEntrega /
+          1000;
+      duracaoProximaEntregaMinutos =
+          (_duracaoInicialPrimeiraEntregaSegundos *
+                  proporcaoPrimeiraEntrega /
+                  60)
+              .ceil();
+    });
+  }
+
+  _ProgressoPolyline? _progressoNaPolyline(
+    LatLng posicao,
+    List<LatLng> pontos,
+  ) {
+    if (pontos.length < 2) return null;
+    const raioTerra = 6371000.0;
+    const rad = pi / 180;
+    final fatorX = cos(posicao.latitude * rad) * raioTerra * rad;
+    const fatorY = raioTerra * rad;
+    final px = posicao.longitude * fatorX;
+    final py = posicao.latitude * fatorY;
+    var acumulado = 0.0;
+    var menorDistancia = double.infinity;
+    var melhorProgresso = 0.0;
+
+    for (var i = 0; i < pontos.length - 1; i++) {
+      final ax = pontos[i].longitude * fatorX;
+      final ay = pontos[i].latitude * fatorY;
+      final bx = pontos[i + 1].longitude * fatorX;
+      final by = pontos[i + 1].latitude * fatorY;
+      final dx = bx - ax;
+      final dy = by - ay;
+      final comprimentoQuadrado = dx * dx + dy * dy;
+      final comprimento = sqrt(comprimentoQuadrado);
+      if (comprimento == 0) continue;
+      final t = (((px - ax) * dx + (py - ay) * dy) / comprimentoQuadrado).clamp(
+        0.0,
+        1.0,
+      );
+      final distancia = sqrt(
+        pow(px - (ax + t * dx), 2) + pow(py - (ay + t * dy), 2),
+      );
+      if (distancia < menorDistancia) {
+        menorDistancia = distancia;
+        melhorProgresso = acumulado + t * comprimento;
+      }
+      acumulado += comprimento;
+    }
+    if (acumulado <= 0) return null;
+    return _ProgressoPolyline(
+      percorrido: melhorProgresso,
+      total: acumulado,
+      distanciaAteLinha: menorDistancia,
+    );
+  }
+
+  double distanciaDaRotaEmMetros(LatLng posicao) {
+    if (polylines.isEmpty) return double.infinity;
+
+    final pontos = polylines.first.points;
+    if (pontos.isEmpty) return double.infinity;
+
+    if (pontos.length == 1) {
+      return Geolocator.distanceBetween(
+        posicao.latitude,
+        posicao.longitude,
+        pontos.first.latitude,
+        pontos.first.longitude,
+      );
+    }
+
+    double menorDistancia = double.infinity;
+
+    for (int i = 0; i < pontos.length - 1; i++) {
+      final distancia = distanciaPontoSegmento(
+        posicao,
+        pontos[i],
+        pontos[i + 1],
+      );
+
+      if (distancia < menorDistancia) {
+        menorDistancia = distancia;
+      }
+    }
+
+    return menorDistancia;
+  }
+
+  double distanciaPontoSegmento(LatLng ponto, LatLng inicio, LatLng fim) {
+    const raioTerra = 6371000.0;
+    const grausParaRadianos = pi / 180;
+    final fatorLongitude = cos(ponto.latitude * grausParaRadianos);
+
+    double converterX(double longitude) =>
+        longitude * grausParaRadianos * raioTerra * fatorLongitude;
+
+    double converterY(double latitude) =>
+        latitude * grausParaRadianos * raioTerra;
+
+    final px = converterX(ponto.longitude);
+    final py = converterY(ponto.latitude);
+    final ax = converterX(inicio.longitude);
+    final ay = converterY(inicio.latitude);
+    final bx = converterX(fim.longitude);
+    final by = converterY(fim.latitude);
+
+    final dx = bx - ax;
+    final dy = by - ay;
+    final comprimentoQuadrado = dx * dx + dy * dy;
+
+    if (comprimentoQuadrado == 0) {
+      return sqrt(pow(px - ax, 2) + pow(py - ay, 2));
+    }
+
+    final proporcao = (((px - ax) * dx + (py - ay) * dy) / comprimentoQuadrado)
+        .clamp(0.0, 1.0);
+
+    final cx = ax + proporcao * dx;
+    final cy = ay + proporcao * dy;
+
+    return sqrt(pow(px - cx, 2) + pow(py - cy, 2));
   }
 
   int converterDuracaoParaSegundos(String duration) {
@@ -1067,6 +1365,8 @@ class _MapaPageState extends State<MapaPage> {
 
       final pontos = await buscarPontosPendentes();
 
+      if (!mounted) return;
+
       if (pontos.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -1081,6 +1381,7 @@ class _MapaPageState extends State<MapaPage> {
 
       if (!mounted) return;
 
+      _registrarEntregasDaRota(entregasProvider);
       setState(() {
         rotaIniciada = true;
       });
@@ -1103,6 +1404,8 @@ class _MapaPageState extends State<MapaPage> {
           CameraPosition(target: posicaoAtual, zoom: 17, tilt: 45),
         ),
       );
+
+      if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1189,6 +1492,21 @@ class _MapaPageState extends State<MapaPage> {
         .where((e) => e.status.toString().trim().toUpperCase() == 'EM_ROTA')
         .length;
 
+    // Conta somente as entregas que pertencem à sessão de rota.
+    final entregasDaSessao = entregasProvider.entregas
+        .where(
+          (e) => e.id != null && _idsEntregasDaRota.contains(e.id.toString()),
+        )
+        .toList();
+    final totalDaSessao = _idsEntregasDaRota.length;
+    final concluidas = entregasDaSessao
+        .where((e) => e.status.toString().trim().toUpperCase() == 'ENTREGUE')
+        .length;
+    final restantes = entregasDaSessao.where(entregaAtivaParaRota).length;
+    final progresso = totalDaSessao == 0
+        ? 0.0
+        : (concluidas / totalDaSessao).clamp(0.0, 1.0);
+
     if (rotaIniciada) {
       return Positioned(
         top: alturaBarraStatus + 12,
@@ -1197,11 +1515,11 @@ class _MapaPageState extends State<MapaPage> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
-            color: theme.cardColor.withOpacity(0.95),
+            color: theme.cardColor.withValues(alpha: 0.95),
             borderRadius: BorderRadius.circular(18),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.16),
+                color: Colors.black.withValues(alpha: 0.16),
                 blurRadius: 12,
                 offset: const Offset(0, 4),
               ),
@@ -1255,7 +1573,7 @@ class _MapaPageState extends State<MapaPage> {
                     width: 44,
                     height: 44,
                     decoration: BoxDecoration(
-                      color: AppColors.success.withOpacity(0.14),
+                      color: AppColors.success.withValues(alpha: 0.14),
                       shape: BoxShape.circle,
                     ),
                     child: const Icon(
@@ -1316,6 +1634,42 @@ class _MapaPageState extends State<MapaPage> {
                   ),
                 ],
               ),
+              if (totalDaSessao > 0) ...[
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '$concluidas concluída(s) • $restantes restante(s)',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '${(progresso * 100).round()}%',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.success,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 5),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: progresso,
+                    minHeight: 6,
+                    backgroundColor: theme.colorScheme.outlineVariant,
+                    valueColor: const AlwaysStoppedAnimation<Color>(
+                      AppColors.success,
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -1332,12 +1686,12 @@ class _MapaPageState extends State<MapaPage> {
           color: theme.cardColor,
           borderRadius: BorderRadius.circular(22),
           border: Border.all(
-            color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+            color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(
-                theme.brightness == Brightness.dark ? 0.30 : 0.12,
+              color: Colors.black.withValues(
+                alpha: theme.brightness == Brightness.dark ? 0.30 : 0.12,
               ),
               blurRadius: 18,
               offset: const Offset(0, 6),
@@ -1349,7 +1703,7 @@ class _MapaPageState extends State<MapaPage> {
             Row(
               children: [
                 CircleAvatar(
-                  backgroundColor: AppColors.primary.withOpacity(0.14),
+                  backgroundColor: AppColors.primary.withValues(alpha: 0.14),
                   child: const Icon(Icons.map, color: AppColors.primary),
                 ),
                 const SizedBox(width: 12),
@@ -1444,13 +1798,13 @@ class _MapaPageState extends State<MapaPage> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
 
           decoration: BoxDecoration(
-            color: theme.cardColor.withOpacity(0.95),
+            color: theme.cardColor.withValues(alpha: 0.95),
 
             borderRadius: BorderRadius.circular(20),
 
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.16),
+                color: Colors.black.withValues(alpha: 0.16),
 
                 blurRadius: 14,
 
@@ -1474,6 +1828,18 @@ class _MapaPageState extends State<MapaPage> {
 
                     color: theme.colorScheme.onSurface,
                   ),
+                ),
+              ),
+
+              TextButton.icon(
+                onPressed: proximaEntrega == null || _abrindoFinalizacao
+                    ? null
+                    : finalizarProximaEntregaPeloMapa,
+                icon: const Icon(Icons.check_circle_outline, size: 18),
+                label: const Text('Finalizar'),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.success,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
                 ),
               ),
 
@@ -1512,13 +1878,13 @@ class _MapaPageState extends State<MapaPage> {
           borderRadius: BorderRadius.circular(24),
 
           border: Border.all(
-            color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+            color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
           ),
 
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(
-                theme.brightness == Brightness.dark ? 0.32 : 0.14,
+              color: Colors.black.withValues(
+                alpha: theme.brightness == Brightness.dark ? 0.32 : 0.14,
               ),
 
               blurRadius: 22,
@@ -1533,7 +1899,7 @@ class _MapaPageState extends State<MapaPage> {
             CircleAvatar(
               radius: 24,
 
-              backgroundColor: AppColors.success.withOpacity(0.14),
+              backgroundColor: AppColors.success.withValues(alpha: 0.14),
 
               child: const Icon(Icons.navigation, color: AppColors.success),
             ),
@@ -1680,8 +2046,6 @@ class _MapaPageState extends State<MapaPage> {
             onMapCreated: (controller) async {
               mapController = controller;
 
-              await aplicarEstiloMapa();
-
               if (!mounted) return;
 
               await controller.animateCamera(
@@ -1720,10 +2084,24 @@ class PontoEntrega {
   final String coordenada;
   final LatLng latLng;
   final dynamic entrega;
+  final List<dynamic> entregas;
 
   PontoEntrega({
     required this.coordenada,
     required this.latLng,
     required this.entrega,
+    required this.entregas,
+  });
+}
+
+class _ProgressoPolyline {
+  final double percorrido;
+  final double total;
+  final double distanciaAteLinha;
+
+  const _ProgressoPolyline({
+    required this.percorrido,
+    required this.total,
+    required this.distanciaAteLinha,
   });
 }

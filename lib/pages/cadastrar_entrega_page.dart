@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../services/cep_service.dart';
 import '../services/empresa_entrega_service.dart';
+import '../services/empresa_lista_entregas_service.dart';
 import '../services/empresa_service.dart';
 import '../services/geocoding_service.dart';
 import '../theme/app_colors.dart';
@@ -149,16 +150,102 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
   }
 
   String montarEnderecoParaMapa() {
+    final cep = cepController.text.replaceAll(RegExp(r'[^0-9]'), '');
     final rua = ruaController.text.trim();
     final numero = numeroController.text.trim();
+    final bairro = bairroController.text.trim();
     final cidade = cidadeController.text.trim();
-    final uf = ufController.text.trim();
+    final uf = ufController.text.trim().toUpperCase();
 
-    return '$rua, $numero, $cidade - $uf';
+    final partes = <String>['$rua, $numero', bairro, cidade, uf];
+
+    if (cep.length == 8) {
+      partes.add(cep);
+    }
+
+    partes.add('Brasil');
+
+    return partes.join(', ');
   }
 
   double? converterValor(String texto) {
     return double.tryParse(texto.trim().replaceAll(',', '.'));
+  }
+
+  // O complemento não integra o endereço salvo; apartamentos diferentes
+  // compartilham o mesmo ponto no mapa, mas continuam entregas independentes.
+  String normalizarEndereco(String texto) {
+    const origem = 'áàâãäéèêëíìîïóòôõöúùûüçñ';
+    const destino = 'aaaaaeeeeiiiiooooouuuucn';
+    var resultado = texto.toLowerCase().trim();
+    for (var i = 0; i < origem.length; i++) {
+      resultado = resultado.replaceAll(origem[i], destino[i]);
+    }
+    return resultado.replaceAll(RegExp(r'[^a-z0-9]'), '');
+  }
+
+  bool entregaAtiva(Map<String, dynamic> entrega) {
+    final status = (entrega['status'] ?? '').toString().trim().toUpperCase();
+    final entregue =
+        entrega['entregue'] == true ||
+        entrega['entregue']?.toString().toLowerCase() == 'true';
+    return !entregue &&
+        (status == 'PENDENTE' ||
+            status == 'EM_ROTA' ||
+            (status.isEmpty && !entregue));
+  }
+
+  double? numeroCoordenada(dynamic valor) {
+    if (valor is num) return valor.toDouble();
+    return double.tryParse(valor?.toString() ?? '');
+  }
+
+  Map<String, double>? coordenadasExistentes(Map<String, dynamic> entrega) {
+    final latitude = numeroCoordenada(entrega['latitude']);
+    final longitude = numeroCoordenada(entrega['longitude']);
+    if (latitude == null ||
+        longitude == null ||
+        !latitude.isFinite ||
+        !longitude.isFinite ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180 ||
+        (latitude == 0 && longitude == 0)) {
+      return null;
+    }
+    return {'lat': latitude, 'lng': longitude};
+  }
+
+  Future<bool> confirmarEnderecoDuplicado(
+    int quantidade,
+    String endereco,
+  ) async {
+    final resposta = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Endereço com entregas ativas'),
+        content: Text(
+          'Já ${quantidade == 1 ? 'existe 1 entrega ativa' : 'existem $quantidade entregas ativas'} '
+          'neste endereço:\n\n$endereco\n\n'
+          'A contagem considera todas as entregas da empresa, inclusive '
+          'as atribuídas a outros entregadores. '
+          'Deseja cadastrar outra entrega neste local?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Continuar cadastro'),
+          ),
+        ],
+      ),
+    );
+    return resposta == true;
   }
 
   Future<void> cadastrarEntrega() async {
@@ -228,81 +315,112 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
       carregando = true;
     });
 
-    final endereco = montarEnderecoCompleto();
-    final enderecoParaMapa = montarEnderecoParaMapa();
+    try {
+      final endereco = montarEnderecoCompleto();
+      final enderecoNormalizado = normalizarEndereco(endereco);
+      final enderecoParaMapa = montarEnderecoParaMapa();
+      final entregadorEmail = entregadorSelecionado!;
 
-    Map<String, double>? coordenadas;
+      // A consulta é obrigatória: em caso de falha, não cadastrar às cegas.
+      final lista = await EmpresaListaEntregasService.buscarEntregas();
+      if (!mounted) return;
 
-    coordenadas = await GeocodingService.buscarCoordenadas(enderecoParaMapa);
+      final mesmoEndereco = <Map<String, dynamic>>[];
+      for (final item in lista) {
+        if (item is! Map) continue;
+        final entrega = Map<String, dynamic>.from(item);
+        if (normalizarEndereco((entrega['endereco'] ?? '').toString()) ==
+            enderecoNormalizado) {
+          mesmoEndereco.add(entrega);
+        }
+      }
 
-    if (coordenadas == null) {
-      final cep = cepController.text.replaceAll(RegExp(r'[^0-9]'), '').trim();
+      final quantidadeAtivas = mesmoEndereco.where(entregaAtiva).length;
+      if (quantidadeAtivas > 0) {
+        final confirmado = await confirmarEnderecoDuplicado(
+          quantidadeAtivas,
+          endereco,
+        );
+        if (!mounted || !confirmado) return;
+      }
 
-      final enderecoAlternativo = '$cep, $numero, $cidade - $uf';
+      // Reutiliza coordenadas mesmo de entregas finalizadas.
+      Map<String, double>? coordenadas;
+      for (final entrega in mesmoEndereco) {
+        coordenadas = coordenadasExistentes(entrega);
+        if (coordenadas != null) break;
+      }
 
-      coordenadas = await GeocodingService.buscarCoordenadas(
-        enderecoAlternativo,
+      coordenadas ??= await GeocodingService.buscarCoordenadas(
+        enderecoParaMapa,
       );
-    }
+      if (coordenadas == null) {
+        final cep = cepController.text.replaceAll(RegExp(r'[^0-9]'), '').trim();
+        final enderecoAlternativo = '$cep, $numero, $cidade - $uf';
+        coordenadas = await GeocodingService.buscarCoordenadas(
+          enderecoAlternativo,
+        );
+      }
+      if (!mounted) return;
 
-    if (!mounted) return;
+      final empresaEmail = await EmpresaService.empresaLogada();
+      if (!mounted) return;
+      if (empresaEmail == null || empresaEmail.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Não foi possível identificar a empresa logada'),
+          ),
+        );
+        return;
+      }
 
-    final double? latitude = coordenadas?['lat'];
-    final double? longitude = coordenadas?['lng'];
-
-    final empresaEmail = await EmpresaService.empresaLogada();
-
-    if (!mounted) return;
-
-    if (empresaEmail == null || empresaEmail.isEmpty) {
-      setState(() {
-        carregando = false;
-      });
+      final resultado = await EmpresaEntregaService.cadastrarEntrega(
+        empresaEmail: empresaEmail,
+        entregadorEmail: entregadorEmail,
+        cliente: cliente,
+        endereco: endereco,
+        complemento: complemento,
+        valor: valor,
+        observacao: observacao,
+        latitude: coordenadas?['lat'],
+        longitude: coordenadas?['lng'],
+      );
+      if (!mounted) return;
+      if (resultado == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Não foi possível cadastrar a entrega'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+        return;
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Não foi possível identificar a empresa logada'),
+          content: Text('Entrega cadastrada com sucesso'),
+          backgroundColor: AppColors.success,
         ),
       );
-      return;
-    }
-
-    final resultado = await EmpresaEntregaService.cadastrarEntrega(
-      empresaEmail: empresaEmail,
-      entregadorEmail: entregadorSelecionado!,
-      cliente: cliente,
-      endereco: endereco,
-      complemento: complemento,
-      valor: valor,
-      observacao: observacao,
-      latitude: latitude,
-      longitude: longitude,
-    );
-
-    if (!mounted) return;
-
-    setState(() {
-      carregando = false;
-    });
-
-    if (resultado == null) {
+      Navigator.pop(context, true);
+    } catch (e) {
+      debugPrint('Erro ao verificar duplicidade/cadastrar entrega: $e');
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Não foi possível cadastrar a entrega'),
+          content: Text(
+            'Não foi possível verificar as entregas ou concluir o cadastro. Tente novamente.',
+          ),
           backgroundColor: AppColors.error,
         ),
       );
-      return;
+    } finally {
+      if (mounted) {
+        setState(() {
+          carregando = false;
+        });
+      }
     }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Entrega cadastrada com sucesso'),
-        backgroundColor: AppColors.success,
-      ),
-    );
-
-    Navigator.pop(context, true);
   }
 
   Widget campo({
@@ -367,9 +485,9 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
         width: double.infinity,
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: AppColors.warning.withOpacity(0.10),
+          color: AppColors.warning.withValues(alpha: 0.10),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.warning.withOpacity(0.25)),
+          border: Border.all(color: AppColors.warning.withValues(alpha: 0.25)),
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -481,12 +599,12 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
               color: theme.cardColor,
               borderRadius: BorderRadius.circular(22),
               border: Border.all(
-                color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
               ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(
-                    theme.brightness == Brightness.dark ? 0.18 : 0.05,
+                  color: Colors.black.withValues(
+                    alpha: theme.brightness == Brightness.dark ? 0.18 : 0.05,
                   ),
                   blurRadius: 12,
                   offset: const Offset(0, 5),
@@ -499,7 +617,9 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
                 Row(
                   children: [
                     CircleAvatar(
-                      backgroundColor: AppColors.primary.withOpacity(0.14),
+                      backgroundColor: AppColors.primary.withValues(
+                        alpha: 0.14,
+                      ),
                       child: const Icon(
                         Icons.add_box,
                         color: AppColors.primary,
