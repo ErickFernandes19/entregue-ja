@@ -417,9 +417,15 @@ class _MapaPageState extends State<MapaPage> {
 
       if (!mounted) return;
 
+      final novaPosicao = LatLng(position.latitude, position.longitude);
+
       setState(() {
-        posicaoAtual = LatLng(position.latitude, position.longitude);
+        posicaoAtual = novaPosicao;
       });
+
+      await mapController?.animateCamera(
+        CameraUpdate.newLatLngZoom(novaPosicao, 15),
+      );
     } catch (e) {
       debugPrint('Erro ao buscar localização: $e');
     }
@@ -824,12 +830,32 @@ class _MapaPageState extends State<MapaPage> {
 
       final polyline = rota['overview_polyline']?['points'];
 
+      final encoded = polyline.toString();
+
+      debugPrint('Primeiros caracteres: ${encoded.substring(0, 15)}');
+
+      debugPrint(
+        'Códigos dos caracteres: ${encoded.codeUnits.take(15).toList()}',
+      );
+
+      debugPrint(
+        'Início da polyline: ${polyline.toString().substring(0, polyline.toString().length > 50 ? 50 : polyline.toString().length)}',
+      );
+
       if (polyline == null || polyline.toString().isEmpty) {
         debugPrint('Rota retornada sem polyline.');
         return;
       }
-
       final coordenadasRota = decodificarPolyline(polyline.toString());
+
+      debugPrint('Quantidade de pontos da rota: ${coordenadasRota.length}');
+
+      if (coordenadasRota.isNotEmpty) {
+        debugPrint('Primeiro ponto da rota: ${coordenadasRota.first}');
+        debugPrint('Último ponto da rota: ${coordenadasRota.last}');
+      }
+
+      debugPrint('Posição atual: $posicaoAtual');
 
       final ordemOtimizada = rota['optimizedIntermediateWaypointIndex'];
       final List<PontoEntrega> pontosOrdenados = [];
@@ -1110,45 +1136,35 @@ class _MapaPageState extends State<MapaPage> {
     final List<LatLng> pontos = [];
 
     int index = 0;
-
     int lat = 0;
-
     int lng = 0;
 
+    int lerValor() {
+      int resultado = 0;
+      int multiplicador = 1;
+      int valor;
+
+      do {
+        if (index >= encoded.length) {
+          throw const FormatException('Polyline incompleta');
+        }
+
+        valor = encoded.codeUnitAt(index++) - 63;
+
+        resultado += (valor % 32) * multiplicador;
+        multiplicador *= 32;
+      } while (valor >= 32);
+
+      if (resultado.isOdd) {
+        return -((resultado + 1) ~/ 2);
+      }
+
+      return resultado ~/ 2;
+    }
+
     while (index < encoded.length) {
-      int b;
-
-      int shift = 0;
-
-      int result = 0;
-
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-
-        result |= (b & 0x1f) << shift;
-
-        shift += 5;
-      } while (b >= 0x20);
-
-      final dlat = ((result & 1) != 0) ? ~(result >> 1) : (result >> 1);
-
-      lat += dlat;
-
-      shift = 0;
-
-      result = 0;
-
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-
-        result |= (b & 0x1f) << shift;
-
-        shift += 5;
-      } while (b >= 0x20);
-
-      final dlng = ((result & 1) != 0) ? ~(result >> 1) : (result >> 1);
-
-      lng += dlng;
+      lat += lerValor();
+      lng += lerValor();
 
       pontos.add(LatLng(lat / 100000, lng / 100000));
     }
@@ -1666,12 +1682,23 @@ class _MapaPageState extends State<MapaPage> {
 
               await aplicarEstiloMapa();
 
-              if (rotaIniciada) {
-                await controller.animateCamera(
-                  CameraUpdate.newCameraPosition(
-                    CameraPosition(target: posicaoAtual, zoom: 17, tilt: 45),
+              if (!mounted) return;
+
+              await controller.animateCamera(
+                CameraUpdate.newCameraPosition(
+                  CameraPosition(
+                    target: posicaoAtual,
+                    zoom: rotaIniciada ? 17 : 15,
+                    tilt: rotaIniciada ? 45 : 0,
                   ),
-                );
+                ),
+              );
+              if (polylines.isNotEmpty && !rotaIniciada) {
+                final pontosRota = polylines.first.points;
+
+                if (pontosRota.isNotEmpty) {
+                  await ajustarCameraNaRota(pontosRota);
+                }
               }
             },
           ),
