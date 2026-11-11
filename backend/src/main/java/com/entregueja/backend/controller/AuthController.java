@@ -1,10 +1,11 @@
-
 package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.Usuario;
 import com.entregueja.backend.repository.UsuarioRepository;
 import com.entregueja.backend.service.EmailService;
 import com.entregueja.backend.service.JwtService;
+import com.entregueja.backend.service.NotificacaoService;
+import com.entregueja.backend.service.FirebasePushService;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -29,17 +30,23 @@ public class AuthController {
     private final PasswordEncoder passwordEncoder;
     private final EmailService emailService;
     private final JwtService jwtService;
+    private final NotificacaoService notificacaoService;
+    private final FirebasePushService firebasePushService;
 
     public AuthController(
             UsuarioRepository usuarioRepository,
             PasswordEncoder passwordEncoder,
             EmailService emailService,
-            JwtService jwtService
+            JwtService jwtService,
+            NotificacaoService notificacaoService,
+            FirebasePushService firebasePushService
     ) {
         this.usuarioRepository = usuarioRepository;
         this.passwordEncoder = passwordEncoder;
         this.emailService = emailService;
         this.jwtService = jwtService;
+        this.notificacaoService = notificacaoService;
+        this.firebasePushService = firebasePushService;
     }
 
     private Long obterIdAutenticado() {
@@ -595,6 +602,33 @@ public class AuthController {
         );
     }
 
+    private void notificarEmpresaVinculo(
+            Long empresaId,
+            String tipo,
+            String titulo,
+            String mensagem
+    ) {
+        if (empresaId == null) {
+            return;
+        }
+
+        try {
+            notificacaoService.criarNotificacao(
+                    "EMPRESA", empresaId, tipo, titulo, mensagem, null
+            );
+        } catch (Exception e) {
+            System.err.println("Falha ao registrar notificação de vínculo: " + e.getMessage());
+        }
+
+        try {
+            firebasePushService.enviarParaConta(
+                    "EMPRESA", empresaId, tipo, titulo, mensagem, null
+            );
+        } catch (Exception e) {
+            System.err.println("Falha ao enviar push de vínculo: " + e.getMessage());
+        }
+    }
+
     @PutMapping("/{email}/aceitar-vinculo")
     public ResponseEntity<?> aceitarVinculo(
             @PathVariable String email
@@ -623,11 +657,20 @@ public class AuthController {
             );
         }
 
+        Long empresaId = usuario.getEmpresaPendente().getId();
+        String nomeEntregador = usuario.getNome();
+
         usuario.setEmpresa(usuario.getEmpresaPendente());
         usuario.setEmpresaPendente(null);
         usuario.setDataVinculo(LocalDateTime.now());
 
         usuarioRepository.save(usuario);
+        notificarEmpresaVinculo(
+                empresaId,
+                "VINCULO_ACEITO",
+                "Vínculo aceito",
+                "O entregador " + nomeEntregador + " aceitou a solicitação de vínculo."
+        );
 
         return ResponseEntity.ok(
                 Map.of("mensagem", "Vínculo aceito")
@@ -650,8 +693,22 @@ public class AuthController {
             return ResponseEntity.status(403).build();
         }
 
+        Long empresaId = usuario.getEmpresaPendente() == null
+                ? null
+                : usuario.getEmpresaPendente().getId();
+        String nomeEntregador = usuario.getNome();
+
         usuario.setEmpresaPendente(null);
         usuarioRepository.save(usuario);
+
+        if (empresaId != null) {
+            notificarEmpresaVinculo(
+                    empresaId,
+                    "VINCULO_RECUSADO",
+                    "Vínculo recusado",
+                    "O entregador " + nomeEntregador + " recusou a solicitação de vínculo."
+            );
+        }
 
         return ResponseEntity.ok(
                 Map.of("mensagem", "Vínculo recusado")

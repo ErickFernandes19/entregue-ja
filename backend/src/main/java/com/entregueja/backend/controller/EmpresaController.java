@@ -1,4 +1,3 @@
-
 package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.Empresa;
@@ -7,6 +6,8 @@ import com.entregueja.backend.repository.EmpresaRepository;
 import com.entregueja.backend.repository.UsuarioRepository;
 import com.entregueja.backend.service.JwtService;
 import com.entregueja.backend.service.R2StorageService;
+import com.entregueja.backend.service.NotificacaoService;
+import com.entregueja.backend.service.FirebasePushService;
 
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -31,19 +32,25 @@ public class EmpresaController {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final R2StorageService r2StorageService;
+    private final NotificacaoService notificacaoService;
+    private final FirebasePushService firebasePushService;
 
     public EmpresaController(
             EmpresaRepository empresaRepository,
             UsuarioRepository usuarioRepository,
             PasswordEncoder passwordEncoder,
             JwtService jwtService,
-            R2StorageService r2StorageService
+            R2StorageService r2StorageService,
+            NotificacaoService notificacaoService,
+            FirebasePushService firebasePushService
     ) {
         this.empresaRepository = empresaRepository;
         this.usuarioRepository = usuarioRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.r2StorageService = r2StorageService;
+        this.notificacaoService = notificacaoService;
+        this.firebasePushService = firebasePushService;
     }
 
     private Long obterIdAutenticado() {
@@ -358,6 +365,27 @@ public class EmpresaController {
         usuario.setEmpresaPendente(empresa);
 
         usuarioRepository.save(usuario);
+
+        String titulo = "Solicitação de vínculo";
+        String mensagem = "A empresa " + empresa.getNome() + " solicitou seu vínculo.";
+
+        try {
+            notificacaoService.criarNotificacao(
+                    "ENTREGADOR", usuario.getId(), "SOLICITACAO_VINCULO",
+                    titulo, mensagem, null
+            );
+        } catch (Exception e) {
+            System.err.println("Falha ao registrar notificação de vínculo: " + e.getMessage());
+        }
+
+        try {
+            firebasePushService.enviarParaConta(
+                    "ENTREGADOR", usuario.getId(), "SOLICITACAO_VINCULO",
+                    titulo, mensagem, null
+            );
+        } catch (Exception e) {
+            System.err.println("Falha ao enviar push de vínculo: " + e.getMessage());
+        }
 
         return ResponseEntity.ok(
                 Map.of(

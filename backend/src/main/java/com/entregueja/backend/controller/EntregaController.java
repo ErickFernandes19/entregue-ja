@@ -5,6 +5,8 @@ import com.entregueja.backend.repository.EmpresaRepository;
 import com.entregueja.backend.repository.EntregaRepository;
 import com.entregueja.backend.repository.UsuarioRepository;
 import com.entregueja.backend.service.R2StorageService;
+import com.entregueja.backend.service.NotificacaoService;
+import com.entregueja.backend.service.FirebasePushService;
 
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -39,17 +41,117 @@ public class EntregaController {
     private final EmpresaRepository empresaRepository;
     private final UsuarioRepository usuarioRepository;
     private final R2StorageService r2StorageService;
+    private final NotificacaoService notificacaoService;
+    private final FirebasePushService firebasePushService;
 
     public EntregaController(
             EntregaRepository entregaRepository,
             EmpresaRepository empresaRepository,
             UsuarioRepository usuarioRepository,
-            R2StorageService r2StorageService
+            R2StorageService r2StorageService,
+            NotificacaoService notificacaoService,
+            FirebasePushService firebasePushService
     ) {
         this.entregaRepository = entregaRepository;
         this.empresaRepository = empresaRepository;
         this.usuarioRepository = usuarioRepository;
         this.r2StorageService = r2StorageService;
+        this.notificacaoService = notificacaoService;
+        this.firebasePushService = firebasePushService;
+    }
+
+    private void notificarNovaEntrega(Entrega entrega) {
+        if (entrega.getEntregador() == null || entrega.getId() == null) {
+            return;
+        }
+
+        Long entregadorId = entrega.getEntregador().getId();
+        String titulo = "Nova entrega atribuída";
+        String mensagem = "Você recebeu uma nova entrega para " + entrega.getCliente() + ".";
+
+        try {
+            notificacaoService.criarNotificacao(
+                    "ENTREGADOR", entregadorId, "NOVA_ENTREGA",
+                    titulo, mensagem, entrega.getId()
+            );
+        } catch (Exception e) {
+            System.err.println("Falha ao registrar notificação da entrega "
+                    + entrega.getId() + ": " + e.getMessage());
+        }
+
+        try {
+            firebasePushService.enviarParaConta(
+                    "ENTREGADOR", entregadorId, "NOVA_ENTREGA",
+                    titulo, mensagem, entrega.getId()
+            );
+        } catch (Exception e) {
+            System.err.println("Falha ao enviar push da entrega "
+                    + entrega.getId() + ": " + e.getMessage());
+        }
+    }
+
+    private void notificarEventoEntrega(
+            Entrega entrega,
+            String tipoConta,
+            Long contaId,
+            String tipo,
+            String titulo,
+            String mensagem
+    ) {
+        if (entrega.getId() == null || contaId == null) {
+            return;
+        }
+
+        try {
+            notificacaoService.criarNotificacao(
+                    tipoConta, contaId, tipo, titulo, mensagem, entrega.getId()
+            );
+        } catch (Exception e) {
+            System.err.println("Falha ao registrar notificação da entrega "
+                    + entrega.getId() + ": " + e.getMessage());
+        }
+
+        try {
+            firebasePushService.enviarParaConta(
+                    tipoConta, contaId, tipo, titulo, mensagem, entrega.getId()
+            );
+        } catch (Exception e) {
+            System.err.println("Falha ao enviar push da entrega "
+                    + entrega.getId() + ": " + e.getMessage());
+        }
+    }
+
+    private void notificarEntregaConcluida(Entrega entrega) {
+        if (entrega.getEmpresa() == null) {
+            return;
+        }
+        notificarEventoEntrega(
+                entrega, "EMPRESA", entrega.getEmpresa().getId(),
+                "ENTREGA_CONCLUIDA", "Entrega concluída",
+                "A entrega para " + entrega.getCliente() + " foi concluída."
+        );
+    }
+
+    private void notificarEntregaCancelada(Entrega entrega) {
+        if (entrega.getEntregador() == null) {
+            return;
+        }
+        notificarEventoEntrega(
+                entrega, "ENTREGADOR", entrega.getEntregador().getId(),
+                "ENTREGA_CANCELADA", "Entrega cancelada",
+                "A entrega para " + entrega.getCliente() + " foi cancelada."
+        );
+    }
+
+    private void notificarEntregaNaoRealizada(Entrega entrega) {
+        if (entrega.getEmpresa() == null) {
+            return;
+        }
+        notificarEventoEntrega(
+                entrega, "EMPRESA", entrega.getEmpresa().getId(),
+                "ENTREGA_NAO_REALIZADA", "Entrega não realizada",
+                "A entrega para " + entrega.getCliente() + " não foi realizada."
+        );
     }
 
     private Long obterIdAutenticado(String tipoEsperado) {
@@ -469,6 +571,113 @@ public class EntregaController {
         }
     }
 
+    @PostMapping("/empresa/{email}")
+    public ResponseEntity<?> cadastrarEntregaSemEntregador(
+            @PathVariable String email,
+            @RequestBody Entrega dados
+    ) {
+        var empresaOptional = empresaRepository.findByEmail(email);
+
+        if (empresaOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        var empresa = empresaOptional.get();
+
+        if (!empresaAutorizada(empresa.getId())) {
+            return ResponseEntity.status(403).build();
+        }
+
+        if (dados.getCliente() == null
+                || dados.getCliente().isBlank()
+                || dados.getEndereco() == null
+                || dados.getEndereco().isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe o cliente e o endereço")
+            );
+        }
+
+        Entrega entrega = new Entrega();
+        entrega.setCliente(dados.getCliente().trim());
+        entrega.setEndereco(dados.getEndereco().trim());
+        entrega.setComplemento(dados.getComplemento());
+        entrega.setValor(dados.getValor());
+        entrega.setObservacao(dados.getObservacao());
+        entrega.setLatitude(dados.getLatitude());
+        entrega.setLongitude(dados.getLongitude());
+        entrega.setEmpresa(empresa);
+        entrega.setEntregador(null);
+        entrega.setStatus("PENDENTE");
+        entrega.setEntregue(false);
+
+        Entrega entregaSalva = entregaRepository.save(entrega);
+
+        return ResponseEntity.status(201).body(entregaSalva);
+    }
+
+    @PutMapping("/{id}/atribuir-entregador")
+    public ResponseEntity<?> atribuirEntregador(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> dados
+    ) {
+        var entregaOptional = entregaRepository.findById(id);
+
+        if (entregaOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        var entrega = entregaOptional.get();
+
+        if (entrega.getEmpresa() == null
+                || !empresaAutorizada(entrega.getEmpresa().getId())) {
+            return ResponseEntity.status(403).build();
+        }
+
+        if (!"PENDENTE".equals(entrega.getStatus())
+                || Boolean.TRUE.equals(entrega.getEntregue())) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Somente entregas pendentes podem receber um entregador")
+            );
+        }
+
+        if (entrega.getEntregador() != null) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Esta entrega já possui um entregador")
+            );
+        }
+
+        String entregadorEmail = dados.get("entregadorEmail");
+
+        if (entregadorEmail == null || entregadorEmail.isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe o e-mail do entregador")
+            );
+        }
+
+        var entregadorOptional = usuarioRepository.findByEmail(entregadorEmail.trim());
+
+        if (entregadorOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        var entregador = entregadorOptional.get();
+
+        if (entregador.getEmpresa() == null
+                || !entrega.getEmpresa().getId().equals(
+                entregador.getEmpresa().getId())) {
+            return ResponseEntity.status(403).body(
+                    Map.of("mensagem", "O entregador não está vinculado à sua empresa")
+            );
+        }
+
+        entrega.setEntregador(entregador);
+
+        Entrega entregaSalva = entregaRepository.save(entrega);
+        notificarNovaEntrega(entregaSalva);
+
+        return ResponseEntity.ok(entregaSalva);
+    }
+
     @PostMapping(
             "/empresa/{email}/entregador/{entregadorEmail}"
     )
@@ -528,6 +737,7 @@ public class EntregaController {
 
         Entrega entregaSalva =
                 entregaRepository.save(entrega);
+        notificarNovaEntrega(entregaSalva);
 
         return ResponseEntity.ok(entregaSalva);
     }
@@ -656,6 +866,9 @@ public class EntregaController {
         entrega.setEntregue(false);
 
         entregaRepository.save(entrega);
+        if (obterIdAutenticado("EMPRESA") != null) {
+            notificarEntregaCancelada(entrega);
+        }
 
         return ResponseEntity.ok(
                 Map.of(
@@ -691,6 +904,7 @@ public class EntregaController {
         entrega.setDataFinalizacao(LocalDateTime.now());
 
         entregaRepository.save(entrega);
+        notificarEntregaConcluida(entrega);
 
         return ResponseEntity.ok().build();
     }
@@ -799,6 +1013,7 @@ public class EntregaController {
             entrega.setJustificativa(observacao);
 
             entregaRepository.save(entrega);
+            notificarEntregaConcluida(entrega);
 
             return ResponseEntity.ok(
                     Map.of(
@@ -918,6 +1133,7 @@ public class EntregaController {
             entrega.setEntregue(false);
 
             entregaRepository.save(entrega);
+            notificarEntregaNaoRealizada(entrega);
 
             return ResponseEntity.ok(
                     Map.of(
