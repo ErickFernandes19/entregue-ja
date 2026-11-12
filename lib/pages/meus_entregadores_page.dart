@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
-import 'perfil_entregador_empresa_page.dart';
 
 class MeusEntregadoresPage extends StatefulWidget {
   const MeusEntregadoresPage({super.key});
@@ -81,14 +81,12 @@ class _MeusEntregadoresPageState extends State<MeusEntregadoresPage> {
       child: ListTile(
         contentPadding: const EdgeInsets.all(14),
         onTap: () async {
-          final atualizado = await Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => PerfilEntregadorEmpresaPage(
-                entregador: Map<String, dynamic>.from(entregador),
-              ),
-            ),
+          final atualizado = await context.push<bool>(
+            '/empresa/entregadores/perfil',
+            extra: Map<String, dynamic>.from(entregador),
           );
+
+          if (!mounted) return;
 
           if (atualizado == true) {
             await carregarEntregadores();

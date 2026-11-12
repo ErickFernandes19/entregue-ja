@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../services/empresa_lista_entregas_service.dart';
 import '../theme/app_colors.dart';
@@ -76,7 +77,7 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
         const SnackBar(content: Text('Entrega alterada com sucesso')),
       );
 
-      Navigator.pop(context, true);
+      context.pop(true);
     } else {
       ScaffoldMessenger.of(
         context,

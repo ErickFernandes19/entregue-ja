@@ -1,3 +1,4 @@
+
 package com.entregueja.backend.service;
 
 import org.springframework.mail.SimpleMailMessage;
@@ -30,6 +31,29 @@ public class EmailService {
                         + "\n\n"
                         + "Este código é válido por 10 minutos.\n\n"
                         + "Se você não solicitou a recuperação de senha, ignore este e-mail."
+        );
+
+        mailSender.send(mensagem);
+    }
+
+    public void enviarCodigoVerificacaoCadastro(
+            String destinatario,
+            String codigo
+    ) {
+        SimpleMailMessage mensagem = new SimpleMailMessage();
+
+        mensagem.setTo(destinatario);
+        mensagem.setSubject("Entregue Já - Verificação de cadastro");
+
+        mensagem.setText(
+                "Olá!\n\n"
+                        + "Recebemos uma solicitação de cadastro no Entregue Já.\n\n"
+                        + "Para confirmar seu endereço de e-mail, utilize o código:\n\n"
+                        + codigo
+                        + "\n\n"
+                        + "Este código é válido por 10 minutos.\n\n"
+                        + "Sua conta só será criada após a confirmação do código.\n\n"
+                        + "Se você não solicitou este cadastro, ignore este e-mail."
         );
 
         mailSender.send(mensagem);

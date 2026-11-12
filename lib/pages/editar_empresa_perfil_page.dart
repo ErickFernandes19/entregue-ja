@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
@@ -84,7 +85,7 @@ class _EditarEmpresaPerfilPageState extends State<EditarEmpresaPerfilPage> {
       ),
     );
 
-    Navigator.pop(context, true);
+    context.pop(true);
   }
 
   @override

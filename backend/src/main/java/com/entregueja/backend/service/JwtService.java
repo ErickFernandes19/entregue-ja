@@ -23,7 +23,8 @@ public class JwtService {
     public JwtService(
             @Value("${jwt.secret}") String segredo
     ) {
-        if (segredo.getBytes(StandardCharsets.UTF_8).length < 32) {
+        if (segredo == null
+                || segredo.getBytes(StandardCharsets.UTF_8).length < 32) {
             throw new IllegalArgumentException(
                     "JWT_SECRET precisa ter pelo menos 32 bytes"
             );
@@ -34,12 +35,11 @@ public class JwtService {
         );
     }
 
-
     public String gerarToken(Long contaId, String tipoConta) {
 
-        if (contaId == null) {
+        if (contaId == null || contaId <= 0) {
             throw new IllegalArgumentException(
-                    "ID da conta é obrigatório"
+                    "ID da conta inválido"
             );
         }
 
@@ -63,15 +63,21 @@ public class JwtService {
                 .compact();
     }
 
-
     public Long validarToken(String token) {
         Claims claims = obterClaims(token);
 
         validarTipoConta(claims);
 
-        return Long.valueOf(claims.getSubject());
-    }
+        Long contaId = Long.valueOf(claims.getSubject());
 
+        if (contaId <= 0) {
+            throw new IllegalArgumentException(
+                    "Token com ID de conta inválido"
+            );
+        }
+
+        return contaId;
+    }
 
     public String obterTipoConta(String token) {
         Claims claims = obterClaims(token);
@@ -79,8 +85,13 @@ public class JwtService {
         return validarTipoConta(claims);
     }
 
-
     private Claims obterClaims(String token) {
+        if (token == null || token.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Token inválido"
+            );
+        }
+
         return Jwts.parser()
                 .verifyWith(chave)
                 .build()

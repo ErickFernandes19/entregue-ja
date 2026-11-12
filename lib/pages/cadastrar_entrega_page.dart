@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 
 import '../services/cep_service.dart';
@@ -42,18 +43,28 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
   }
 
   Future<void> carregarEntregadores() async {
-    final lista = await EmpresaService.buscarEntregadores();
-
-    if (!mounted) return;
-
-    setState(() {
-      entregadores = lista;
-      carregandoEntregadores = false;
-
-      if (lista.isNotEmpty) {
-        entregadorSelecionado = lista.first['email']?.toString();
+    try {
+      final lista = await EmpresaService.buscarEntregadores();
+      if (!mounted) return;
+      setState(() {
+        entregadores = lista;
+        entregadorSelecionado = null;
+      });
+    } catch (e) {
+      debugPrint('Erro ao carregar entregadores: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Não foi possível carregar os entregadores.'),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          carregandoEntregadores = false;
+        });
       }
-    });
+    }
   }
 
   Future<void> buscarCep() async {
@@ -172,8 +183,6 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
     return double.tryParse(texto.trim().replaceAll(',', '.'));
   }
 
-  // O complemento não integra o endereço salvo; apartamentos diferentes
-  // compartilham o mesmo ponto no mapa, mas continuam entregas independentes.
   String normalizarEndereco(String texto) {
     const origem = 'áàâãäéèêëíìîïóòôõöúùûüçñ';
     const destino = 'aaaaaeeeeiiiiooooouuuucn';
@@ -304,13 +313,6 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
       return;
     }
 
-    if (entregadorSelecionado == null || entregadorSelecionado!.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Selecione um entregador')));
-      return;
-    }
-
     setState(() {
       carregando = true;
     });
@@ -319,9 +321,8 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
       final endereco = montarEnderecoCompleto();
       final enderecoNormalizado = normalizarEndereco(endereco);
       final enderecoParaMapa = montarEnderecoParaMapa();
-      final entregadorEmail = entregadorSelecionado!;
+      final entregadorEmail = entregadorSelecionado;
 
-      // A consulta é obrigatória: em caso de falha, não cadastrar às cegas.
       final lista = await EmpresaListaEntregasService.buscarEntregas();
       if (!mounted) return;
 
@@ -344,7 +345,6 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
         if (!mounted || !confirmado) return;
       }
 
-      // Reutiliza coordenadas mesmo de entregas finalizadas.
       Map<String, double>? coordenadas;
       for (final entrega in mesmoEndereco) {
         coordenadas = coordenadasExistentes(entrega);
@@ -402,7 +402,7 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
           backgroundColor: AppColors.success,
         ),
       );
-      Navigator.pop(context, true);
+      context.pop(true);
     } catch (e) {
       debugPrint('Erro ao verificar duplicidade/cadastrar entrega: $e');
       if (!mounted) return;
@@ -473,98 +473,79 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
     final theme = Theme.of(context);
 
     if (carregandoEntregadores) {
-      return Container(
+      return const SizedBox(
         height: 58,
-        alignment: Alignment.center,
-        child: const CircularProgressIndicator(),
+        child: Center(child: CircularProgressIndicator()),
       );
     }
 
-    if (entregadores.isEmpty) {
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.warning.withValues(alpha: 0.10),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.warning.withValues(alpha: 0.25)),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Icon(Icons.warning_amber, color: AppColors.warning),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Nenhum entregador vinculado',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: theme.colorScheme.onSurface,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    'Vincule um entregador antes de cadastrar uma entrega.',
-                    style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      );
-    }
+    final disponiveis = entregadores.where((entregador) {
+      return (entregador['email']?.toString().trim() ?? '').isNotEmpty;
+    }).toList();
 
-    return DropdownButtonFormField<String>(
-      value: entregadorSelecionado,
-      dropdownColor: theme.cardColor,
-      isExpanded: true,
-      style: TextStyle(color: theme.colorScheme.onSurface),
-      decoration: const InputDecoration(
-        labelText: 'Entregador responsável',
-        prefixIcon: Icon(Icons.delivery_dining),
-      ),
-      items: entregadores.map((entregador) {
-        final nome = entregador['nome']?.toString().trim() ?? 'Entregador';
-
-        final email = entregador['email']?.toString().trim() ?? '';
-
-        return DropdownMenuItem<String>(
-          value: email,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                nome,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              if (email.isNotEmpty)
-                Text(
-                  email,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-            ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        DropdownButtonFormField<String>(
+          initialValue: entregadorSelecionado,
+          dropdownColor: theme.cardColor,
+          isExpanded: true,
+          style: TextStyle(color: theme.colorScheme.onSurface),
+          decoration: const InputDecoration(
+            labelText: 'Entregador responsável (opcional)',
+            prefixIcon: Icon(Icons.delivery_dining),
           ),
-        );
-      }).toList(),
-      onChanged: carregando
-          ? null
-          : (valor) {
-              setState(() {
-                entregadorSelecionado = valor;
-              });
-            },
+          items: [
+            const DropdownMenuItem<String>(
+              value: null,
+              child: Text('Sem entregador — atribuir depois'),
+            ),
+            ...disponiveis.map((entregador) {
+              final nome =
+                  entregador['nome']?.toString().trim() ?? 'Entregador';
+              final email = entregador['email']!.toString().trim();
+              return DropdownMenuItem<String>(
+                value: email,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      nome,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    Text(
+                      email,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ],
+          onChanged: carregando
+              ? null
+              : (valor) {
+                  setState(() {
+                    entregadorSelecionado = valor;
+                  });
+                },
+        ),
+        if (disponiveis.isEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            'Nenhum entregador vinculado. Você pode cadastrar a entrega e atribuir depois.',
+            style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ],
     );
   }
 
@@ -753,8 +734,7 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
           SizedBox(
             height: 54,
             child: ElevatedButton.icon(
-              onPressed:
-                  carregando || carregandoEntregadores || entregadores.isEmpty
+              onPressed: carregando || carregandoEntregadores
                   ? null
                   : cadastrarEntrega,
               icon: carregando

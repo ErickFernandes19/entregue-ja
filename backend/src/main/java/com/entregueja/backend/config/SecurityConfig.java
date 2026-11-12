@@ -1,4 +1,3 @@
-
 package com.entregueja.backend.config;
 
 import com.entregueja.backend.security.JwtAuthenticationFilter;
@@ -25,9 +24,7 @@ public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
 
-    public SecurityConfig(
-            JwtAuthenticationFilter jwtAuthenticationFilter
-    ) {
+    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
     }
 
@@ -44,11 +41,7 @@ public class SecurityConfig {
         ));
 
         configuration.setAllowedMethods(List.of(
-                "GET",
-                "POST",
-                "PUT",
-                "DELETE",
-                "OPTIONS"
+                "GET", "POST", "PUT", "DELETE", "OPTIONS"
         ));
 
         configuration.setAllowedHeaders(List.of(
@@ -64,103 +57,61 @@ public class SecurityConfig {
         configuration.setAllowCredentials(false);
         configuration.setMaxAge(3600L);
 
-        UrlBasedCorsConfigurationSource source =
-                new UrlBasedCorsConfigurationSource();
-
-        source.registerCorsConfiguration(
-                "/**",
-                configuration
-        );
-
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
         return source;
     }
 
     @Bean
-    public SecurityFilterChain securityFilterChain(
-            HttpSecurity http
-    ) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         return http
                 .csrf(csrf -> csrf.disable())
-
                 .cors(Customizer.withDefaults())
-
                 .sessionManagement(session -> session
-                        .sessionCreationPolicy(
-                                SessionCreationPolicy.STATELESS
-                        )
+                        .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )
-
                 .authorizeHttpRequests(auth -> auth
-
-                        .requestMatchers(
-                                HttpMethod.OPTIONS,
-                                "/**"
-                        ).permitAll()
-
-                        .requestMatchers(
-                                HttpMethod.GET,
-                                "/uploads/empresas/**"
-                        ).permitAll()
-
-                        .requestMatchers(
-                                "/uploads/entregas/**"
-                        ).denyAll()
-
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/uploads/empresas/**").permitAll()
+                        .requestMatchers("/uploads/entregas/**").denyAll()
                         .requestMatchers(
                                 HttpMethod.POST,
                                 "/auth/login",
                                 "/auth/register",
+                                "/auth/confirmar-cadastro",
                                 "/auth/esqueci-senha",
                                 "/auth/verificar-codigo",
                                 "/empresas/login",
-                                "/empresas/register"
+                                "/empresas/register",
+                                "/empresas/confirmar-cadastro",
+                                "/empresas/esqueci-senha",
+                                "/empresas/verificar-codigo"
                         ).permitAll()
-
                         .requestMatchers(
                                 HttpMethod.PUT,
-                                "/auth/redefinir-senha"
+                                "/auth/redefinir-senha",
+                                "/empresas/redefinir-senha"
                         ).permitAll()
-
-                        .requestMatchers(
-                                "/auth/**"
-                        ).hasAuthority("ENTREGADOR")
-
-                        .requestMatchers(
-                                "/empresas/**"
-                        ).hasAuthority("EMPRESA")
-
-                        .requestMatchers(
-                                "/entregas/**"
-                        ).hasAnyAuthority(
-                                "EMPRESA",
-                                "ENTREGADOR"
-                        )
-
+                        .requestMatchers("/notificacoes/**")
+                        .hasAnyAuthority("EMPRESA", "ENTREGADOR")
+                        .requestMatchers("/auth/**").hasAuthority("ENTREGADOR")
+                        .requestMatchers("/empresas/**").hasAuthority("EMPRESA")
+                        .requestMatchers("/entregas/**")
+                        .hasAnyAuthority("EMPRESA", "ENTREGADOR")
                         .anyRequest().authenticated()
                 )
-
                 .exceptionHandling(ex -> ex
-
-                        .authenticationEntryPoint(
-                                (request, response, exception) ->
-                                        response.sendError(
-                                                HttpServletResponse.SC_UNAUTHORIZED
-                                        )
+                        .authenticationEntryPoint((request, response, exception) ->
+                                response.sendError(HttpServletResponse.SC_UNAUTHORIZED)
                         )
-
-                        .accessDeniedHandler(
-                                (request, response, exception) ->
-                                        response.sendError(
-                                                HttpServletResponse.SC_FORBIDDEN
-                                        )
+                        .accessDeniedHandler((request, response, exception) ->
+                                response.sendError(HttpServletResponse.SC_FORBIDDEN)
                         )
                 )
-
                 .addFilterBefore(
                         jwtAuthenticationFilter,
                         UsernamePasswordAuthenticationFilter.class
                 )
-
                 .build();
     }
 }

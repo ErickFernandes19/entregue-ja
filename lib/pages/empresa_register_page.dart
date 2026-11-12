@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../theme/app_colors.dart';
 import 'package:entregue_ja/services/empresa_service.dart' as empresa_service;
-import 'empresa_login_page.dart';
 
 class EmpresaRegisterPage extends StatefulWidget {
   const EmpresaRegisterPage({super.key});
@@ -22,7 +22,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
   Future<void> cadastrar() async {
     final nome = nomeController.text.trim();
     final email = emailController.text.trim();
-    final senha = senhaController.text.trim();
+    final senha = senhaController.text;
 
     if (nome.isEmpty || email.isEmpty || senha.isEmpty) {
       ScaffoldMessenger.of(
@@ -49,16 +49,15 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
 
     if (sucesso) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Empresa cadastrada com sucesso')),
+        const SnackBar(
+          content: Text('Código de verificação enviado para seu e-mail'),
+        ),
       );
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const EmpresaLoginPage()),
-      );
+      context.push('/empresa/verificar-cadastro', extra: email);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Erro ao cadastrar empresa')),
+        const SnackBar(content: Text('Erro ao solicitar cadastro da empresa')),
       );
     }
   }
@@ -135,9 +134,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
                       color: Colors.white,
                     ),
                   ),
-
                   const SizedBox(height: 16),
-
                   const Text(
                     'Cadastrar Empresa',
                     textAlign: TextAlign.center,
@@ -147,17 +144,13 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
                       color: Colors.white,
                     ),
                   ),
-
                   const SizedBox(height: 6),
-
                   const Text(
                     'Crie uma conta para gerenciar suas entregas',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 15, color: Colors.white70),
                   ),
-
                   const SizedBox(height: 28),
-
                   Container(
                     padding: const EdgeInsets.all(22),
                     decoration: BoxDecoration(
@@ -185,27 +178,21 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
                           label: 'Nome da empresa',
                           icon: Icons.business_outlined,
                         ),
-
                         const SizedBox(height: 16),
-
                         campo(
                           controller: emailController,
                           label: 'E-mail',
                           icon: Icons.email_outlined,
                           keyboardType: TextInputType.emailAddress,
                         ),
-
                         const SizedBox(height: 16),
-
                         campo(
                           controller: senhaController,
                           label: 'Senha',
                           icon: Icons.lock_outline,
                           senha: true,
                         ),
-
                         const SizedBox(height: 24),
-
                         SizedBox(
                           height: 54,
                           width: double.infinity,
@@ -236,9 +223,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
                                   ),
                           ),
                         ),
-
                         const SizedBox(height: 18),
-
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
@@ -250,12 +235,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
                             ),
                             TextButton(
                               onPressed: () {
-                                Navigator.pushReplacement(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => const EmpresaLoginPage(),
-                                  ),
-                                );
+                                context.go('/empresa/login');
                               },
                               child: const Text('Entrar'),
                             ),

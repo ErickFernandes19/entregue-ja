@@ -1,11 +1,11 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
-import 'editar_empresa_perfil_page.dart';
 
 class EmpresaPerfilPage extends StatefulWidget {
   const EmpresaPerfilPage({super.key});
@@ -228,11 +228,9 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
   }
 
   Future<void> editarPerfil() async {
-    final atualizado = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => EditarEmpresaPerfilPage(nome: nome, email: email),
-      ),
+    final atualizado = await context.push<bool>(
+      '/empresa/perfil/editar',
+      extra: {'nome': nome, 'email': email},
     );
 
     if (atualizado == true) {

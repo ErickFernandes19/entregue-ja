@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 
 import '../models/entrega_model.dart';
@@ -284,7 +285,7 @@ class _CadastrarEntregaManualPageState
         longitude: coordenadas?['lng'],
       );
 
-      Navigator.pop(context, entrega);
+      context.pop(entrega);
     } catch (e) {
       debugPrint('Erro ao preparar entrega: $e');
       mostrarMensagem(

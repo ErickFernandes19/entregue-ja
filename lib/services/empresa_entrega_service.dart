@@ -20,7 +20,7 @@ class EmpresaEntregaService {
 
   static Future<Map<String, dynamic>?> cadastrarEntrega({
     required String empresaEmail,
-    required String entregadorEmail,
+    String? entregadorEmail,
     required String cliente,
     required String endereco,
     required String complemento,
@@ -31,14 +31,13 @@ class EmpresaEntregaService {
   }) async {
     try {
       final empresaEmailUrl = Uri.encodeComponent(empresaEmail);
-      final entregadorEmailUrl = Uri.encodeComponent(entregadorEmail);
+      final emailEntregador = entregadorEmail?.trim();
 
-      final url =
-          '${ApiConfig.entregas}/empresa/$empresaEmailUrl/'
-          'entregador/$entregadorEmailUrl';
+      final url = emailEntregador != null && emailEntregador.isNotEmpty
+          ? '${ApiConfig.entregas}/empresa/$empresaEmailUrl/entregador/${Uri.encodeComponent(emailEntregador)}'
+          : '${ApiConfig.entregas}/empresa/$empresaEmailUrl';
 
       final headers = await _headersAutenticados();
-
       headers['Content-Type'] = 'application/json';
 
       debugPrint('URL cadastro entrega: $url');
@@ -80,12 +79,49 @@ class EmpresaEntregaService {
         }
       }
 
-      debugPrint('Falha ao cadastrar entrega. HTTP ${response.statusCode}');
-
+      debugPrint(
+        'Falha ao cadastrar entrega. HTTP ${response.statusCode}: ${response.body}',
+      );
       return null;
     } catch (e) {
       debugPrint('Erro ao cadastrar entrega: $e');
       return null;
+    }
+  }
+
+  static Future<bool> atribuirEntregador({
+    required int entregaId,
+    required String entregadorEmail,
+  }) async {
+    try {
+      final email = entregadorEmail.trim();
+      if (email.isEmpty) return false;
+
+      final headers = await _headersAutenticados();
+      headers['Content-Type'] = 'application/json';
+
+      final url = '${ApiConfig.entregas}/$entregaId/atribuir-entregador';
+      final response = await http
+          .put(
+            Uri.parse(url),
+            headers: headers,
+            body: jsonEncode({'entregadorEmail': email}),
+          )
+          .timeout(const Duration(seconds: 20));
+
+      debugPrint('Status atribuição de entregador: ${response.statusCode}');
+
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        return true;
+      }
+
+      debugPrint(
+        'Falha ao atribuir entregador. HTTP ${response.statusCode}: ${response.body}',
+      );
+      return false;
+    } catch (e) {
+      debugPrint('Erro ao atribuir entregador: $e');
+      return false;
     }
   }
 }

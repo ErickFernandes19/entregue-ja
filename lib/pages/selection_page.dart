@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../theme/app_colors.dart';
-import 'empresa_login_page.dart';
-import 'login_page.dart';
 
 class SelectionPage extends StatelessWidget {
   const SelectionPage({super.key});
@@ -139,12 +138,7 @@ class SelectionPage extends StatelessWidget {
                           titulo: 'Sou Entregador',
                           cor: AppColors.primary,
                           onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => const LoginPage(),
-                              ),
-                            );
+                            context.push('/entregador/login');
                           },
                         ),
 
@@ -155,12 +149,7 @@ class SelectionPage extends StatelessWidget {
                           titulo: 'Sou Empresa',
                           cor: corEmpresa,
                           onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => const EmpresaLoginPage(),
-                              ),
-                            );
+                            context.push('/empresa/login');
                           },
                         ),
 

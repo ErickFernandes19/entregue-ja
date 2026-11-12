@@ -1,12 +1,17 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../services/api_service.dart';
+import '../services/empresa_entrega_service.dart';
 import '../services/empresa_lista_entregas_service.dart';
+import '../services/empresa_service.dart';
 import '../services/entrega_service.dart';
 import '../theme/app_colors.dart';
-import 'editar_entrega_page.dart';
 
 class DetalhesEntregaPage extends StatefulWidget {
   final Map<String, dynamic> entrega;
@@ -22,6 +27,11 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
 
   bool carregandoComprovante = false;
   bool erroComprovante = false;
+  bool atribuindoEntregador = false;
+  Timer? _timerAcompanhamento;
+  Map<String, dynamic>? _dadosAcompanhamento;
+  Map<String, dynamic>? _localizacaoRecebida;
+  bool _consultandoAcompanhamento = false;
 
   Map<String, dynamic> get entrega => widget.entrega;
 
@@ -112,9 +122,211 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
   void initState() {
     super.initState();
 
+    _dadosAcompanhamento = Map<String, dynamic>.from(widget.entrega);
+    _timerAcompanhamento = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => _atualizarAcompanhamento(),
+    );
+    unawaited(_atualizarAcompanhamento());
+
     if (possuiComprovante) {
       carregarComprovante();
     }
+  }
+
+  @override
+  void dispose() {
+    _timerAcompanhamento?.cancel();
+    super.dispose();
+  }
+
+  double? _numeroCoordenada(dynamic valor) {
+    if (valor is num) return valor.toDouble();
+    return double.tryParse((valor ?? '').toString().replaceAll(',', '.'));
+  }
+
+  LatLng? _coordenadaValida(dynamic latitude, dynamic longitude) {
+    final lat = _numeroCoordenada(latitude);
+    final lng = _numeroCoordenada(longitude);
+    if (lat == null || lng == null || !lat.isFinite || !lng.isFinite) {
+      return null;
+    }
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+    if (lat == 0 && lng == 0) return null;
+    return LatLng(lat, lng);
+  }
+
+  LatLng? get _localizacaoEntregador {
+    final dados = _localizacaoRecebida;
+    if (dados == null || dados['status'] != 'EM_ROTA') return null;
+    return _coordenadaValida(dados['latitude'], dados['longitude']);
+  }
+
+  LatLng? get _localizacaoDestino {
+    final dados = _dadosAcompanhamento ?? entrega;
+    return _coordenadaValida(dados['latitude'], dados['longitude']);
+  }
+
+  DateTime? get _horarioLocalizacao {
+    final valor = _localizacaoRecebida?['dataAtualizacao'];
+    if (valor == null) return null;
+    return DateTime.tryParse(valor.toString())?.toLocal();
+  }
+
+  Future<void> _atualizarAcompanhamento() async {
+    if (_consultandoAcompanhamento || !mounted) return;
+    if (statusEntrega() != 'EM_ROTA') return;
+    final id = int.tryParse(idEntrega);
+    if (id == null) return;
+    _consultandoAcompanhamento = true;
+    try {
+      final dados = await ApiService.buscarLocalizacaoEntregador(id);
+      if (!mounted) return;
+      if (dados != null) {
+        setState(() {
+          _localizacaoRecebida = dados;
+        });
+        if (dados['status'] != 'EM_ROTA') {
+          _timerAcompanhamento?.cancel();
+        }
+      }
+    } catch (e) {
+      debugPrint('Não foi possível consultar acompanhamento: $e');
+    } finally {
+      _consultandoAcompanhamento = false;
+    }
+  }
+
+  Widget _secaoAcompanhamento() {
+    final tema = Theme.of(context);
+    final entregador = _localizacaoEntregador;
+    final destino = _localizacaoDestino;
+    final horario = _horarioLocalizacao;
+    final recente =
+        horario != null &&
+        DateTime.now().difference(horario).inSeconds >= 0 &&
+        DateTime.now().difference(horario) <= const Duration(seconds: 60);
+    final pontos = <Marker>{};
+    if (entregador != null) {
+      pontos.add(
+        Marker(
+          markerId: const MarkerId('entregador'),
+          position: entregador,
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueAzure,
+          ),
+          infoWindow: const InfoWindow(title: 'Localização do entregador'),
+        ),
+      );
+    }
+    if (destino != null) {
+      pontos.add(
+        Marker(
+          markerId: const MarkerId('destino'),
+          position: destino,
+          infoWindow: const InfoWindow(title: 'Destino da entrega'),
+        ),
+      );
+    }
+    final centro = entregador ?? destino;
+    String horarioTexto = 'Aguardando localização do entregador';
+    if (horario != null) {
+      String dois(int n) => n.toString().padLeft(2, '0');
+      horarioTexto =
+          'Última posição: ${dois(horario.hour)}:${dois(horario.minute)}:${dois(horario.second)}';
+    } else if (entregador != null) {
+      horarioTexto = 'Horário da posição não informado';
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: tema.cardColor,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: tema.colorScheme.outlineVariant.withValues(alpha: 0.35),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.location_searching, color: AppColors.primary),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Acompanhamento do entregador',
+                  style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Atualizar localização',
+                onPressed: _atualizarAcompanhamento,
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            recente ? 'Localização recente' : horarioTexto,
+            style: TextStyle(
+              color: recente
+                  ? AppColors.success
+                  : tema.colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (recente) ...[const SizedBox(height: 4), Text(horarioTexto)],
+          const SizedBox(height: 12),
+          if (centro == null)
+            Container(
+              height: 230,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                color: tema.colorScheme.surfaceContainerHighest,
+              ),
+              child: const Padding(
+                padding: EdgeInsets.all(20),
+                child: Text(
+                  'O mapa ficará disponível quando o servidor informar as coordenadas da entrega ou do entregador.',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            )
+          else
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: SizedBox(
+                height: 260,
+                child: GoogleMap(
+                  key: ValueKey('${centro.latitude},${centro.longitude}'),
+                  initialCameraPosition: CameraPosition(
+                    target: centro,
+                    zoom: 15,
+                  ),
+                  markers: pontos,
+                  myLocationButtonEnabled: false,
+                  zoomControlsEnabled: false,
+                  mapToolbarEnabled: false,
+                ),
+              ),
+            ),
+          const SizedBox(height: 10),
+          Text(
+            entregador == null
+                ? 'Aguardando o envio da posição pelo aplicativo do entregador.'
+                : horario == null
+                ? 'Posição recebida, mas sem horário para confirmar se é atual.'
+                : recente
+                ? 'O mapa consulta atualizações a cada 15 segundos.'
+                : 'A última posição pode estar desatualizada.',
+            style: TextStyle(color: tema.colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> carregarComprovante() async {
@@ -250,11 +462,147 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
         context,
       ).showSnackBar(const SnackBar(content: Text('Entrega cancelada')));
 
-      Navigator.pop(context, true);
+      context.pop(true);
     } else {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Erro ao cancelar entrega')));
+    }
+  }
+
+  String nomeEntregador() {
+    final responsavel = entrega['entregador'];
+    if (responsavel is Map) {
+      final nome = responsavel['nome']?.toString().trim() ?? '';
+      if (nome.isNotEmpty) return nome;
+      return responsavel['email']?.toString().trim() ?? '';
+    }
+    return '';
+  }
+
+  Future<void> atribuirEntregador() async {
+    if (atribuindoEntregador) return;
+
+    setState(() {
+      atribuindoEntregador = true;
+    });
+
+    try {
+      final lista = await EmpresaService.buscarEntregadores();
+      if (!mounted) return;
+
+      final disponiveis = lista.where((item) {
+        if (item is! Map) return false;
+        return (item['email']?.toString().trim() ?? '').isNotEmpty;
+      }).toList();
+
+      if (disponiveis.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Nenhum entregador vinculado à empresa.'),
+          ),
+        );
+        return;
+      }
+
+      String? selecionado;
+      final email = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (dialogContext, atualizarDialogo) => AlertDialog(
+            title: const Text('Atribuir entregador'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: DropdownButtonFormField<String>(
+                isExpanded: true,
+                initialValue: selecionado,
+                decoration: const InputDecoration(
+                  labelText: 'Entregador responsável',
+                  prefixIcon: Icon(Icons.delivery_dining),
+                ),
+                items: disponiveis.map((item) {
+                  final nome = item['nome']?.toString().trim() ?? '';
+                  final email = item['email'].toString().trim();
+                  return DropdownMenuItem<String>(
+                    value: email,
+                    child: Text(
+                      nome.isEmpty ? email : '$nome ($email)',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  );
+                }).toList(),
+                onChanged: (valor) {
+                  atualizarDialogo(() {
+                    selecionado = valor;
+                  });
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: selecionado == null
+                    ? null
+                    : () => Navigator.pop(dialogContext, selecionado),
+                child: const Text('Confirmar'),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      if (!mounted || email == null) return;
+
+      final id = int.tryParse(idEntrega);
+      if (id == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('ID da entrega inválido.')),
+        );
+        return;
+      }
+
+      final sucesso = await EmpresaEntregaService.atribuirEntregador(
+        entregaId: id,
+        entregadorEmail: email,
+      );
+
+      if (!mounted) return;
+
+      if (sucesso) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Entregador atribuído com sucesso.'),
+            backgroundColor: AppColors.success,
+          ),
+        );
+        context.pop(true);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Não foi possível atribuir o entregador.'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Erro ao atribuir entregador: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Não foi possível carregar ou atribuir o entregador.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          atribuindoEntregador = false;
+        });
+      }
     }
   }
 
@@ -272,7 +620,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
         children: [
           CircleAvatar(
             radius: 18,
-            backgroundColor: AppColors.primary.withOpacity(0.14),
+            backgroundColor: AppColors.primary.withValues(alpha: 0.14),
             child: Icon(icon, size: 19, color: AppColors.primary),
           ),
           const SizedBox(width: 10),
@@ -310,9 +658,9 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
       decoration: BoxDecoration(
-        color: cor.withOpacity(0.14),
+        color: cor.withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: cor.withOpacity(0.25)),
+        border: Border.all(color: cor.withValues(alpha: 0.25)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -336,7 +684,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
       decoration: BoxDecoration(
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: AppColors.error.withOpacity(0.3)),
+        border: Border.all(color: AppColors.error.withValues(alpha: 0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -403,7 +751,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
             width: double.infinity,
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: theme.colorScheme.surface.withOpacity(0.65),
+              color: theme.colorScheme.surface.withValues(alpha: 0.65),
               borderRadius: BorderRadius.circular(14),
             ),
             child: Text(
@@ -431,7 +779,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(22),
         border: Border.all(
-          color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
         ),
       ),
       child: Column(
@@ -547,12 +895,12 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
               color: theme.cardColor,
               borderRadius: BorderRadius.circular(22),
               border: Border.all(
-                color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
               ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(
-                    theme.brightness == Brightness.dark ? 0.16 : 0.05,
+                  color: Colors.black.withValues(
+                    alpha: theme.brightness == Brightness.dark ? 0.16 : 0.05,
                   ),
                   blurRadius: 12,
                   offset: const Offset(0, 5),
@@ -566,7 +914,9 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
                   children: [
                     CircleAvatar(
                       radius: 25,
-                      backgroundColor: AppColors.primary.withOpacity(0.14),
+                      backgroundColor: AppColors.primary.withValues(
+                        alpha: 0.14,
+                      ),
                       child: const Icon(
                         Icons.inventory_2,
                         color: AppColors.primary,
@@ -607,6 +957,14 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
                     valor: observacao,
                   ),
 
+                linhaInformacao(
+                  icon: Icons.delivery_dining,
+                  titulo: 'Entregador responsável',
+                  valor: nomeEntregador().isEmpty
+                      ? 'Não atribuído'
+                      : nomeEntregador(),
+                ),
+
                 const SizedBox(height: 4),
                 badgeStatus(status),
               ],
@@ -615,20 +973,45 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
 
           const SizedBox(height: 18),
 
+          if (podeEditar && nomeEntregador().isEmpty)
+            SizedBox(
+              height: 52,
+              child: ElevatedButton.icon(
+                onPressed: atribuindoEntregador ? null : atribuirEntregador,
+                icon: atribuindoEntregador
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.person_add_alt_1),
+                label: Text(
+                  atribuindoEntregador
+                      ? 'Carregando entregadores...'
+                      : 'Atribuir entregador',
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+
+          if (podeEditar && nomeEntregador().isEmpty)
+            const SizedBox(height: 12),
+
           if (podeEditar)
             SizedBox(
               height: 52,
               child: ElevatedButton.icon(
                 onPressed: () async {
-                  final atualizado = await Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => EditarEntregaPage(entrega: entrega),
-                    ),
+                  final atualizado = await context.push<bool>(
+                    '/empresa/entregas/editar',
+                    extra: Map<String, dynamic>.from(entrega),
                   );
 
                   if (atualizado == true && context.mounted) {
-                    Navigator.pop(context, true);
+                    context.pop(true);
                   }
                 },
                 icon: const Icon(Icons.edit),
@@ -656,6 +1039,11 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
               ),
             ),
 
+          if (status == 'EM_ROTA') ...[
+            _secaoAcompanhamento(),
+            const SizedBox(height: 18),
+          ],
+
           if (status == 'NAO_ENTREGUE') ...[
             const SizedBox(height: 18),
             secaoNaoEntrega(),
@@ -674,7 +1062,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
               color: theme.cardColor,
               borderRadius: BorderRadius.circular(22),
               border: Border.all(
-                color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
               ),
             ),
             child: Column(

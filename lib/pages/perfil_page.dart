@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../config/api_config.dart';
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
-import 'editar_perfil_page.dart';
 
 class PerfilPage extends StatefulWidget {
   const PerfilPage({super.key});
@@ -140,13 +140,12 @@ class _PerfilPageState extends State<PerfilPage> {
   }
 
   Future<void> editarPerfil() async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => EditarPerfilPage(nome: nome, email: email),
-      ),
+    await context.push(
+      '/entregador/perfil/editar',
+      extra: {'nome': nome, 'email': email},
     );
 
+    if (!mounted) return;
     await carregarDadosUsuario();
   }
 

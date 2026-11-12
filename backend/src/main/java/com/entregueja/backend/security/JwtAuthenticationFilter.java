@@ -10,10 +10,10 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
-import org.springframework.stereotype.Component;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
@@ -37,16 +37,31 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             FilterChain filterChain
     ) throws ServletException, IOException {
 
+        SecurityContextHolder.clearContext();
+
         String authorization = request.getHeader("Authorization");
 
         if (authorization != null
                 && authorization.startsWith("Bearer ")) {
 
-            String token = authorization.substring(7);
+            String token = authorization.substring(7).trim();
 
             try {
+                if (token.isEmpty()) {
+                    throw new IllegalArgumentException("Token vazio");
+                }
+
                 Long contaId = jwtService.validarToken(token);
                 String tipoConta = jwtService.obterTipoConta(token);
+
+                if (contaId == null || contaId <= 0) {
+                    throw new IllegalArgumentException("ID da conta inválido");
+                }
+
+                if (!"EMPRESA".equals(tipoConta)
+                        && !"ENTREGADOR".equals(tipoConta)) {
+                    throw new IllegalArgumentException("Tipo de conta inválido");
+                }
 
                 UsernamePasswordAuthenticationToken authentication =
                         new UsernamePasswordAuthenticationToken(
@@ -60,10 +75,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 SecurityContextHolder.getContext()
                         .setAuthentication(authentication);
 
-            } catch (
-                    JwtException |
-                    IllegalArgumentException e
-            ) {
+            } catch (JwtException | IllegalArgumentException e) {
                 SecurityContextHolder.clearContext();
 
                 response.sendError(
@@ -75,6 +87,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
         }
 
-        filterChain.doFilter(request, response);
+        try {
+            filterChain.doFilter(request, response);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
     }
 }

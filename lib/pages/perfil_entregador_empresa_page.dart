@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
-import 'empresa_entregas_page.dart';
 
 class PerfilEntregadorEmpresaPage extends StatelessWidget {
   final Map<String, dynamic> entregador;
@@ -57,7 +57,7 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
         const SnackBar(content: Text('Entregador desvinculado com sucesso')),
       );
 
-      Navigator.pop(context, true);
+      context.pop(true);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Erro ao desvincular entregador')),
@@ -176,9 +176,7 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
               ),
             ),
           ),
-
           const SizedBox(height: 20),
-
           Center(
             child: Text(
               nome,
@@ -190,9 +188,7 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
               ),
             ),
           ),
-
           const SizedBox(height: 8),
-
           Center(
             child: Text(
               email,
@@ -203,9 +199,7 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
               ),
             ),
           ),
-
           const SizedBox(height: 25),
-
           cardInfo(
             context: context,
             icon: Icons.email,
@@ -213,7 +207,6 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
             valor: email,
             color: Colors.deepPurple,
           ),
-
           cardInfo(
             context: context,
             icon: Icons.directions_car,
@@ -221,7 +214,6 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
             valor: veiculo.isEmpty ? 'Não informado' : veiculo,
             color: AppColors.primary,
           ),
-
           cardInfo(
             context: context,
             icon: Icons.inventory_2,
@@ -229,7 +221,6 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
             valor: capacidade.isEmpty ? 'Não informada' : '$capacidade kg',
             color: Colors.orange,
           ),
-
           cardInfo(
             context: context,
             icon: Icons.calendar_today,
@@ -237,9 +228,7 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
             valor: formatarData(dataVinculo),
             color: AppColors.success,
           ),
-
           const SizedBox(height: 14),
-
           SizedBox(
             height: 55,
             child: ElevatedButton.icon(
@@ -264,21 +253,14 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
                   return;
                 }
 
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => EmpresaEntregasPage(
-                      entregadorEmail: email,
-                      entregadorNome: nome,
-                    ),
-                  ),
+                context.push(
+                  '/empresa/entregadores/entregas',
+                  extra: {'entregadorEmail': email, 'entregadorNome': nome},
                 );
               },
             ),
           ),
-
           const SizedBox(height: 12),
-
           SizedBox(
             height: 55,
             child: ElevatedButton.icon(

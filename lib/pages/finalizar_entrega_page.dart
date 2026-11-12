@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -87,7 +88,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
       if (!mounted) return;
 
       if (bytes.isEmpty) {
-        mostrarMensagem('A imagem selecionada está vazia.');
+        mostrarMensagem('A foto está vazia.');
         return;
       }
 
@@ -103,7 +104,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
     } catch (e) {
       debugPrint('Erro ao selecionar foto: $e');
 
-      mostrarMensagem('Não foi possível selecionar a imagem.');
+      mostrarMensagem('Não foi possível tirar a foto.');
     } finally {
       if (mounted) {
         setState(() {
@@ -115,46 +116,6 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
 
   Future<void> tirarFoto() async {
     await selecionarFoto(ImageSource.camera);
-  }
-
-  Future<void> escolherDaGaleria() async {
-    await selecionarFoto(ImageSource.gallery);
-  }
-
-  void abrirOpcoesFoto() {
-    if (enviando || carregandoFoto) return;
-
-    showModalBottomSheet(
-      context: context,
-      builder: (context) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.camera_alt),
-                  title: const Text('Tirar foto'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    tirarFoto();
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.photo_library),
-                  title: const Text('Escolher da galeria'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    escolherDaGaleria();
-                  },
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
   }
 
   Future<bool> obterLocalizacao() async {
@@ -242,8 +203,8 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
     if (foto == null || fotoBytes == null || fotoBytes!.isEmpty) {
       mostrarMensagem(
         tipoFinalizacao == 'ENTREGUE'
-            ? 'Tire ou selecione uma foto para comprovar a entrega.'
-            : 'Tire ou selecione uma foto para comprovar a tentativa.',
+            ? 'Tire uma foto para comprovar a entrega.'
+            : 'Tire uma foto para comprovar a tentativa.',
       );
       return;
     }
@@ -326,7 +287,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
       ),
     );
 
-    Navigator.pop(context, true);
+    context.pop(true);
   }
 
   Widget opcaoFinalizacao({
@@ -430,7 +391,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
           ),
           const SizedBox(height: 10),
           OutlinedButton.icon(
-            onPressed: enviando ? null : abrirOpcoesFoto,
+            onPressed: enviando ? null : tirarFoto,
             icon: const Icon(Icons.refresh),
             label: const Text('Alterar foto'),
           ),
@@ -440,7 +401,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
 
     return InkWell(
       borderRadius: BorderRadius.circular(20),
-      onTap: enviando ? null : abrirOpcoesFoto,
+      onTap: enviando ? null : tirarFoto,
       child: Container(
         width: double.infinity,
         height: 180,
@@ -466,8 +427,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Text(
-                'Use a câmera ou selecione '
-                'uma imagem da galeria.',
+                'Use a câmera para fotografar o local da entrega.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
               ),

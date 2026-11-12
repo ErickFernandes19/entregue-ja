@@ -1,15 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/theme_provider.dart';
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
-import 'selection_page.dart';
-import 'relatorio_page.dart';
-import 'suporte_page.dart';
-import 'sobre_page.dart';
-import 'notificacoes_page.dart';
-import 'veiculo_configuracoes_page.dart';
 
 class ConfiguracoesPage extends StatefulWidget {
   const ConfiguracoesPage({super.key});
@@ -183,7 +178,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
         children: [
           IconButton(
             onPressed: () {
-              Navigator.pop(context);
+              context.pop();
             },
             icon: const Icon(Icons.arrow_back, color: Colors.white),
           ),
@@ -377,11 +372,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
 
           if (!context.mounted) return;
 
-          Navigator.pushAndRemoveUntil(
-            context,
-            MaterialPageRoute(builder: (_) => const SelectionPage()),
-            (route) => false,
-          );
+          context.go('/selecionar');
         },
       ),
     );
@@ -407,12 +398,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
                   subtitulo: 'Capacidade, consumo e preço do combustível',
                   color: AppColors.primary,
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const VeiculoConfiguracoesPage(),
-                      ),
-                    );
+                    context.push('/entregador/configuracoes/veiculo');
                   },
                 ),
 
@@ -422,12 +408,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
                   subtitulo: 'Ativar ou desativar alertas',
                   color: Colors.orange,
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const NotificacoesPage(),
-                      ),
-                    );
+                    context.push('/entregador/notificacoes');
                   },
                 ),
 
@@ -445,10 +426,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
                   subtitulo: 'Veja seu resumo de entregas',
                   color: AppColors.primary,
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const RelatorioPage()),
-                    );
+                    context.push('/entregador/relatorios');
                   },
                 ),
 
@@ -458,10 +436,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
                   subtitulo: 'Ajuda e atendimento',
                   color: Colors.deepPurple,
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const SuportePage()),
-                    );
+                    context.push('/entregador/suporte');
                   },
                 ),
 
@@ -471,10 +446,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
                   subtitulo: 'Informações do Entregue Já',
                   color: AppColors.success,
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const SobrePage()),
-                    );
+                    context.push('/entregador/sobre');
                   },
                 ),
 

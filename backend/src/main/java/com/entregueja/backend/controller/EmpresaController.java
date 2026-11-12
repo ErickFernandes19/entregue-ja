@@ -4,6 +4,8 @@ import com.entregueja.backend.entity.Empresa;
 import com.entregueja.backend.entity.Usuario;
 import com.entregueja.backend.repository.EmpresaRepository;
 import com.entregueja.backend.repository.UsuarioRepository;
+import com.entregueja.backend.service.CadastroPendenteService;
+import com.entregueja.backend.service.RecuperacaoSenhaService;
 import com.entregueja.backend.service.JwtService;
 import com.entregueja.backend.service.R2StorageService;
 import com.entregueja.backend.service.NotificacaoService;
@@ -34,6 +36,8 @@ public class EmpresaController {
     private final R2StorageService r2StorageService;
     private final NotificacaoService notificacaoService;
     private final FirebasePushService firebasePushService;
+    private final CadastroPendenteService cadastroPendenteService;
+    private final RecuperacaoSenhaService recuperacaoSenhaService;
 
     public EmpresaController(
             EmpresaRepository empresaRepository,
@@ -42,7 +46,9 @@ public class EmpresaController {
             JwtService jwtService,
             R2StorageService r2StorageService,
             NotificacaoService notificacaoService,
-            FirebasePushService firebasePushService
+            FirebasePushService firebasePushService,
+            CadastroPendenteService cadastroPendenteService,
+            RecuperacaoSenhaService recuperacaoSenhaService
     ) {
         this.empresaRepository = empresaRepository;
         this.usuarioRepository = usuarioRepository;
@@ -51,6 +57,37 @@ public class EmpresaController {
         this.r2StorageService = r2StorageService;
         this.notificacaoService = notificacaoService;
         this.firebasePushService = firebasePushService;
+        this.cadastroPendenteService = cadastroPendenteService;
+        this.recuperacaoSenhaService = recuperacaoSenhaService;
+    }
+
+    private void notificarEntregador(
+            Long entregadorId,
+            String tipo,
+            String titulo,
+            String mensagem
+    ) {
+        if (entregadorId == null) {
+            return;
+        }
+
+        try {
+            notificacaoService.criarNotificacao(
+                    "ENTREGADOR", entregadorId, tipo,
+                    titulo, mensagem, null
+            );
+        } catch (Exception e) {
+            System.err.println("Falha ao registrar notificação de vínculo: " + e.getMessage());
+        }
+
+        try {
+            firebasePushService.enviarParaConta(
+                    "ENTREGADOR", entregadorId, tipo,
+                    titulo, mensagem, null
+            );
+        } catch (Exception e) {
+            System.err.println("Falha ao enviar push de vínculo: " + e.getMessage());
+        }
     }
 
     private Long obterIdAutenticado() {
@@ -122,7 +159,7 @@ public class EmpresaController {
             );
         }
 
-        String email = empresa.getEmail().trim();
+        String email = empresa.getEmail().trim().toLowerCase();
 
         if (empresaRepository.findByEmail(email).isPresent()) {
             return ResponseEntity.badRequest().body(
@@ -130,12 +167,66 @@ public class EmpresaController {
             );
         }
 
-        empresa.setId(null);
-        empresa.setNome(empresa.getNome().trim());
-        empresa.setEmail(email);
-        empresa.setSenha(
-                passwordEncoder.encode(empresa.getSenha())
+        try {
+            cadastroPendenteService.solicitarCadastro(
+                    "EMPRESA",
+                    empresa.getNome(),
+                    email,
+                    empresa.getSenha()
+            );
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", e.getMessage())
+            );
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(
+                    Map.of("mensagem", "Não foi possível enviar o código de verificação")
+            );
+        }
+
+        return ResponseEntity.ok(
+                Map.of("mensagem", "Código de verificação enviado para o e-mail")
         );
+    }
+
+    @PostMapping("/confirmar-cadastro")
+    public ResponseEntity<?> confirmarCadastro(
+            @RequestBody Map<String, String> body
+    ) {
+        String email = body.get("email");
+        String codigo = body.get("codigo");
+
+        if (email == null || email.isBlank()
+                || codigo == null || codigo.isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe o e-mail e o código")
+            );
+        }
+
+        String emailNormalizado = email.trim().toLowerCase();
+
+        if (empresaRepository.findByEmail(emailNormalizado).isPresent()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "E-mail já cadastrado")
+            );
+        }
+
+        CadastroPendenteService.DadosCadastro dados;
+
+        try {
+            dados = cadastroPendenteService.confirmarCodigo(
+                    "EMPRESA", emailNormalizado, codigo
+            );
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", e.getMessage())
+            );
+        }
+
+        Empresa empresa = new Empresa();
+        empresa.setNome(dados.nome());
+        empresa.setEmail(dados.email());
+        empresa.setSenha(dados.senhaHash());
         empresa.setFoto(null);
         empresa.setCodigoRecuperacao(null);
         empresa.setCodigoRecuperacaoExpira(null);
@@ -143,10 +234,117 @@ public class EmpresaController {
         empresaRepository.save(empresa);
 
         return ResponseEntity.ok(
-                Map.of(
-                        "mensagem",
-                        "Empresa cadastrada com sucesso"
-                )
+                Map.of("mensagem", "Empresa cadastrada com sucesso")
+        );
+    }
+
+    @PostMapping("/esqueci-senha")
+    public ResponseEntity<?> esqueciSenha(@RequestBody Map<String, String> body) {
+        String email = body.get("email");
+
+        if (email == null || email.isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe o e-mail")
+            );
+        }
+
+        String emailNormalizado = email.trim().toLowerCase(java.util.Locale.ROOT);
+        String mensagem = "Se o e-mail estiver cadastrado, um código será enviado";
+
+        if (empresaRepository.findByEmail(emailNormalizado).isPresent()) {
+            try {
+                recuperacaoSenhaService.solicitarCodigo("EMPRESA", emailNormalizado);
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.status(429).body(
+                        Map.of("mensagem", "Aguarde antes de solicitar outro código")
+                );
+            } catch (Exception e) {
+                return ResponseEntity.internalServerError().body(
+                        Map.of("mensagem", "Não foi possível processar a solicitação")
+                );
+            }
+        }
+
+        return ResponseEntity.ok(Map.of("mensagem", mensagem));
+    }
+
+    @PostMapping("/verificar-codigo")
+    public ResponseEntity<?> verificarCodigo(@RequestBody Map<String, String> body) {
+        String email = body.get("email");
+        String codigo = body.get("codigo");
+
+        if (email == null || email.isBlank() || codigo == null || codigo.isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe o e-mail e o código")
+            );
+        }
+
+        String emailNormalizado = email.trim().toLowerCase(java.util.Locale.ROOT);
+
+        try {
+            recuperacaoSenhaService.validarCodigo("EMPRESA", emailNormalizado, codigo.trim());
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Código inválido ou expirado")
+            );
+        }
+
+        return ResponseEntity.ok(Map.of("mensagem", "Código válido"));
+    }
+
+    @PutMapping("/redefinir-senha")
+    public ResponseEntity<?> redefinirSenha(@RequestBody Map<String, String> body) {
+        String email = body.get("email");
+        String codigo = body.get("codigo");
+        String novaSenha = body.get("novaSenha");
+
+        if (email == null || email.isBlank()
+                || codigo == null || codigo.isBlank()
+                || novaSenha == null || novaSenha.isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Preencha todos os campos")
+            );
+        }
+
+        if (novaSenha.length() < 6) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "A nova senha deve possuir pelo menos 6 caracteres")
+            );
+        }
+
+        String emailNormalizado = email.trim().toLowerCase(java.util.Locale.ROOT);
+        var empresaOptional = empresaRepository.findByEmail(emailNormalizado);
+
+        if (empresaOptional.isEmpty()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Código inválido ou expirado")
+            );
+        }
+
+        Empresa empresa = empresaOptional.get();
+
+        try {
+            recuperacaoSenhaService.consumirCodigo(
+                    "EMPRESA",
+                    emailNormalizado,
+                    codigo.trim(),
+                    () -> {
+                        empresa.setSenha(passwordEncoder.encode(novaSenha));
+                        empresaRepository.save(empresa);
+                    }
+            );
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Código inválido ou expirado")
+            );
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(
+                    Map.of("mensagem", "Não foi possível redefinir a senha")
+            );
+        }
+
+        return ResponseEntity.ok(
+                Map.of("mensagem", "Senha redefinida com sucesso")
         );
     }
 
@@ -369,23 +567,9 @@ public class EmpresaController {
         String titulo = "Solicitação de vínculo";
         String mensagem = "A empresa " + empresa.getNome() + " solicitou seu vínculo.";
 
-        try {
-            notificacaoService.criarNotificacao(
-                    "ENTREGADOR", usuario.getId(), "SOLICITACAO_VINCULO",
-                    titulo, mensagem, null
-            );
-        } catch (Exception e) {
-            System.err.println("Falha ao registrar notificação de vínculo: " + e.getMessage());
-        }
-
-        try {
-            firebasePushService.enviarParaConta(
-                    "ENTREGADOR", usuario.getId(), "SOLICITACAO_VINCULO",
-                    titulo, mensagem, null
-            );
-        } catch (Exception e) {
-            System.err.println("Falha ao enviar push de vínculo: " + e.getMessage());
-        }
+        notificarEntregador(
+                usuario.getId(), "SOLICITACAO_VINCULO", titulo, mensagem
+        );
 
         return ResponseEntity.ok(
                 Map.of(
@@ -567,6 +751,13 @@ public class EmpresaController {
 
         usuarioRepository.save(entregador);
 
+        notificarEntregador(
+                entregador.getId(),
+                "VINCULO_ENCERRADO",
+                "Vínculo encerrado",
+                "A empresa " + empresa.getNome() + " encerrou seu vínculo."
+        );
+
         return ResponseEntity.ok(
                 Map.of(
                         "mensagem",
@@ -625,6 +816,13 @@ public class EmpresaController {
         usuario.setEmpresaPendente(null);
 
         usuarioRepository.save(usuario);
+
+        notificarEntregador(
+                usuario.getId(),
+                "SOLICITACAO_CANCELADA",
+                "Solicitação cancelada",
+                "A empresa " + empresa.getNome() + " cancelou a solicitação de vínculo."
+        );
 
         return ResponseEntity.ok(
                 Map.of(

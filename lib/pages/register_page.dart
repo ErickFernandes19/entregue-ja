@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
-import 'login_page.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -24,8 +24,8 @@ class _RegisterPageState extends State<RegisterPage> {
   Future<void> cadastrar() async {
     final nome = nomeController.text.trim();
     final email = emailController.text.trim();
-    final senha = senhaController.text.trim();
-    final confirmarSenha = confirmarSenhaController.text.trim();
+    final senha = senhaController.text;
+    final confirmarSenha = confirmarSenhaController.text;
 
     if (nome.isEmpty ||
         email.isEmpty ||
@@ -58,16 +58,17 @@ class _RegisterPageState extends State<RegisterPage> {
 
     if (sucesso) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cadastro realizado com sucesso')),
+        const SnackBar(
+          content: Text('Código de verificação enviado para seu e-mail'),
+        ),
       );
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const LoginPage()),
-      );
+      context.push('/entregador/verificar-cadastro', extra: email);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Erro ao cadastrar usuário')),
+        const SnackBar(
+          content: Text('Não foi possível enviar o código de verificação'),
+        ),
       );
     }
   }
@@ -276,12 +277,7 @@ class _RegisterPageState extends State<RegisterPage> {
                             ),
                             TextButton(
                               onPressed: () {
-                                Navigator.pushReplacement(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => const LoginPage(),
-                                  ),
-                                );
+                                context.go('/entregador/login');
                               },
                               child: const Text('Entrar'),
                             ),

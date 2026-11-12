@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
-import 'home_page.dart';
-import 'register_page.dart';
-import 'selection_page.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -48,10 +46,7 @@ class _LoginPageState extends State<LoginPage> {
 
       if (!mounted) return;
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const HomePage()),
-      );
+      context.go('/entregador/inicio');
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('E-mail ou senha inválidos')),
@@ -60,11 +55,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   void voltarParaSelecao() {
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const SelectionPage()),
-      (route) => false,
-    );
+    context.go('/selecionar');
   }
 
   @override
@@ -236,7 +227,22 @@ class _LoginPageState extends State<LoginPage> {
                               senha: true,
                             ),
 
-                            const SizedBox(height: 24),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton(
+                                onPressed: carregando
+                                    ? null
+                                    : () {
+                                        context.push(
+                                          '/entregador/recuperar-senha',
+                                          extra: emailController.text.trim(),
+                                        );
+                                      },
+                                child: const Text('Esqueceu sua senha?'),
+                              ),
+                            ),
+
+                            const SizedBox(height: 12),
 
                             SizedBox(
                               height: 54,
@@ -282,13 +288,7 @@ class _LoginPageState extends State<LoginPage> {
                                 ),
                                 TextButton(
                                   onPressed: () {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) =>
-                                            const RegisterPage(),
-                                      ),
-                                    );
+                                    context.push('/entregador/cadastro');
                                   },
                                   child: const Text('Criar conta'),
                                 ),

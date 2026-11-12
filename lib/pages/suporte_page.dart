@@ -6,8 +6,7 @@ import '../theme/app_colors.dart';
 class SuportePage extends StatelessWidget {
   const SuportePage({super.key});
 
-  static const String emailSuporte = 'suporte@entregueja.com';
-  static const String telefoneSuporte = '44999999999';
+  static const String emailSuporte = 'entregueja1@gmail.com';
 
   Future<void> abrirEmail(BuildContext context) async {
     final uri = Uri(
@@ -22,20 +21,6 @@ class SuportePage extends StatelessWidget {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Não foi possível abrir o aplicativo de e-mail.'),
-        ),
-      );
-    }
-  }
-
-  Future<void> abrirTelefone(BuildContext context) async {
-    final uri = Uri(scheme: 'tel', path: telefoneSuporte);
-
-    final abriu = await launchUrl(uri);
-
-    if (!abriu && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Não foi possível abrir o aplicativo de telefone.'),
         ),
       );
     }
@@ -75,62 +60,102 @@ class SuportePage extends StatelessWidget {
 
                 faq(
                   context: context,
-                  pergunta: 'Como recebo uma entrega?',
+                  pergunta: 'Como faço para receber entregas?',
                   resposta:
-                      'Quando uma empresa cadastrar uma entrega para você, '
-                      'ela aparecerá na sua lista de entregas.',
+                      'Após aceitar o vínculo com uma empresa, as entregas atribuídas a '
+                      'você poderão ser consultadas na lista de entregas do aplicativo.',
                 ),
 
                 faq(
                   context: context,
-                  pergunta: 'Como uso o QR Code?',
+                  pergunta: 'Como cadastrar uma entrega?',
                   resposta:
-                      'Na tela de entregas, toque em QR Code e aponte a '
-                      'câmera para o código da entrega. O aplicativo buscará '
-                      'os dados correspondentes.',
+                      'No painel da empresa, acesse a opção de cadastrar entrega,'
+                      'preencha os dados solicitados e salve. Você pode vincular um '
+                      'entregador durante o cadastro ou posteriormente.',
                 ),
 
                 faq(
                   context: context,
-                  pergunta: 'Como iniciar uma rota?',
+                  pergunta:
+                      'Como funciona o vínculo entre empresa e entregador?',
                   resposta:
-                      'Abra a opção Mapa, confira as entregas pendentes e '
-                      'toque em Iniciar. O aplicativo abrirá a rota no '
-                      'Google Maps.',
+                      'A empresa envia uma solicitação de vínculo ao entregador. Ele pode '
+                      'aceitar ou recusar a solicitação pelo aplicativo. A empresa pode '
+                      'consultar seus entregadores vinculados.',
+                ),
+
+                faq(
+                  context: context,
+                  pergunta: 'Como consultar o status de uma entrega?',
+                  resposta:
+                      'Acesse a lista de entregas para consultar os registros e seus '
+                      'respectivos status. No painel da empresa, também é possível abrir '
+                      'os detalhes de cada entrega.',
+                ),
+
+                faq(
+                  context: context,
+                  pergunta: 'Como usar o QR Code?',
+                  resposta:
+                      'Na área de entregas do entregador, escolha a leitura de QR Code e '
+                      'aponte a câmera para o código. O aplicativo tentará localizar os '
+                      'dados correspondentes.',
+                ),
+
+                faq(
+                  context: context,
+                  pergunta: 'Como visualizar e iniciar uma rota?',
+                  resposta:
+                      'No painel do entregador, abra o mapa para consultar as entregas e '
+                      'a rota disponível. Quando desejar navegar, utilize a opção de '
+                      'iniciar a rota no Google Maps.',
                 ),
 
                 faq(
                   context: context,
                   pergunta: 'Como finalizar uma entrega?',
                   resposta:
-                      'Na entrega desejada, toque em Finalizar entrega. '
-                      'Será necessário registrar uma foto e a localização '
-                      'para concluir ou informar uma tentativa sem sucesso.',
+                      'Abra os detalhes da entrega e escolha a opção de finalização. Siga '
+                      'as etapas de registro solicitadas pelo aplicativo, incluindo foto '
+                      'e localização quando necessário.',
                 ),
 
                 faq(
                   context: context,
-                  pergunta: 'Como alterar meu veículo?',
+                  pergunta: 'O que fazer se uma entrega não for realizada?',
                   resposta:
-                      'Abra Configurações, depois Veículo e Combustível. '
-                      'Escolha o veículo e informe os dados desejados.',
+                      'Na finalização da entrega, utilize a opção de registrar a '
+                      'tentativa sem sucesso e informe os dados solicitados. A empresa '
+                      'poderá acompanhar o status atualizado.',
                 ),
 
                 faq(
                   context: context,
-                  pergunta: 'Como funciona o vínculo com uma empresa?',
+                  pergunta: 'Como acompanhar as entregas pela empresa?',
                   resposta:
-                      'A empresa envia uma solicitação para o e-mail do '
-                      'entregador. O entregador pode aceitar ou recusar a '
-                      'solicitação nas configurações.',
+                      'No painel empresarial, acesse a lista de entregas e abra os '
+                      'detalhes para consultar o andamento. Quando houver informações de '
+                      'localização disponíveis, elas poderão ser exibidas no '
+                      'acompanhamento.',
                 ),
 
                 faq(
                   context: context,
-                  pergunta: 'A empresa consegue acompanhar as entregas?',
+                  pergunta: 'Como alterar as preferências de notificações?',
                   resposta:
-                      'Sim. A empresa consegue visualizar as entregas '
-                      'cadastradas e acompanhar seus respectivos status.',
+                      'Abra as configurações e acesse Notificações para escolher quais '
+                      'avisos deseja receber. As opções disponíveis podem variar entre '
+                      'empresa e entregador.',
+                ),
+
+                faq(
+                  context: context,
+                  pergunta: 'Como entrar em contato com o suporte?',
+                  resposta:
+                      'Na tela de Suporte, toque em E-mail de suporte para abrir seu '
+                      'aplicativo de e-mail e enviar uma mensagem para '
+                      'entregueja1@gmail.com.',
                 ),
 
                 const SizedBox(height: 12),
@@ -152,7 +177,7 @@ class SuportePage extends StatelessWidget {
                       Expanded(
                         child: Text(
                           'Não encontrou o que precisava? '
-                          'Entre em contato pelo e-mail ou telefone.',
+                          'Entre em contato pelo e-mail de suporte.',
                           style: TextStyle(color: theme.colorScheme.onSurface),
                         ),
                       ),
@@ -314,17 +339,6 @@ class SuportePage extends StatelessWidget {
             color: Colors.deepPurple,
             onTap: () {
               abrirEmail(context);
-            },
-          ),
-
-          opcaoSuporte(
-            context: context,
-            icon: Icons.phone_outlined,
-            titulo: 'Telefone',
-            subtitulo: '(44) 99999-9999',
-            color: AppColors.success,
-            onTap: () {
-              abrirTelefone(context);
             },
           ),
         ],

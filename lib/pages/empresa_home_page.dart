@@ -1,15 +1,12 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../services/empresa_estatisticas_service.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
-import 'cadastrar_entrega_page.dart';
-import 'empresa_configuracoes_page.dart';
-import 'empresa_entregas_page.dart';
-import 'empresa_perfil_page.dart';
-import 'vincular_entregador_page.dart';
 
 class EmpresaHomePage extends StatefulWidget {
   const EmpresaHomePage({super.key});
@@ -20,6 +17,7 @@ class EmpresaHomePage extends StatefulWidget {
 
 class _EmpresaHomePageState extends State<EmpresaHomePage> {
   String nomeEmpresa = 'Empresa';
+  Uint8List? fotoEmpresaBytes;
   Timer? timer;
   Map<String, dynamic>? estatisticas;
   bool carregando = true;
@@ -28,6 +26,7 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
   void initState() {
     super.initState();
     carregarNomeEmpresa();
+    carregarFotoEmpresa();
     carregarDados();
 
     timer = Timer.periodic(const Duration(seconds: 10), (_) {
@@ -51,6 +50,21 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
     });
   }
 
+  Future<void> carregarFotoEmpresa() async {
+    final referencia = await EmpresaService.fotoEmpresa();
+    Uint8List? bytes;
+
+    if (referencia != null && referencia.isNotEmpty) {
+      bytes = await EmpresaService.buscarBytesFotoEmpresa(referencia);
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      fotoEmpresaBytes = bytes;
+    });
+  }
+
   Future<void> carregarDados() async {
     final resultado = await EmpresaEstatisticasService.buscarEstatisticas();
 
@@ -62,8 +76,17 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
     });
   }
 
-  void abrirPagina(Widget pagina) {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => pagina));
+  void abrirPagina(String rota) {
+    context.push(rota);
+  }
+
+  Future<void> abrirPerfilEmpresa() async {
+    await context.push('/empresa/perfil');
+
+    if (!mounted) return;
+
+    await carregarNomeEmpresa();
+    await carregarFotoEmpresa();
   }
 
   Widget header() {
@@ -84,7 +107,7 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
         children: [
           IconButton(
             onPressed: () {
-              abrirPagina(const EmpresaConfiguracoesPage());
+              abrirPagina('/empresa/configuracoes');
             },
             icon: const Icon(Icons.settings, color: Colors.white),
           ),
@@ -114,19 +137,22 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
             ),
           ),
           GestureDetector(
-            onTap: () {
-              abrirPagina(const EmpresaPerfilPage());
-            },
+            onTap: abrirPerfilEmpresa,
             child: Container(
               padding: const EdgeInsets.all(3),
               decoration: BoxDecoration(
                 color: Colors.white.withOpacity(0.25),
                 shape: BoxShape.circle,
               ),
-              child: const CircleAvatar(
+              child: CircleAvatar(
                 radius: 25,
                 backgroundColor: Colors.white,
-                child: Icon(Icons.business, color: AppColors.primary),
+                backgroundImage: fotoEmpresaBytes == null
+                    ? null
+                    : MemoryImage(fotoEmpresaBytes!),
+                child: fotoEmpresaBytes == null
+                    ? const Icon(Icons.business, color: AppColors.primary)
+                    : null,
               ),
             ),
           ),
@@ -322,12 +348,7 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
                         titulo: 'Cadastrar\nEntrega',
                         color: AppColors.primary,
                         onTap: () async {
-                          await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const CadastrarEntregaPage(),
-                            ),
-                          );
+                          await context.push('/empresa/cadastrar-entrega');
 
                           await carregarDados();
                         },
@@ -338,12 +359,7 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
                         titulo: 'Minhas\nEntregas',
                         color: AppColors.warning,
                         onTap: () async {
-                          await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const EmpresaEntregasPage(),
-                            ),
-                          );
+                          await context.push('/empresa/entregas');
 
                           await carregarDados();
                         },
@@ -360,12 +376,7 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
                         titulo: 'Vincular\nEntregador',
                         color: AppColors.success,
                         onTap: () async {
-                          await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const VincularEntregadorPage(),
-                            ),
-                          );
+                          await context.push('/empresa/vincular-entregador');
 
                           await carregarDados();
                         },
@@ -376,7 +387,7 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
                         titulo: 'Configurações',
                         color: Colors.deepPurple,
                         onTap: () {
-                          abrirPagina(const EmpresaConfiguracoesPage());
+                          abrirPagina('/empresa/configuracoes');
                         },
                       ),
                     ],

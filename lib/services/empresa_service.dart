@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
@@ -10,6 +13,119 @@ import '../config/api_config.dart';
 
 class EmpresaService {
   static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
+  static StreamSubscription<String>? _tokenSubscription;
+  static Future<void> _filaFcm = Future<void>.value();
+  static bool _encerrandoSessao = false;
+
+  static Future<void> _enfileirarFcm(Future<void> Function() operacao) {
+    final proxima = _filaFcm.then((_) => operacao());
+    _filaFcm = proxima.catchError((Object erro) {
+      debugPrint('Erro na operação FCM da empresa: $erro');
+    });
+    return _filaFcm;
+  }
+
+  static bool get _firebaseDisponivel =>
+      !kIsWeb &&
+      defaultTargetPlatform == TargetPlatform.android &&
+      Firebase.apps.isNotEmpty;
+
+  static Uri get _urlDispositivos {
+    final empresasUri = Uri.parse(ApiConfig.empresas);
+    final segmentos = empresasUri.pathSegments
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (segmentos.isNotEmpty && segmentos.last == 'empresas') {
+      segmentos.removeLast();
+    }
+    return empresasUri.replace(
+      pathSegments: [...segmentos, 'notificacoes', 'dispositivos'],
+      query: null,
+      fragment: null,
+    );
+  }
+
+  static Future<void> registrarDispositivoFcm() =>
+      _enfileirarFcm(_registrarDispositivoFcm);
+
+  static Future<void> _registrarDispositivoFcm() async {
+    if (!_firebaseDisponivel || _encerrandoSessao) return;
+
+    try {
+      final jwt = await obterTokenEmpresa();
+      if (jwt == null || jwt.isEmpty) return;
+
+      final tokenFcm = await FirebaseMessaging.instance.getToken();
+      if (tokenFcm == null || tokenFcm.isEmpty) return;
+      if (_encerrandoSessao || await obterTokenEmpresa() != jwt) return;
+
+      final response = await http
+          .post(
+            _urlDispositivos,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $jwt',
+            },
+            body: jsonEncode({'token': tokenFcm, 'plataforma': 'ANDROID'}),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode != 204 && response.statusCode != 200) {
+        debugPrint(
+          'Falha ao registrar dispositivo FCM da empresa: ${response.statusCode}',
+        );
+      }
+    } catch (e) {
+      debugPrint('Erro ao registrar dispositivo FCM da empresa: $e');
+    }
+  }
+
+  static Future<void> inicializarRegistroFcm() async {
+    if (!_firebaseDisponivel) return;
+
+    _tokenSubscription ??= FirebaseMessaging.instance.onTokenRefresh.listen(
+      (_) => unawaited(registrarDispositivoFcm()),
+      onError: (Object erro) =>
+          debugPrint('Erro ao renovar token FCM da empresa: $erro'),
+    );
+
+    await registrarDispositivoFcm();
+  }
+
+  static Future<void> _removerDispositivoFcm() async {
+    if (!_firebaseDisponivel) return;
+
+    try {
+      final jwt = await obterTokenEmpresa();
+      if (jwt == null || jwt.isEmpty) return;
+
+      final tokenFcm = await FirebaseMessaging.instance.getToken();
+      if (tokenFcm == null || tokenFcm.isEmpty) return;
+
+      final request = http.Request('DELETE', _urlDispositivos)
+        ..headers.addAll({
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $jwt',
+        })
+        ..body = jsonEncode({'token': tokenFcm, 'plataforma': 'ANDROID'});
+
+      final client = http.Client();
+      try {
+        final response = await client
+            .send(request)
+            .timeout(const Duration(seconds: 10));
+        if (response.statusCode != 204 && response.statusCode != 404) {
+          debugPrint(
+            'Falha ao remover dispositivo FCM da empresa: ${response.statusCode}',
+          );
+        }
+      } finally {
+        client.close();
+      }
+    } catch (e) {
+      debugPrint('Erro ao remover dispositivo FCM da empresa: $e');
+    }
+  }
 
   static Future<String?> obterTokenEmpresa() async {
     return _secureStorage.read(key: 'empresa_jwt_token');
@@ -77,14 +193,14 @@ class EmpresaService {
         return response.bodyBytes;
       }
 
-      print(
+      debugPrint(
         'Erro ao carregar foto empresa. '
         'Status: ${response.statusCode}',
       );
 
       return null;
     } catch (e) {
-      print('Erro ao buscar imagem da empresa: $e');
+      debugPrint('Erro ao buscar imagem da empresa: $e');
       return null;
     }
   }
@@ -114,24 +230,26 @@ class EmpresaService {
         final token = data['token']?.toString();
 
         if (token == null || token.isEmpty) {
-          print('Login da empresa sem token JWT.');
+          debugPrint('Login da empresa sem token JWT.');
           return null;
         }
 
+        _encerrandoSessao = false;
         await _secureStorage.write(key: 'empresa_jwt_token', value: token);
+        unawaited(inicializarRegistroFcm());
 
         await salvarReferenciaFotoEmpresa(data['foto']?.toString());
 
-        print('Login da empresa realizado e token armazenado.');
+        debugPrint('Login da empresa realizado e token armazenado.');
 
         return data;
       }
 
-      print('Erro login empresa. Status: ${response.statusCode}');
+      debugPrint('Erro login empresa. Status: ${response.statusCode}');
 
       return null;
     } catch (e) {
-      print('Erro login empresa: $e');
+      debugPrint('Erro login empresa: $e');
       return null;
     }
   }
@@ -162,6 +280,11 @@ class EmpresaService {
   }
 
   static Future<void> logoutEmpresa() async {
+    _encerrandoSessao = true;
+    await _tokenSubscription?.cancel();
+    _tokenSubscription = null;
+    await _filaFcm;
+    await _removerDispositivoFcm();
     await _secureStorage.delete(key: 'empresa_jwt_token');
 
     final prefs = await SharedPreferences.getInstance();
@@ -189,7 +312,7 @@ class EmpresaService {
 
       return response.statusCode == 200;
     } catch (e) {
-      print('Erro ao solicitar vínculo: $e');
+      debugPrint('Erro ao solicitar vínculo: $e');
       return false;
     }
   }
@@ -215,7 +338,7 @@ class EmpresaService {
 
       return [];
     } catch (e) {
-      print('Erro ao buscar vínculos pendentes: $e');
+      debugPrint('Erro ao buscar vínculos pendentes: $e');
       return [];
     }
   }
@@ -240,7 +363,7 @@ class EmpresaService {
 
       return [];
     } catch (e) {
-      print('Erro ao buscar entregadores: $e');
+      debugPrint('Erro ao buscar entregadores: $e');
       return [];
     }
   }
@@ -264,7 +387,7 @@ class EmpresaService {
 
       return response.statusCode == 200;
     } catch (e) {
-      print('Erro ao cancelar solicitação de vínculo: $e');
+      debugPrint('Erro ao cancelar solicitação de vínculo: $e');
       return false;
     }
   }
@@ -289,7 +412,7 @@ class EmpresaService {
         body: jsonEncode({'nome': nome, 'email': email}),
       );
 
-      print(
+      debugPrint(
         'Atualizar perfil empresa status: '
         '${response.statusCode}',
       );
@@ -313,7 +436,7 @@ class EmpresaService {
 
       return data;
     } catch (e) {
-      print('Erro ao atualizar perfil da empresa: $e');
+      debugPrint('Erro ao atualizar perfil da empresa: $e');
       return null;
     }
   }
@@ -347,7 +470,7 @@ class EmpresaService {
 
       return 0;
     } catch (e) {
-      print('Erro ao buscar total de entregadores: $e');
+      debugPrint('Erro ao buscar total de entregadores: $e');
       return 0;
     }
   }
@@ -370,7 +493,7 @@ class EmpresaService {
 
       return response.statusCode == 200;
     } catch (e) {
-      print('Erro ao desvincular: $e');
+      debugPrint('Erro ao desvincular: $e');
       return false;
     }
   }
@@ -386,7 +509,7 @@ class EmpresaService {
       final token = await obterTokenEmpresa();
 
       if (token == null || token.isEmpty) {
-        print('Token da empresa não encontrado.');
+        debugPrint('Token da empresa não encontrado.');
         return null;
       }
 
@@ -425,7 +548,7 @@ class EmpresaService {
         return foto;
       }
 
-      print(
+      debugPrint(
         'Erro foto empresa status: '
         '${response.statusCode}. '
         'Resposta: $body',
@@ -433,7 +556,7 @@ class EmpresaService {
 
       return null;
     } catch (e) {
-      print('Erro ao enviar foto da empresa: $e');
+      debugPrint('Erro ao enviar foto da empresa: $e');
       return null;
     }
   }
@@ -490,7 +613,7 @@ class EmpresaService {
         return foto;
       }
 
-      print(
+      debugPrint(
         'Erro ao enviar foto por bytes. '
         'Status: ${response.statusCode}. '
         'Resposta: $body',
@@ -498,7 +621,7 @@ class EmpresaService {
 
       return null;
     } catch (e) {
-      print('Erro ao enviar foto por bytes: $e');
+      debugPrint('Erro ao enviar foto por bytes: $e');
       return null;
     }
   }
@@ -508,17 +631,115 @@ class EmpresaService {
     return prefs.getString('empresa_foto');
   }
 
-  static Future<bool> cadastrar(String nome, String email, String senha) async {
+  static Future<bool> confirmarCadastro(String email, String codigo) async {
     try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.empresas}/register'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'nome': nome, 'email': email, 'senha': senha}),
+      final response = await http
+          .post(
+            Uri.parse('${ApiConfig.empresas}/confirmar-cadastro'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': email.trim(), 'codigo': codigo.trim()}),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      debugPrint(
+        'Confirmação de cadastro empresa status: ${response.statusCode}',
       );
 
-      return response.statusCode == 200;
+      return response.statusCode == 200 || response.statusCode == 201;
     } catch (e) {
-      print('Erro cadastro empresa: $e');
+      debugPrint('Erro ao confirmar cadastro empresa: $e');
+      return false;
+    }
+  }
+
+  static Future<Map<String, dynamic>> _requisicaoRecuperacao(
+    String metodo,
+    String endpoint,
+    Map<String, String> dados,
+  ) async {
+    try {
+      final uri = Uri.parse('${ApiConfig.empresas}/$endpoint');
+      final headers = {'Content-Type': 'application/json'};
+      final corpo = jsonEncode(dados);
+
+      final http.Response response;
+      if (metodo == 'PUT') {
+        response = await http
+            .put(uri, headers: headers, body: corpo)
+            .timeout(const Duration(seconds: 15));
+      } else {
+        response = await http
+            .post(uri, headers: headers, body: corpo)
+            .timeout(const Duration(seconds: 15));
+      }
+
+      String mensagem = response.statusCode >= 200 && response.statusCode < 300
+          ? 'Operação realizada com sucesso'
+          : 'Não foi possível concluir a solicitação';
+
+      try {
+        final resposta = jsonDecode(response.body);
+        if (resposta is Map && resposta['mensagem'] is String) {
+          mensagem = resposta['mensagem'] as String;
+        }
+      } catch (_) {}
+
+      return {
+        'sucesso': response.statusCode >= 200 && response.statusCode < 300,
+        'mensagem': mensagem,
+      };
+    } catch (e) {
+      debugPrint('Erro na recuperação de senha da empresa: $e');
+      return {
+        'sucesso': false,
+        'mensagem': 'Não foi possível conectar ao servidor. Tente novamente.',
+      };
+    }
+  }
+
+  static Future<Map<String, dynamic>> solicitarCodigoRecuperacao(String email) {
+    return _requisicaoRecuperacao('POST', 'esqueci-senha', {
+      'email': email.trim(),
+    });
+  }
+
+  static Future<Map<String, dynamic>> verificarCodigoRecuperacao(
+    String email,
+    String codigo,
+  ) {
+    return _requisicaoRecuperacao('POST', 'verificar-codigo', {
+      'email': email.trim(),
+      'codigo': codigo.trim(),
+    });
+  }
+
+  static Future<Map<String, dynamic>> redefinirSenha(
+    String email,
+    String codigo,
+    String novaSenha,
+  ) {
+    return _requisicaoRecuperacao('PUT', 'redefinir-senha', {
+      'email': email.trim(),
+      'codigo': codigo.trim(),
+      'novaSenha': novaSenha,
+    });
+  }
+
+  static Future<bool> cadastrar(String nome, String email, String senha) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('${ApiConfig.empresas}/register'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'nome': nome, 'email': email, 'senha': senha}),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      debugPrint('Cadastro empresa status: ${response.statusCode}');
+
+      return response.statusCode == 200 || response.statusCode == 201;
+    } catch (e) {
+      debugPrint('Erro cadastro empresa: $e');
       return false;
     }
   }

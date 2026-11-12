@@ -1,7 +1,6 @@
 package com.entregueja.backend.entity;
 
 import jakarta.persistence.*;
-
 import java.time.LocalDateTime;
 
 @Entity
@@ -13,38 +12,27 @@ public class Entrega {
     private Long id;
 
     private String cliente;
-
     private String endereco;
-
     private Double valor;
-
     private String complemento;
-
     private String observacao;
-
     private Boolean entregue = false;
-
     private String status = "PENDENTE";
-
     private Double latitude;
-
     private Double longitude;
-
     private String fotoComprovante;
-
-
     private String motivoNaoEntrega;
 
     @Column(length = 1000)
     private String justificativa;
 
-
     private LocalDateTime dataFinalizacao;
-
-
     private Double latitudeComprovante;
-
     private Double longitudeComprovante;
+
+    private Double latitudeEntregador;
+    private Double longitudeEntregador;
+    private LocalDateTime dataAtualizacaoLocalizacao;
 
     @ManyToOne
     @JoinColumn(name = "empresa_id")
@@ -57,15 +45,8 @@ public class Entrega {
     public Entrega() {
     }
 
-    public Entrega(
-            Long id,
-            String cliente,
-            String endereco,
-            Double valor,
-            String observacao,
-            Boolean entregue,
-            String status
-    ) {
+    public Entrega(Long id, String cliente, String endereco, Double valor,
+                   String observacao, Boolean entregue, String status) {
         this.id = id;
         this.cliente = cliente;
         this.endereco = endereco;
@@ -75,145 +56,68 @@ public class Entrega {
         this.status = status;
     }
 
-    public Long getId() {
-        return id;
-    }
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
 
-    public void setId(Long id) {
-        this.id = id;
-    }
+    public String getCliente() { return cliente; }
+    public void setCliente(String cliente) { this.cliente = cliente; }
 
-    public String getCliente() {
-        return cliente;
-    }
+    public String getEndereco() { return endereco; }
+    public void setEndereco(String endereco) { this.endereco = endereco; }
 
-    public void setCliente(String cliente) {
-        this.cliente = cliente;
-    }
+    public Double getValor() { return valor; }
+    public void setValor(Double valor) { this.valor = valor; }
 
-    public String getEndereco() {
-        return endereco;
-    }
+    public String getObservacao() { return observacao; }
+    public void setObservacao(String observacao) { this.observacao = observacao; }
 
-    public void setEndereco(String endereco) {
-        this.endereco = endereco;
-    }
+    public Boolean getEntregue() { return entregue; }
+    public void setEntregue(Boolean entregue) { this.entregue = entregue; }
 
-    public Double getValor() {
-        return valor;
-    }
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
 
-    public void setValor(Double valor) {
-        this.valor = valor;
-    }
+    public String getFotoComprovante() { return fotoComprovante; }
+    public void setFotoComprovante(String fotoComprovante) { this.fotoComprovante = fotoComprovante; }
 
-    public String getObservacao() {
-        return observacao;
-    }
+    public String getMotivoNaoEntrega() { return motivoNaoEntrega; }
+    public void setMotivoNaoEntrega(String motivoNaoEntrega) { this.motivoNaoEntrega = motivoNaoEntrega; }
 
-    public void setObservacao(String observacao) {
-        this.observacao = observacao;
-    }
+    public String getJustificativa() { return justificativa; }
+    public void setJustificativa(String justificativa) { this.justificativa = justificativa; }
 
-    public Boolean getEntregue() {
-        return entregue;
-    }
+    public LocalDateTime getDataFinalizacao() { return dataFinalizacao; }
+    public void setDataFinalizacao(LocalDateTime dataFinalizacao) { this.dataFinalizacao = dataFinalizacao; }
 
-    public void setEntregue(Boolean entregue) {
-        this.entregue = entregue;
-    }
+    public Double getLatitudeComprovante() { return latitudeComprovante; }
+    public void setLatitudeComprovante(Double latitudeComprovante) { this.latitudeComprovante = latitudeComprovante; }
 
-    public String getStatus() {
-        return status;
-    }
+    public Double getLongitudeComprovante() { return longitudeComprovante; }
+    public void setLongitudeComprovante(Double longitudeComprovante) { this.longitudeComprovante = longitudeComprovante; }
 
-    public void setStatus(String status) {
-        this.status = status;
-    }
+    public Empresa getEmpresa() { return empresa; }
+    public void setEmpresa(Empresa empresa) { this.empresa = empresa; }
 
-    public String getFotoComprovante() {
-        return fotoComprovante;
-    }
+    public Usuario getEntregador() { return entregador; }
+    public void setEntregador(Usuario entregador) { this.entregador = entregador; }
 
-    public void setFotoComprovante(String fotoComprovante) {
-        this.fotoComprovante = fotoComprovante;
-    }
+    public String getComplemento() { return complemento; }
+    public void setComplemento(String complemento) { this.complemento = complemento; }
 
-    public String getMotivoNaoEntrega() {
-        return motivoNaoEntrega;
-    }
+    public Double getLatitude() { return latitude; }
+    public void setLatitude(Double latitude) { this.latitude = latitude; }
 
-    public void setMotivoNaoEntrega(String motivoNaoEntrega) {
-        this.motivoNaoEntrega = motivoNaoEntrega;
-    }
+    public Double getLongitude() { return longitude; }
+    public void setLongitude(Double longitude) { this.longitude = longitude; }
 
-    public String getJustificativa() {
-        return justificativa;
-    }
+    public Double getLatitudeEntregador() { return latitudeEntregador; }
+    public void setLatitudeEntregador(Double latitudeEntregador) { this.latitudeEntregador = latitudeEntregador; }
 
-    public void setJustificativa(String justificativa) {
-        this.justificativa = justificativa;
-    }
+    public Double getLongitudeEntregador() { return longitudeEntregador; }
+    public void setLongitudeEntregador(Double longitudeEntregador) { this.longitudeEntregador = longitudeEntregador; }
 
-    public LocalDateTime getDataFinalizacao() {
-        return dataFinalizacao;
-    }
-
-    public void setDataFinalizacao(LocalDateTime dataFinalizacao) {
-        this.dataFinalizacao = dataFinalizacao;
-    }
-
-    public Double getLatitudeComprovante() {
-        return latitudeComprovante;
-    }
-
-    public void setLatitudeComprovante(Double latitudeComprovante) {
-        this.latitudeComprovante = latitudeComprovante;
-    }
-
-    public Double getLongitudeComprovante() {
-        return longitudeComprovante;
-    }
-
-    public void setLongitudeComprovante(Double longitudeComprovante) {
-        this.longitudeComprovante = longitudeComprovante;
-    }
-
-    public Empresa getEmpresa() {
-        return empresa;
-    }
-
-    public void setEmpresa(Empresa empresa) {
-        this.empresa = empresa;
-    }
-
-    public Usuario getEntregador() {
-        return entregador;
-    }
-
-    public void setEntregador(Usuario entregador) {
-        this.entregador = entregador;
-    }
-
-    public String getComplemento() {
-        return complemento;
-    }
-
-    public void setComplemento(String complemento) {this.complemento = complemento;
-    }
-    public Double getLatitude() {
-        return latitude;
-    }
-
-    public void setLatitude(Double latitude) {
-        this.latitude = latitude;
-    }
-
-    public Double getLongitude() {
-        return longitude;
-    }
-
-    public void setLongitude(Double longitude) {
-        this.longitude = longitude;
+    public LocalDateTime getDataAtualizacaoLocalizacao() { return dataAtualizacaoLocalizacao; }
+    public void setDataAtualizacaoLocalizacao(LocalDateTime dataAtualizacaoLocalizacao) {
+        this.dataAtualizacaoLocalizacao = dataAtualizacaoLocalizacao;
     }
 }

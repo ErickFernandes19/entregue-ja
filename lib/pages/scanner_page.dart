@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../theme/app_colors.dart';
@@ -14,13 +15,13 @@ class _ScannerPageState extends State<ScannerPage> {
   bool codigoLido = false;
 
   void capturarCodigo(String codigo) {
-    if (codigoLido) return;
+    if (codigoLido || !mounted) return;
 
     setState(() {
       codigoLido = true;
     });
 
-    Navigator.pop(context, codigo);
+    context.pop(codigo);
   }
 
   @override
@@ -43,11 +44,9 @@ class _ScannerPageState extends State<ScannerPage> {
               capturarCodigo(barcode.rawValue!);
             },
           ),
-
           IgnorePointer(
             child: Container(color: Colors.black.withOpacity(0.18)),
           ),
-
           Center(
             child: Container(
               width: 260,
@@ -65,7 +64,6 @@ class _ScannerPageState extends State<ScannerPage> {
               ),
             ),
           ),
-
           SafeArea(
             child: Align(
               alignment: Alignment.bottomCenter,

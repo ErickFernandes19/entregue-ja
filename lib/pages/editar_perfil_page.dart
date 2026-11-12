@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
@@ -81,7 +82,7 @@ class _EditarPerfilPageState extends State<EditarPerfilPage> {
       ),
     );
 
-    Navigator.pop(context, true);
+    context.pop(true);
   }
 
   @override

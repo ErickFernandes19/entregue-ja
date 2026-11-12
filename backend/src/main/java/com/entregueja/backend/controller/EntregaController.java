@@ -1,6 +1,8 @@
 package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.Entrega;
+import com.entregueja.backend.entity.TentativaEntrega;
+import com.entregueja.backend.repository.TentativaEntregaRepository;
 import com.entregueja.backend.repository.EmpresaRepository;
 import com.entregueja.backend.repository.EntregaRepository;
 import com.entregueja.backend.repository.UsuarioRepository;
@@ -9,6 +11,7 @@ import com.entregueja.backend.service.NotificacaoService;
 import com.entregueja.backend.service.FirebasePushService;
 
 import org.springframework.http.MediaType;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -19,6 +22,8 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 
 import java.time.LocalDateTime;
 import java.util.Locale;
+import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -38,6 +43,7 @@ public class EntregaController {
             );
 
     private final EntregaRepository entregaRepository;
+    private final TentativaEntregaRepository tentativaEntregaRepository;
     private final EmpresaRepository empresaRepository;
     private final UsuarioRepository usuarioRepository;
     private final R2StorageService r2StorageService;
@@ -46,6 +52,7 @@ public class EntregaController {
 
     public EntregaController(
             EntregaRepository entregaRepository,
+            TentativaEntregaRepository tentativaEntregaRepository,
             EmpresaRepository empresaRepository,
             UsuarioRepository usuarioRepository,
             R2StorageService r2StorageService,
@@ -53,6 +60,7 @@ public class EntregaController {
             FirebasePushService firebasePushService
     ) {
         this.entregaRepository = entregaRepository;
+        this.tentativaEntregaRepository = tentativaEntregaRepository;
         this.empresaRepository = empresaRepository;
         this.usuarioRepository = usuarioRepository;
         this.r2StorageService = r2StorageService;
@@ -297,6 +305,135 @@ public class EntregaController {
         }
     }
 
+    private Map<String, Object> dadosTentativa(TentativaEntrega tentativa) {
+        Map<String, Object> dados = new LinkedHashMap<>();
+        dados.put("id", tentativa.getId());
+        dados.put("numeroTentativa", tentativa.getNumeroTentativa());
+        dados.put("dataTentativa", tentativa.getDataTentativa());
+        dados.put("resultado", tentativa.getResultado());
+        dados.put("motivo", tentativa.getMotivo());
+        dados.put("justificativa", tentativa.getJustificativa());
+        dados.put("latitude", tentativa.getLatitude());
+        dados.put("longitude", tentativa.getLongitude());
+        dados.put("possuiFoto", tentativa.getFotoComprovante() != null
+                && !tentativa.getFotoComprovante().isBlank());
+        return dados;
+    }
+
+    @GetMapping("/{id}/tentativas")
+    public ResponseEntity<?> listarTentativas(@PathVariable Long id) {
+        var entregaOptional = entregaRepository.findById(id);
+
+        if (entregaOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        if (!podeVisualizar(entregaOptional.get())) {
+            return ResponseEntity.status(403).build();
+        }
+
+        List<Map<String, Object>> tentativas = tentativaEntregaRepository
+                .findByEntregaIdOrderByNumeroTentativaAsc(id)
+                .stream()
+                .map(this::dadosTentativa)
+                .toList();
+
+        return ResponseEntity.ok(Map.of(
+                "quantidade", tentativas.size(),
+                "tentativas", tentativas
+        ));
+    }
+
+    @GetMapping("/{id}/tentativas/{tentativaId}/comprovante")
+    public ResponseEntity<?> buscarFotoTentativa(
+            @PathVariable Long id,
+            @PathVariable Long tentativaId
+    ) {
+        var entregaOptional = entregaRepository.findById(id);
+
+        if (entregaOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        if (!podeVisualizar(entregaOptional.get())) {
+            return ResponseEntity.status(403).build();
+        }
+
+        var tentativaOptional = tentativaEntregaRepository.findById(tentativaId);
+
+        if (tentativaOptional.isEmpty()
+                || !id.equals(tentativaOptional.get().getEntrega().getId())) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String chave = tentativaOptional.get().getFotoComprovante();
+
+        if (chave == null || !chave.startsWith("entregas/")) {
+            return ResponseEntity.notFound().build();
+        }
+
+        try {
+            byte[] imagem = r2StorageService.buscarImagem(chave);
+            MediaType tipo = MediaType.IMAGE_JPEG;
+
+            if (chave.endsWith(".png")) {
+                tipo = MediaType.IMAGE_PNG;
+            } else if (chave.endsWith(".webp")) {
+                tipo = MediaType.parseMediaType("image/webp");
+            }
+
+            return ResponseEntity.ok()
+                    .contentType(tipo)
+                    .header("Cache-Control", "private, no-store")
+                    .body(imagem);
+        } catch (NoSuchKeyException e) {
+            return ResponseEntity.notFound().build();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    @PutMapping("/{id}/nova-tentativa")
+    @Transactional
+    public ResponseEntity<?> prepararNovaTentativa(@PathVariable Long id) {
+        var entregaOptional = entregaRepository.findById(id);
+
+        if (entregaOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Entrega entrega = entregaOptional.get();
+
+        if (!podeAtualizarStatus(entrega)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        if (!"NAO_ENTREGUE".equals(entrega.getStatus())) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "A entrega não está aguardando nova tentativa")
+            );
+        }
+
+        if (tentativaEntregaRepository.countByEntregaId(id) == 0) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Não existe tentativa registrada no histórico")
+            );
+        }
+
+        entrega.setStatus("PENDENTE");
+        entrega.setEntregue(false);
+        entrega.setFotoComprovante(null);
+        entrega.setMotivoNaoEntrega(null);
+        entrega.setJustificativa(null);
+        entrega.setDataFinalizacao(null);
+        entrega.setLatitudeComprovante(null);
+        entrega.setLongitudeComprovante(null);
+
+        entregaRepository.save(entrega);
+        return ResponseEntity.ok(entrega);
+    }
+
     @GetMapping
     public ResponseEntity<?> listarEntregas() {
         Long empresaId = obterIdAutenticado("EMPRESA");
@@ -492,6 +629,77 @@ public class EntregaController {
                         "naoEntregues", naoEntregues
                 )
         );
+    }
+
+    @PutMapping("/{id}/localizacao")
+    @Transactional
+    public ResponseEntity<?> atualizarLocalizacaoEntregador(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> dados
+    ) {
+        var entregaOptional = entregaRepository.findById(id);
+        if (entregaOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Entrega entrega = entregaOptional.get();
+        if (!podeAtualizarStatus(entrega)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        if (!"EM_ROTA".equals(entrega.getStatus())) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "A localização só pode ser enviada durante a rota")
+            );
+        }
+
+        if (dados == null
+                || !(dados.get("latitude") instanceof Number)
+                || !(dados.get("longitude") instanceof Number)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe latitude e longitude numéricas")
+            );
+        }
+
+        Double latitude = ((Number) dados.get("latitude")).doubleValue();
+        Double longitude = ((Number) dados.get("longitude")).doubleValue();
+        if (!coordenadasValidas(latitude, longitude)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Coordenadas inválidas")
+            );
+        }
+
+        entrega.setLatitudeEntregador(latitude);
+        entrega.setLongitudeEntregador(longitude);
+        entrega.setDataAtualizacaoLocalizacao(LocalDateTime.now());
+        entregaRepository.save(entrega);
+
+        return ResponseEntity.ok(dadosLocalizacao(entrega));
+    }
+
+    @GetMapping("/{id}/localizacao")
+    public ResponseEntity<?> consultarLocalizacaoEntregador(@PathVariable Long id) {
+        var entregaOptional = entregaRepository.findById(id);
+        if (entregaOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Entrega entrega = entregaOptional.get();
+        if (!podeVisualizar(entrega)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        return ResponseEntity.ok(dadosLocalizacao(entrega));
+    }
+
+    private Map<String, Object> dadosLocalizacao(Entrega entrega) {
+        Map<String, Object> dados = new LinkedHashMap<>();
+        dados.put("entregaId", entrega.getId());
+        dados.put("status", entrega.getStatus());
+        dados.put("latitude", entrega.getLatitudeEntregador());
+        dados.put("longitude", entrega.getLongitudeEntregador());
+        dados.put("dataAtualizacao", entrega.getDataAtualizacaoLocalizacao());
+        return dados;
     }
 
     @GetMapping("/{id}")
@@ -817,9 +1025,25 @@ public class EntregaController {
         entrega.setCliente(
                 dadosAtualizados.getCliente()
         );
-        entrega.setEndereco(
-                dadosAtualizados.getEndereco()
-        );
+        String novoEndereco = dadosAtualizados.getEndereco();
+
+        if (novoEndereco == null || novoEndereco.isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe um endereço válido")
+            );
+        }
+
+        novoEndereco = novoEndereco.trim();
+
+        String enderecoAnterior = entrega.getEndereco();
+
+        if (enderecoAnterior == null
+                || !enderecoAnterior.trim().equals(novoEndereco)) {
+            entrega.setLatitude(null);
+            entrega.setLongitude(null);
+        }
+
+        entrega.setEndereco(novoEndereco);
         entrega.setComplemento(
                 dadosAtualizados.getComplemento()
         );
@@ -868,6 +1092,12 @@ public class EntregaController {
         entregaRepository.save(entrega);
         if (obterIdAutenticado("EMPRESA") != null) {
             notificarEntregaCancelada(entrega);
+        } else if (entrega.getEmpresa() != null) {
+            notificarEventoEntrega(
+                    entrega, "EMPRESA", entrega.getEmpresa().getId(),
+                    "ENTREGA_CANCELADA", "Entrega cancelada",
+                    "A entrega para " + entrega.getCliente() + " foi cancelada pelo entregador."
+            );
         }
 
         return ResponseEntity.ok(
@@ -930,6 +1160,10 @@ public class EntregaController {
             return ResponseEntity.badRequest().build();
         }
 
+        if ("EM_ROTA".equals(entrega.getStatus())) {
+            return ResponseEntity.ok().build();
+        }
+
         entrega.setStatus("EM_ROTA");
 
         entregaRepository.save(entrega);
@@ -941,6 +1175,7 @@ public class EntregaController {
             value = "/{id}/concluir",
             consumes = "multipart/form-data"
     )
+    @Transactional
     public ResponseEntity<?> concluirEntrega(
             @PathVariable Long id,
             @RequestParam("foto") MultipartFile foto,
@@ -967,11 +1202,6 @@ public class EntregaController {
         if (entregaFinalizadaOuCancelada(entrega)) {
             return ResponseEntity.badRequest().build();
         }
-        System.out.println("=== DEBUG FOTO COMPROVANTE ===");
-        System.out.println("Nome: " + foto.getOriginalFilename());
-        System.out.println("Tipo MIME: " + foto.getContentType());
-        System.out.println("Tamanho: " + foto.getSize());
-        System.out.println("Vazia: " + foto.isEmpty());
         if (!fotoValida(foto)) {
             return ResponseEntity.badRequest().body(
                     Map.of(
@@ -1012,6 +1242,19 @@ public class EntregaController {
             entrega.setMotivoNaoEntrega(null);
             entrega.setJustificativa(observacao);
 
+            TentativaEntrega tentativa = new TentativaEntrega();
+            tentativa.setEntrega(entrega);
+            tentativa.setNumeroTentativa(
+                    Math.toIntExact(tentativaEntregaRepository.countByEntregaId(id) + 1)
+            );
+            tentativa.setDataTentativa(entrega.getDataFinalizacao());
+            tentativa.setResultado("ENTREGUE");
+            tentativa.setJustificativa(observacao);
+            tentativa.setFotoComprovante(chaveNova);
+            tentativa.setLatitude(latitude);
+            tentativa.setLongitude(longitude);
+
+            tentativaEntregaRepository.save(tentativa);
             entregaRepository.save(entrega);
             notificarEntregaConcluida(entrega);
 
@@ -1045,6 +1288,7 @@ public class EntregaController {
             value = "/{id}/nao-entregue",
             consumes = "multipart/form-data"
     )
+    @Transactional
     public ResponseEntity<?> registrarNaoEntrega(
             @PathVariable Long id,
             @RequestParam("foto") MultipartFile foto,
@@ -1132,6 +1376,20 @@ public class EntregaController {
             entrega.setStatus("NAO_ENTREGUE");
             entrega.setEntregue(false);
 
+            TentativaEntrega tentativa = new TentativaEntrega();
+            tentativa.setEntrega(entrega);
+            tentativa.setNumeroTentativa(
+                    Math.toIntExact(tentativaEntregaRepository.countByEntregaId(id) + 1)
+            );
+            tentativa.setDataTentativa(entrega.getDataFinalizacao());
+            tentativa.setResultado("NAO_ENTREGUE");
+            tentativa.setMotivo(motivo.trim());
+            tentativa.setJustificativa(justificativa.trim());
+            tentativa.setFotoComprovante(chaveNova);
+            tentativa.setLatitude(latitude);
+            tentativa.setLongitude(longitude);
+
+            tentativaEntregaRepository.save(tentativa);
             entregaRepository.save(entrega);
             notificarEntregaNaoRealizada(entrega);
 

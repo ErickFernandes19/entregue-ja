@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../services/empresa_lista_entregas_service.dart';
 import '../theme/app_colors.dart';
-import 'detalhes_entrega_page.dart';
 
 class EmpresaEntregasPage extends StatefulWidget {
   final String? entregadorEmail;
@@ -22,7 +22,7 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
   final pesquisaController = TextEditingController();
 
   List<dynamic> entregas = [];
-  String filtro = 'todas';
+  String filtro = 'em_rota';
   bool carregando = true;
 
   @override
@@ -217,7 +217,7 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: cor.withOpacity(0.13),
+        color: cor.withValues(alpha: 0.13),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -253,12 +253,12 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(22),
         border: Border.all(
-          color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(
-              theme.brightness == Brightness.dark ? 0.18 : 0.05,
+            color: Colors.black.withValues(
+              alpha: theme.brightness == Brightness.dark ? 0.18 : 0.05,
             ),
             blurRadius: 12,
             offset: const Offset(0, 5),
@@ -268,11 +268,9 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
       child: InkWell(
         borderRadius: BorderRadius.circular(22),
         onTap: () async {
-          final resultado = await Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => DetalhesEntregaPage(entrega: entrega),
-            ),
+          final resultado = await context.push<bool>(
+            '/empresa/entregas/detalhes',
+            extra: entrega,
           );
 
           if (!mounted) return;
@@ -289,7 +287,7 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
                 children: [
                   CircleAvatar(
                     radius: 22,
-                    backgroundColor: AppColors.primary.withOpacity(0.14),
+                    backgroundColor: AppColors.primary.withValues(alpha: 0.14),
                     child: const Icon(
                       Icons.inventory_2,
                       color: AppColors.primary,

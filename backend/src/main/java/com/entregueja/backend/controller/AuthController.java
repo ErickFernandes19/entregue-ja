@@ -3,6 +3,7 @@ package com.entregueja.backend.controller;
 import com.entregueja.backend.entity.Usuario;
 import com.entregueja.backend.repository.UsuarioRepository;
 import com.entregueja.backend.service.EmailService;
+import com.entregueja.backend.service.CadastroPendenteService;
 import com.entregueja.backend.service.JwtService;
 import com.entregueja.backend.service.NotificacaoService;
 import com.entregueja.backend.service.FirebasePushService;
@@ -29,6 +30,7 @@ public class AuthController {
     private final UsuarioRepository usuarioRepository;
     private final PasswordEncoder passwordEncoder;
     private final EmailService emailService;
+    private final CadastroPendenteService cadastroPendenteService;
     private final JwtService jwtService;
     private final NotificacaoService notificacaoService;
     private final FirebasePushService firebasePushService;
@@ -37,6 +39,7 @@ public class AuthController {
             UsuarioRepository usuarioRepository,
             PasswordEncoder passwordEncoder,
             EmailService emailService,
+            CadastroPendenteService cadastroPendenteService,
             JwtService jwtService,
             NotificacaoService notificacaoService,
             FirebasePushService firebasePushService
@@ -44,6 +47,7 @@ public class AuthController {
         this.usuarioRepository = usuarioRepository;
         this.passwordEncoder = passwordEncoder;
         this.emailService = emailService;
+        this.cadastroPendenteService = cadastroPendenteService;
         this.jwtService = jwtService;
         this.notificacaoService = notificacaoService;
         this.firebasePushService = firebasePushService;
@@ -443,7 +447,7 @@ public class AuthController {
             );
         }
 
-        String email = usuario.getEmail().trim();
+        String email = usuario.getEmail().trim().toLowerCase();
 
         if (usuarioRepository.findByEmail(email).isPresent()) {
             return ResponseEntity.badRequest().body(
@@ -451,13 +455,66 @@ public class AuthController {
             );
         }
 
-        usuario.setId(null);
-        usuario.setNome(usuario.getNome().trim());
-        usuario.setEmail(email);
-        usuario.setSenha(
-                passwordEncoder.encode(usuario.getSenha())
-        );
+        try {
+            cadastroPendenteService.solicitarCadastro(
+                    "ENTREGADOR",
+                    usuario.getNome(),
+                    email,
+                    usuario.getSenha()
+            );
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", e.getMessage())
+            );
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(
+                    Map.of("mensagem", "Não foi possível enviar o código de verificação")
+            );
+        }
 
+        return ResponseEntity.ok(
+                Map.of("mensagem", "Código de verificação enviado para o e-mail")
+        );
+    }
+
+    @PostMapping("/confirmar-cadastro")
+    public ResponseEntity<?> confirmarCadastro(
+            @RequestBody Map<String, String> body
+    ) {
+        String email = body.get("email");
+        String codigo = body.get("codigo");
+
+        if (email == null || email.isBlank()
+                || codigo == null || codigo.isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe o e-mail e o código")
+            );
+        }
+
+        String emailNormalizado = email.trim().toLowerCase();
+
+        if (usuarioRepository.findByEmail(emailNormalizado).isPresent()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "E-mail já cadastrado")
+            );
+        }
+
+        CadastroPendenteService.DadosCadastro dados;
+
+        try {
+            dados = cadastroPendenteService.confirmarCodigo(
+                    "ENTREGADOR", emailNormalizado, codigo
+            );
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", e.getMessage())
+            );
+        }
+
+        Usuario usuario = new Usuario();
+        usuario.setNome(dados.nome());
+        usuario.setEmail(dados.email());
+        usuario.setSenha(dados.senhaHash());
         usuario.setEmpresa(null);
         usuario.setEmpresaPendente(null);
         usuario.setDataVinculo(null);
@@ -468,10 +525,7 @@ public class AuthController {
         usuarioRepository.save(usuario);
 
         return ResponseEntity.ok(
-                Map.of(
-                        "mensagem",
-                        "Usuário cadastrado com sucesso"
-                )
+                Map.of("mensagem", "Usuário cadastrado com sucesso")
         );
     }
 
@@ -693,22 +747,24 @@ public class AuthController {
             return ResponseEntity.status(403).build();
         }
 
-        Long empresaId = usuario.getEmpresaPendente() == null
-                ? null
-                : usuario.getEmpresaPendente().getId();
+        if (usuario.getEmpresaPendente() == null) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Nenhuma solicitação pendente")
+            );
+        }
+
+        Long empresaId = usuario.getEmpresaPendente().getId();
         String nomeEntregador = usuario.getNome();
 
         usuario.setEmpresaPendente(null);
         usuarioRepository.save(usuario);
 
-        if (empresaId != null) {
-            notificarEmpresaVinculo(
-                    empresaId,
-                    "VINCULO_RECUSADO",
-                    "Vínculo recusado",
-                    "O entregador " + nomeEntregador + " recusou a solicitação de vínculo."
-            );
-        }
+        notificarEmpresaVinculo(
+                empresaId,
+                "VINCULO_RECUSADO",
+                "Vínculo recusado",
+                "O entregador " + nomeEntregador + " recusou a solicitação de vínculo."
+        );
 
         return ResponseEntity.ok(
                 Map.of("mensagem", "Vínculo recusado")

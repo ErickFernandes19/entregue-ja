@@ -1,15 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../models/entrega_model.dart';
 import '../providers/entregas_provider.dart';
 import '../services/api_service.dart';
 import '../theme/app_colors.dart';
-
-import 'cadastrar_entrega_manual_page.dart';
-import 'finalizar_entrega_page.dart';
-import 'ocr_page.dart';
-import 'scanner_page.dart';
 
 class EntregasPage extends StatefulWidget {
   const EntregasPage({super.key});
@@ -20,7 +16,7 @@ class EntregasPage extends StatefulWidget {
 
 class _EntregasPageState extends State<EntregasPage> {
   final TextEditingController pesquisaController = TextEditingController();
-  String filtro = 'todas';
+  String filtro = 'em_rota';
 
   @override
   void dispose() {
@@ -135,36 +131,32 @@ class _EntregasPageState extends State<EntregasPage> {
   }
 
   Future<void> adicionarEntregaManual() async {
-    final resultado = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const CadastrarEntregaManualPage(),
-      ),
+    final resultado = await context.push<EntregaModel>(
+      '/entregador/entregas/cadastro-manual',
     );
 
-    if (resultado == null) return;
+    if (!mounted || resultado == null) return;
 
     final entregasProvider = Provider.of<EntregasProvider>(
       context,
       listen: false,
     );
 
-    await entregasProvider.adicionarEntrega(resultado as EntregaModel);
+    await entregasProvider.adicionarEntrega(resultado);
   }
 
   Future<void> escanearQRCode() async {
-    final resultado = await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const ScannerPage()),
+    final resultado = await context.push<Object?>(
+      '/entregador/entregas/scanner',
     );
 
-    if (resultado == null) return;
+    if (!mounted || resultado == null) return;
 
     final entrega = await ApiService.buscarEntrega(resultado.toString());
 
-    if (entrega == null) {
-      if (!mounted) return;
+    if (!mounted) return;
 
+    if (entrega == null) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Entrega não encontrada')));
@@ -183,12 +175,9 @@ class _EntregasPageState extends State<EntregasPage> {
   }
 
   Future<void> lerEtiqueta() async {
-    final resultado = await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const OcrPage()),
-    );
+    final resultado = await context.push<Object?>('/entregador/entregas/ocr');
 
-    if (resultado == null) return;
+    if (!mounted || resultado == null) return;
 
     final entregasProvider = Provider.of<EntregasProvider>(
       context,
@@ -203,6 +192,37 @@ class _EntregasPageState extends State<EntregasPage> {
         observacao: 'Texto extraído da etiqueta',
       ),
     );
+  }
+
+  Future<void> abrirDetalhesEntrega(
+    EntregaModel entrega,
+    EntregasProvider provider,
+  ) async {
+    if (entrega.id == null) {
+      mostrarMensagem(
+        'Esta entrega não possui ID para consultar os detalhes.',
+        erro: true,
+      );
+      return;
+    }
+
+    final atualizado = await context.push<bool>(
+      '/entregador/entregas/detalhes',
+      extra: {
+        'id': entrega.id,
+        'cliente': entrega.cliente,
+        'endereco': entrega.endereco,
+        'complemento': entrega.complemento,
+        'observacao': entrega.observacao,
+        'valor': entrega.valor,
+        'status': entrega.status,
+      },
+    );
+
+    if (!mounted) return;
+    if (atualizado == true) {
+      await provider.carregarEntregasDoBackend();
+    }
   }
 
   Future<void> finalizarEntrega(
@@ -221,15 +241,13 @@ class _EntregasPageState extends State<EntregasPage> {
       return;
     }
 
-    final resultado = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => FinalizarEntregaPage(
-          entregaId: entrega.id!,
-          cliente: entrega.cliente,
-          endereco: entrega.endereco,
-        ),
-      ),
+    final resultado = await context.push<bool>(
+      '/entregador/entregas/finalizar',
+      extra: {
+        'entregaId': entrega.id!,
+        'cliente': entrega.cliente,
+        'endereco': entrega.endereco,
+      },
     );
 
     if (!mounted) return;
@@ -581,6 +599,16 @@ class _EntregasPageState extends State<EntregasPage> {
               ],
             ),
             const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: OutlinedButton.icon(
+                onPressed: () => abrirDetalhesEntrega(entrega, provider),
+                icon: const Icon(Icons.info_outline),
+                label: const Text('Ver detalhes'),
+              ),
+            ),
+            const SizedBox(height: 10),
             if (podeFinalizar)
               SizedBox(
                 width: double.infinity,

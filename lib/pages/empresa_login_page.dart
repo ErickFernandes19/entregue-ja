@@ -1,11 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../theme/app_colors.dart';
 import 'package:entregue_ja/services/empresa_service.dart' as empresa_service;
-
-import 'empresa_home_page.dart';
-import 'empresa_register_page.dart';
-import 'selection_page.dart';
 
 class EmpresaLoginPage extends StatefulWidget {
   const EmpresaLoginPage({super.key});
@@ -52,10 +49,7 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
 
       if (!mounted) return;
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const EmpresaHomePage()),
-      );
+      context.go('/empresa/inicio');
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('E-mail ou senha inválidos')),
@@ -63,12 +57,19 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
     }
   }
 
-  void voltarParaSelecao() {
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const SelectionPage()),
-      (route) => false,
+  void recuperarSenha() {
+    context.push(
+      '/empresa/recuperar-senha',
+      extra: emailController.text.trim(),
     );
+  }
+
+  void voltarParaSelecao() {
+    if (context.canPop()) {
+      context.pop();
+    } else {
+      context.go('/selecionar');
+    }
   }
 
   Widget campo({
@@ -239,7 +240,15 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
                               senha: true,
                             ),
 
-                            const SizedBox(height: 24),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton(
+                                onPressed: recuperarSenha,
+                                child: const Text('Esqueceu sua senha?'),
+                              ),
+                            ),
+
+                            const SizedBox(height: 16),
 
                             SizedBox(
                               height: 54,
@@ -285,13 +294,7 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
                                 ),
                                 TextButton(
                                   onPressed: () {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) =>
-                                            const EmpresaRegisterPage(),
-                                      ),
-                                    );
+                                    context.push('/empresa/cadastro');
                                   },
                                   child: const Text('Cadastrar'),
                                 ),

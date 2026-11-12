@@ -1,14 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../config/api_config.dart';
 import '../providers/entregas_provider.dart';
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
-import 'configuracoes_page.dart';
-import 'entregas_page.dart';
-import 'mapa_page.dart';
-import 'perfil_page.dart';
-import 'relatorio_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -17,13 +14,34 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String nome = 'Usuário';
+  String? fotoUrl;
+  bool verificandoVinculo = false;
+  bool dialogoVinculoAberto = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     carregarNome();
+    carregarFoto();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      verificarVinculoPendente();
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      verificarVinculoPendente();
+    }
   }
 
   Future<void> carregarNome() async {
@@ -36,8 +54,152 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  void abrirPagina(BuildContext context, Widget pagina) {
-    Navigator.push(context, MaterialPageRoute(builder: (context) => pagina));
+  Future<void> carregarFoto() async {
+    final perfil = await AuthService.buscarPerfil();
+    if (!mounted) return;
+
+    final referencia = perfil?['foto']?.toString().trim() ?? '';
+    final url = referencia.isEmpty ? null : ApiConfig.urlArquivo(referencia);
+
+    if (url != null) {
+      await NetworkImage(url).evict();
+    }
+
+    if (!mounted) return;
+    setState(() {
+      fotoUrl = url;
+    });
+  }
+
+  Future<void> verificarVinculoPendente() async {
+    if (!mounted || verificandoVinculo || dialogoVinculoAberto) return;
+
+    verificandoVinculo = true;
+
+    try {
+      final vinculo = await AuthService.buscarVinculoPendente();
+
+      if (!mounted ||
+          vinculo == null ||
+          vinculo['possuiVinculo'] != true ||
+          dialogoVinculoAberto) {
+        return;
+      }
+
+      final empresaAtual = await AuthService.buscarEmpresaVinculada();
+      if (!mounted || empresaAtual?['vinculado'] == true) return;
+
+      final nomeEmpresa =
+          (vinculo['nomeEmpresa'] ??
+                  vinculo['empresaNome'] ??
+                  vinculo['empresa'] ??
+                  'Uma empresa')
+              .toString();
+
+      dialogoVinculoAberto = true;
+
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) {
+          bool processando = false;
+
+          return StatefulBuilder(
+            builder: (context, atualizarDialogo) {
+              Future<void> responder(bool aceitar) async {
+                if (processando) return;
+
+                atualizarDialogo(() {
+                  processando = true;
+                });
+
+                bool sucesso = false;
+                try {
+                  sucesso = aceitar
+                      ? await AuthService.aceitarVinculo()
+                      : await AuthService.recusarVinculo();
+                } catch (e) {
+                  debugPrint('Erro ao responder vínculo: $e');
+                }
+
+                if (!dialogContext.mounted) return;
+
+                if (sucesso) {
+                  Navigator.of(dialogContext).pop();
+
+                  if (mounted) {
+                    ScaffoldMessenger.of(this.context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          aceitar
+                              ? 'Vínculo aceito com sucesso'
+                              : 'Solicitação de vínculo recusada',
+                        ),
+                      ),
+                    );
+                  }
+                } else {
+                  atualizarDialogo(() {
+                    processando = false;
+                  });
+
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Não foi possível responder à solicitação. Você pode fechar esta janela e continuar usando o aplicativo.',
+                      ),
+                    ),
+                  );
+                }
+              }
+
+              return AlertDialog(
+                title: const Text('Solicitação de vínculo'),
+                content: Text(
+                  '$nomeEmpresa deseja vincular você como entregador. Deseja aceitar?',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: processando
+                        ? null
+                        : () => Navigator.of(dialogContext).pop(),
+                    child: const Text('Fechar'),
+                  ),
+                  TextButton(
+                    onPressed: processando ? null : () => responder(false),
+                    child: const Text('Recusar'),
+                  ),
+                  FilledButton(
+                    onPressed: processando ? null : () => responder(true),
+                    child: processando
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('Aceitar'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      dialogoVinculoAberto = false;
+      verificandoVinculo = false;
+    }
+  }
+
+  void abrirPagina(String rota) {
+    context.push(rota);
+  }
+
+  Future<void> abrirPerfil() async {
+    await context.push('/entregador/perfil');
+
+    if (!mounted) return;
+    await carregarFoto();
+    await carregarNome();
   }
 
   String saudacao() {
@@ -67,7 +229,7 @@ class _HomePageState extends State<HomePage> {
         children: [
           IconButton(
             onPressed: () {
-              abrirPagina(context, const ConfiguracoesPage());
+              abrirPagina('/entregador/configuracoes');
             },
             icon: const Icon(Icons.settings, color: Colors.white),
           ),
@@ -98,18 +260,23 @@ class _HomePageState extends State<HomePage> {
           ),
           GestureDetector(
             onTap: () {
-              abrirPagina(context, const PerfilPage());
+              abrirPerfil();
             },
             child: Container(
               padding: const EdgeInsets.all(3),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.25),
+                color: Colors.white.withValues(alpha: 0.25),
                 shape: BoxShape.circle,
               ),
-              child: const CircleAvatar(
+              child: CircleAvatar(
                 radius: 25,
                 backgroundColor: Colors.white,
-                child: Icon(Icons.person, color: AppColors.primary),
+                backgroundImage: fotoUrl == null
+                    ? null
+                    : NetworkImage(fotoUrl!),
+                child: fotoUrl == null
+                    ? const Icon(Icons.person, color: AppColors.primary)
+                    : null,
               ),
             ),
           ),
@@ -133,13 +300,13 @@ class _HomePageState extends State<HomePage> {
         decoration: BoxDecoration(
           color: theme.cardColor,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: color.withOpacity(0.22)),
+          border: Border.all(color: color.withValues(alpha: 0.22)),
         ),
         child: Row(
           children: [
             CircleAvatar(
               radius: 17,
-              backgroundColor: color.withOpacity(0.18),
+              backgroundColor: color.withValues(alpha: 0.18),
               child: Icon(icon, color: color, size: 18),
             ),
             const SizedBox(width: 8),
@@ -196,7 +363,7 @@ class _HomePageState extends State<HomePage> {
           decoration: BoxDecoration(
             color: theme.cardColor,
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: color.withOpacity(0.22)),
+            border: Border.all(color: color.withValues(alpha: 0.22)),
           ),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -237,7 +404,7 @@ class _HomePageState extends State<HomePage> {
         decoration: BoxDecoration(
           color: theme.cardColor,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: color.withOpacity(0.22)),
+          border: Border.all(color: color.withValues(alpha: 0.22)),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -283,7 +450,6 @@ class _HomePageState extends State<HomePage> {
       body: Column(
         children: [
           header(),
-
           Expanded(
             child: ListView(
               padding: const EdgeInsets.all(18),
@@ -305,9 +471,7 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 12),
-
                 Row(
                   children: [
                     cardResumo(
@@ -325,9 +489,7 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 22),
-
                 Text(
                   'Ações rápidas',
                   style: TextStyle(
@@ -336,9 +498,7 @@ class _HomePageState extends State<HomePage> {
                     color: theme.colorScheme.onSurface,
                   ),
                 ),
-
                 const SizedBox(height: 14),
-
                 Row(
                   children: [
                     acaoRapida(
@@ -346,31 +506,27 @@ class _HomePageState extends State<HomePage> {
                       titulo: 'Mapa',
                       color: AppColors.primary,
                       onTap: () {
-                        abrirPagina(context, const MapaPage());
+                        abrirPagina('/entregador/mapa');
                       },
                     ),
-
                     const SizedBox(width: 12),
-
                     acaoRapida(
                       icon: Icons.inventory_2,
                       titulo: 'Entregas',
                       color: AppColors.success,
                       onTap: () {
-                        abrirPagina(context, const EntregasPage());
+                        abrirPagina('/entregador/entregas');
                       },
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 12),
-
                 acaoRapidaGrande(
                   icon: Icons.article,
                   titulo: 'Relatórios',
                   color: Colors.deepPurple,
                   onTap: () {
-                    abrirPagina(context, const RelatorioPage());
+                    abrirPagina('/entregador/relatorios');
                   },
                 ),
               ],

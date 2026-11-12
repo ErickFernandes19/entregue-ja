@@ -1,24 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/theme_provider.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
-import 'selection_page.dart';
-import 'empresa_perfil_page.dart';
-import 'empresa_entregas_page.dart';
-import 'vincular_entregador_page.dart';
-import 'suporte_page.dart';
-import 'sobre_page.dart';
-import 'meus_entregadores_page.dart';
-import 'empresa_notificacoes_page.dart';
 
 class EmpresaConfiguracoesPage extends StatelessWidget {
   const EmpresaConfiguracoesPage({super.key});
-
-  void abrirPagina(BuildContext context, Widget pagina) {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => pagina));
-  }
 
   String textoTema(ThemeMode modo) {
     switch (modo) {
@@ -199,11 +188,7 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
 
           if (!context.mounted) return;
 
-          Navigator.pushAndRemoveUntil(
-            context,
-            MaterialPageRoute(builder: (_) => const SelectionPage()),
-            (route) => false,
-          );
+          context.go('/selecionar');
         },
       ),
     );
@@ -241,7 +226,7 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
             subtitulo: 'Nome, e-mail e informações cadastrais',
             color: AppColors.primary,
             onTap: () {
-              abrirPagina(context, const EmpresaPerfilPage());
+              context.push('/empresa/perfil');
             },
           ),
 
@@ -252,7 +237,7 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
             subtitulo: 'Ver entregadores vinculados',
             color: AppColors.success,
             onTap: () {
-              abrirPagina(context, const MeusEntregadoresPage());
+              context.push('/empresa/entregadores');
             },
           ),
 
@@ -263,7 +248,7 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
             subtitulo: 'Enviar solicitação de vínculo',
             color: Colors.orange,
             onTap: () {
-              abrirPagina(context, const VincularEntregadorPage());
+              context.push('/empresa/vincular-entregador');
             },
           ),
 
@@ -287,7 +272,7 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
             subtitulo: 'Ver entregas cadastradas e status',
             color: Colors.deepPurple,
             onTap: () {
-              abrirPagina(context, const EmpresaEntregasPage());
+              context.push('/empresa/entregas');
             },
           ),
 
@@ -311,7 +296,7 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
             subtitulo: 'Avisos e atualizações do sistema',
             color: AppColors.warning,
             onTap: () {
-              abrirPagina(context, const EmpresaNotificacoesPage());
+              context.push('/empresa/notificacoes');
             },
           ),
 
@@ -346,7 +331,7 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
             subtitulo: 'Ajuda e atendimento',
             color: Colors.deepPurple,
             onTap: () {
-              abrirPagina(context, const SuportePage());
+              context.push('/empresa/suporte');
             },
           ),
 
@@ -357,7 +342,7 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
             subtitulo: 'Informações do Entregue Já',
             color: AppColors.primary,
             onTap: () {
-              abrirPagina(context, const SobrePage());
+              context.push('/empresa/sobre');
             },
           ),
 
