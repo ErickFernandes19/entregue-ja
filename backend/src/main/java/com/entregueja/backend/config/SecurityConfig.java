@@ -37,7 +37,8 @@ public class SecurityConfig {
                 "http://127.0.0.1:*",
                 "https://localhost:*",
                 "https://127.0.0.1:*",
-                "https://entregueja.netlify.app"
+                "https://entregueja.netlify.app",
+                "https://jocular-cassata-48f61b.netlify.app"
         ));
 
         configuration.setAllowedMethods(List.of(
