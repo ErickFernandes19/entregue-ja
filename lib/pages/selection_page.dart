@@ -138,7 +138,7 @@ class SelectionPage extends StatelessWidget {
                           titulo: 'Sou Entregador',
                           cor: AppColors.primary,
                           onTap: () {
-                            context.push('/entregador/login');
+                            context.go('/entregador/login');
                           },
                         ),
 
@@ -149,7 +149,7 @@ class SelectionPage extends StatelessWidget {
                           titulo: 'Sou Empresa',
                           cor: corEmpresa,
                           onTap: () {
-                            context.push('/empresa/login');
+                            context.go('/empresa/login');
                           },
                         ),
 

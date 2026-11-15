@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
@@ -91,6 +92,10 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
   }
 
   Future<void> vincularEntregador() async {
+    if (carregando) return;
+
+    FocusScope.of(context).unfocus();
+
     final entregadorEmail = emailController.text.trim();
 
     if (entregadorEmail.isEmpty) {
@@ -243,6 +248,13 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
 
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar ao início',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            context.go('/empresa/inicio');
+          },
+        ),
         title: const Text('Vincular Entregador'),
         centerTitle: true,
       ),
@@ -250,7 +262,13 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
         onRefresh: carregarPendentes,
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(20),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: EdgeInsets.fromLTRB(
+            20,
+            20,
+            20,
+            20 + MediaQuery.viewInsetsOf(context).bottom,
+          ),
           children: [
             Container(
               padding: const EdgeInsets.all(16),
@@ -290,6 +308,11 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
                   TextField(
                     controller: emailController,
                     keyboardType: TextInputType.emailAddress,
+                    textInputAction: TextInputAction.done,
+                    autocorrect: false,
+                    enabled: !carregando,
+                    onTapOutside: (_) => FocusScope.of(context).unfocus(),
+                    onSubmitted: (_) => vincularEntregador(),
                     style: TextStyle(color: theme.colorScheme.onSurface),
                     decoration: const InputDecoration(
                       labelText: 'E-mail do entregador',

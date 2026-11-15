@@ -18,6 +18,10 @@ class RecuperarSenhaEmpresaPage extends StatefulWidget {
 class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
   late final TextEditingController emailController;
   final codigoController = TextEditingController();
+  final emailFocus = FocusNode();
+  final codigoFocus = FocusNode();
+  final senhaFocus = FocusNode();
+  final confirmarSenhaFocus = FocusNode();
   final senhaController = TextEditingController();
   final confirmarSenhaController = TextEditingController();
 
@@ -40,6 +44,10 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
     codigoController.dispose();
     senhaController.dispose();
     confirmarSenhaController.dispose();
+    emailFocus.dispose();
+    codigoFocus.dispose();
+    senhaFocus.dispose();
+    confirmarSenhaFocus.dispose();
     super.dispose();
   }
 
@@ -123,6 +131,14 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
     }
   }
 
+  bool senhaForte(String senha) {
+    return senha.length >= 8 &&
+        RegExp(r'[A-Z]').hasMatch(senha) &&
+        RegExp(r'[a-z]').hasMatch(senha) &&
+        RegExp(r'[0-9]').hasMatch(senha) &&
+        RegExp(r'[^A-Za-z0-9]').hasMatch(senha);
+  }
+
   Future<void> redefinirSenha() async {
     final senha = senhaController.text;
     final confirmacao = confirmarSenhaController.text;
@@ -130,8 +146,10 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
       mostrarMensagem('Preencha os dois campos de senha.');
       return;
     }
-    if (senha.length < 8) {
-      mostrarMensagem('A nova senha deve ter pelo menos 8 caracteres.');
+    if (!senhaForte(senha)) {
+      mostrarMensagem(
+        'A senha deve ter pelo menos 8 caracteres, com maiúscula, minúscula, número e caractere especial.',
+      );
       return;
     }
     if (senha != confirmacao) {
@@ -153,7 +171,8 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
         'Senha redefinida com sucesso! Faça login com a nova senha.',
         sucesso: true,
       );
-      context.pop();
+
+      context.go('/empresa/login');
     } else {
       mostrarMensagem(
         resultado['mensagem']?.toString() ??
@@ -164,8 +183,13 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
 
   void voltar() {
     if (carregando) return;
+
     if (etapa == 0) {
-      context.pop();
+      if (context.canPop()) {
+        context.pop();
+      } else {
+        context.go('/empresa/login');
+      }
     } else {
       setState(() => etapa--);
     }
@@ -179,15 +203,23 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
     bool senha = false,
     bool confirmacao = false,
     List<TextInputFormatter>? formatadores,
+    FocusNode? focusNode,
+    TextInputAction acao = TextInputAction.done,
+    VoidCallback? aoEnviar,
   }) {
     final ocultar = senha && !(confirmacao ? mostrarConfirmacao : mostrarSenha);
     return TextField(
       controller: controller,
+      focusNode: focusNode,
       enabled: !carregando,
       keyboardType: tipo,
       obscureText: ocultar,
+      autocorrect: !senha,
+      enableSuggestions: !senha,
       inputFormatters: formatadores,
-      textInputAction: TextInputAction.done,
+      textInputAction: acao,
+      onSubmitted: (_) => aoEnviar?.call(),
+      onTapOutside: (_) => FocusScope.of(context).unfocus(),
       decoration: InputDecoration(
         labelText: label,
         prefixIcon: Icon(icone),
@@ -249,6 +281,8 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
                 ),
                 Center(
                   child: SingleChildScrollView(
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
                     padding: const EdgeInsets.fromLTRB(24, 68, 24, 24),
                     child: Column(
                       children: [
@@ -358,6 +392,18 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
                                   label: 'Nova senha',
                                   icone: Icons.lock_outline,
                                   senha: true,
+                                  focusNode: senhaFocus,
+                                  acao: TextInputAction.next,
+                                  aoEnviar: () =>
+                                      confirmarSenhaFocus.requestFocus(),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Mínimo de 8 caracteres, com maiúscula, minúscula, número e caractere especial.',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
                                 ),
                                 const SizedBox(height: 16),
                                 campo(
@@ -366,6 +412,9 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
                                   icone: Icons.lock_outline,
                                   senha: true,
                                   confirmacao: true,
+                                  focusNode: confirmarSenhaFocus,
+                                  acao: TextInputAction.done,
+                                  aoEnviar: redefinirSenha,
                                 ),
                               ],
                               const SizedBox(height: 24),

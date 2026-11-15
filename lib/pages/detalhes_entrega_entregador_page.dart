@@ -30,6 +30,7 @@ class _DetalhesEntregaEntregadorPageState
   bool carregandoHistorico = true;
   bool erroHistorico = false;
   bool preparandoTentativa = false;
+  bool salvandoEdicao = false;
   List<Map<String, dynamic>> tentativas = [];
   final Map<String, Uint8List> fotosTentativas = {};
   final Set<String> carregandoFotos = {};
@@ -228,6 +229,197 @@ class _DetalhesEntregaEntregadorPageState
       if (mounted) mensagem('Erro de conexão ao preparar a nova tentativa.');
     } finally {
       if (mounted) setState(() => preparandoTentativa = false);
+    }
+  }
+
+  Future<void> editarEntrega() async {
+    if (id.isEmpty ||
+        dados['empresa'] != null ||
+        !['PENDENTE', 'EM_ROTA'].contains(status.toUpperCase()) ||
+        salvandoEdicao) {
+      return;
+    }
+
+    final clienteController = TextEditingController(
+      text: (dados['cliente'] ?? '').toString(),
+    );
+    final enderecoController = TextEditingController(
+      text: (dados['endereco'] ?? '').toString(),
+    );
+    final complementoController = TextEditingController(
+      text: (dados['complemento'] ?? '').toString(),
+    );
+    final valorController = TextEditingController(
+      text: (dados['valor'] ?? 0).toString().replaceAll('.', ','),
+    );
+    final observacaoController = TextEditingController(
+      text: (dados['observacao'] ?? '').toString(),
+    );
+    final chaveFormulario = GlobalKey<FormState>();
+    var enviando = false;
+
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (dialogContext, atualizarDialogo) => AlertDialog(
+            title: const Text('Editar entrega'),
+            content: SizedBox(
+              width: 420,
+              child: SingleChildScrollView(
+                child: Form(
+                  key: chaveFormulario,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextFormField(
+                        controller: clienteController,
+                        enabled: !enviando,
+                        decoration: const InputDecoration(labelText: 'Cliente'),
+                        validator: (valor) =>
+                            valor == null || valor.trim().isEmpty
+                            ? 'Informe o cliente'
+                            : null,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: enderecoController,
+                        enabled: !enviando,
+                        decoration: const InputDecoration(
+                          labelText: 'Endereço',
+                        ),
+                        validator: (valor) =>
+                            valor == null || valor.trim().isEmpty
+                            ? 'Informe o endereço'
+                            : null,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: complementoController,
+                        enabled: !enviando,
+                        decoration: const InputDecoration(
+                          labelText: 'Complemento',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: valorController,
+                        enabled: !enviando,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: 'Valor (R\$)',
+                        ),
+                        validator: (valor) {
+                          final numero = double.tryParse(
+                            (valor ?? '').trim().replaceAll(',', '.'),
+                          );
+                          return numero == null ||
+                                  !numero.isFinite ||
+                                  numero < 0
+                              ? 'Informe um valor válido'
+                              : null;
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: observacaoController,
+                        enabled: !enviando,
+                        minLines: 2,
+                        maxLines: 4,
+                        decoration: const InputDecoration(
+                          labelText: 'Observação',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: enviando ? null : () => Navigator.pop(dialogContext),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: enviando
+                    ? null
+                    : () async {
+                        if (!(chaveFormulario.currentState?.validate() ??
+                            false))
+                          return;
+                        atualizarDialogo(() => enviando = true);
+                        setState(() => salvandoEdicao = true);
+                        try {
+                          final headers =
+                              await AuthService.headersAutenticados();
+                          final resposta = await http.put(
+                            Uri.parse(
+                              '${ApiConfig.entregas}/${Uri.encodeComponent(id)}',
+                            ),
+                            headers: {
+                              ...headers,
+                              'Content-Type': 'application/json',
+                            },
+                            body: jsonEncode({
+                              'cliente': clienteController.text.trim(),
+                              'endereco': enderecoController.text.trim(),
+                              'complemento': complementoController.text.trim(),
+                              'valor': double.parse(
+                                valorController.text.trim().replaceAll(
+                                  ',',
+                                  '.',
+                                ),
+                              ),
+                              'observacao': observacaoController.text.trim(),
+                            }),
+                          );
+                          if (!mounted || !dialogContext.mounted) return;
+                          if (resposta.statusCode == 200) {
+                            Navigator.pop(dialogContext);
+                            await atualizarDados();
+                            if (mounted)
+                              mensagem('Entrega atualizada com sucesso.');
+                          } else {
+                            String detalhe =
+                                'Não foi possível editar a entrega (${resposta.statusCode}).';
+                            try {
+                              final corpo = jsonDecode(resposta.body);
+                              if (corpo is Map && corpo['mensagem'] != null) {
+                                detalhe = corpo['mensagem'].toString();
+                              }
+                            } catch (_) {}
+                            mensagem(detalhe);
+                          }
+                        } catch (e) {
+                          if (mounted)
+                            mensagem('Erro de conexão ao editar a entrega.');
+                        } finally {
+                          if (mounted) setState(() => salvandoEdicao = false);
+                          if (dialogContext.mounted)
+                            atualizarDialogo(() => enviando = false);
+                        }
+                      },
+                child: enviando
+                    ? const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Salvar'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      clienteController.dispose();
+      enderecoController.dispose();
+      complementoController.dispose();
+      valorController.dispose();
+      observacaoController.dispose();
     }
   }
 
@@ -505,6 +697,17 @@ class _DetalhesEntregaEntregadorPageState
 
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar às entregas',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop(true);
+            } else {
+              context.go('/entregador/entregas');
+            }
+          },
+        ),
         title: Text('Entrega #$id'),
         centerTitle: true,
         actions: [
@@ -597,6 +800,18 @@ class _DetalhesEntregaEntregadorPageState
             ),
           ),
           const SizedBox(height: 18),
+          if (dados['empresa'] == null &&
+              (status == 'PENDENTE' || status == 'EM_ROTA')) ...[
+            SizedBox(
+              height: 52,
+              child: OutlinedButton.icon(
+                onPressed: salvandoEdicao ? null : editarEntrega,
+                icon: const Icon(Icons.edit_outlined),
+                label: const Text('Editar entrega'),
+              ),
+            ),
+            const SizedBox(height: 18),
+          ],
           if (status == 'NAO_ENTREGUE') ...[
             SizedBox(
               height: 52,

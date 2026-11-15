@@ -202,6 +202,13 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar ao início',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            context.go('/empresa/inicio');
+          },
+        ),
         title: const Text('Configurações da Empresa'),
         centerTitle: true,
       ),

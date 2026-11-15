@@ -271,6 +271,56 @@ class AuthService {
     }
   }
 
+  static Future<String?> atualizarFotoPerfilBytes({
+    required Uint8List bytes,
+    required String nomeArquivo,
+  }) async {
+    try {
+      final email = await usuarioLogado();
+      final token = await obterToken();
+
+      if (email == null ||
+          email.isEmpty ||
+          token == null ||
+          token.isEmpty ||
+          bytes.isEmpty) {
+        return null;
+      }
+
+      final request = http.MultipartRequest(
+        'PUT',
+        Uri.parse('${ApiConfig.auth}/${Uri.encodeComponent(email)}/foto'),
+      );
+
+      request.headers['Authorization'] = 'Bearer $token';
+      request.files.add(
+        http.MultipartFile.fromBytes('foto', bytes, filename: nomeArquivo),
+      );
+
+      final response = await request.send();
+      final body = await response.stream.bytesToString();
+
+      if (response.statusCode == 200) {
+        final data = Map<String, dynamic>.from(jsonDecode(body));
+        final foto = data['foto']?.toString();
+
+        if (foto == null || foto.isEmpty) return null;
+
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('usuario_foto', foto);
+        return foto;
+      }
+
+      debugPrint(
+        'Erro ao enviar foto por bytes. Status: ${response.statusCode}. Resposta: $body',
+      );
+      return null;
+    } catch (e) {
+      debugPrint('Erro ao enviar foto por bytes: $e');
+      return null;
+    }
+  }
+
   static Future<String?> fotoUsuario() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -534,10 +584,49 @@ class AuthService {
     return prefs.getString('usuario_nome');
   }
 
+  static bool _tokenJwtValido(String token) {
+    try {
+      final partes = token.split('.');
+      if (partes.length != 3) return false;
+
+      final payload = jsonDecode(
+        utf8.decode(base64Url.decode(base64Url.normalize(partes[1]))),
+      );
+
+      if (payload is! Map) return false;
+
+      final expiracao = payload['exp'];
+      final segundos = expiracao is num
+          ? expiracao.toInt()
+          : int.tryParse(expiracao?.toString() ?? '');
+
+      if (segundos == null) return false;
+
+      final agora = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+      return segundos > agora;
+    } catch (e) {
+      debugPrint('Erro ao verificar validade do JWT do entregador: $e');
+      return false;
+    }
+  }
+
   static Future<String?> usuarioLogado() async {
     final prefs = await SharedPreferences.getInstance();
+    final email = prefs.getString('usuario_logado');
 
-    return prefs.getString('usuario_logado');
+    if (email == null || email.trim().isEmpty) return null;
+
+    try {
+      final token = await obterToken();
+      if (token == null || token.isEmpty || !_tokenJwtValido(token)) {
+        return null;
+      }
+
+      return email;
+    } catch (e) {
+      debugPrint('Erro ao verificar sessão do entregador: $e');
+      return null;
+    }
   }
 
   static Future<void> logout() async {

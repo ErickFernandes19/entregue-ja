@@ -386,6 +386,23 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
 
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: widget.entregadorEmail == null
+              ? 'Voltar ao início'
+              : 'Voltar ao perfil do entregador',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (widget.entregadorEmail != null) {
+              if (context.canPop()) {
+                context.pop();
+              } else {
+                context.go('/empresa/entregadores');
+              }
+            } else {
+              context.go('/empresa/inicio');
+            }
+          },
+        ),
         title: Text(
           widget.entregadorNome == null
               ? 'Minhas Entregas'

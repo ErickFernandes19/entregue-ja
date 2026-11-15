@@ -238,12 +238,9 @@ public class AuthController {
             );
         }
 
-        if (novaSenha.length() < 6) {
+        if (!senhaForte(novaSenha)) {
             return ResponseEntity.badRequest().body(
-                    Map.of(
-                            "mensagem",
-                            "A nova senha deve possuir pelo menos 6 caracteres"
-                    )
+                    Map.of("mensagem", "A senha deve ter pelo menos 8 caracteres, incluindo letra maiúscula, minúscula, número e caractere especial")
             );
         }
 
@@ -444,6 +441,12 @@ public class AuthController {
                 || usuario.getSenha().isEmpty()) {
             return ResponseEntity.badRequest().body(
                     Map.of("mensagem", "Senha é obrigatória")
+            );
+        }
+
+        if (!senhaForte(usuario.getSenha())) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "A senha deve ter pelo menos 8 caracteres, incluindo letra maiúscula, minúscula, número e caractere especial")
             );
         }
 
@@ -866,6 +869,15 @@ public class AuthController {
         );
 
         return ResponseEntity.ok(resposta);
+    }
+
+    private boolean senhaForte(String senha) {
+        return senha != null
+                && senha.length() >= 8
+                && senha.matches(".*[A-Z].*")
+                && senha.matches(".*[a-z].*")
+                && senha.matches(".*[0-9].*")
+                && senha.matches(".*[^A-Za-z0-9].*");
     }
 
     private boolean senhaValida(

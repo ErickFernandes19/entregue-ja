@@ -141,6 +141,17 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar aos entregadores',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop(false);
+            } else {
+              context.go('/empresa/entregadores');
+            }
+          },
+        ),
         title: const Text('Perfil do Entregador'),
         centerTitle: true,
       ),

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:excel/excel.dart' hide Border;
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -718,6 +719,13 @@ class _RelatorioPageState extends State<RelatorioPage> {
 
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar ao início',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            context.go('/entregador/inicio');
+          },
+        ),
         title: const Text('Relatórios'),
         centerTitle: true,
         actions: [

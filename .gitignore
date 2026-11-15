@@ -44,3 +44,6 @@ uploads/
 coverage/
 *.tmp
 *.bak
+
+# Local Netlify folder
+.netlify

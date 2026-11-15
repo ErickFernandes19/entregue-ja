@@ -663,11 +663,26 @@ class _EntregasPageState extends State<EntregasPage> {
     final lista = filtrarEntregas(provider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Minhas Entregas'), centerTitle: true),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar ao início',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop();
+            } else {
+              context.go('/entregador/inicio');
+            }
+          },
+        ),
+        title: const Text('Minhas Entregas'),
+        centerTitle: true,
+      ),
       body: RefreshIndicator(
         onRefresh: provider.carregarEntregasDoBackend,
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           padding: const EdgeInsets.all(18),
           children: [
             Row(
@@ -699,6 +714,10 @@ class _EntregasPageState extends State<EntregasPage> {
             const SizedBox(height: 18),
             TextField(
               controller: pesquisaController,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => FocusManager.instance.primaryFocus?.unfocus(),
+              onTapOutside: (_) =>
+                  FocusManager.instance.primaryFocus?.unfocus(),
               onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
                 hintText: 'Buscar por cliente, endereço ou ID',

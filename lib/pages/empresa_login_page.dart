@@ -14,11 +14,13 @@ class EmpresaLoginPage extends StatefulWidget {
 class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
   final emailController = TextEditingController();
   final senhaController = TextEditingController();
+  final senhaFocusNode = FocusNode();
 
   bool carregando = false;
   bool mostrarSenha = false;
 
   Future<void> entrar() async {
+    FocusManager.instance.primaryFocus?.unfocus();
     final email = emailController.text.trim();
     final senha = senhaController.text.trim();
 
@@ -65,11 +67,7 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
   }
 
   void voltarParaSelecao() {
-    if (context.canPop()) {
-      context.pop();
-    } else {
-      context.go('/selecionar');
-    }
+    context.go('/selecionar');
   }
 
   Widget campo({
@@ -82,6 +80,18 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
 
     return TextField(
       controller: controller,
+      focusNode: senha ? senhaFocusNode : null,
+      enabled: !carregando,
+      textInputAction: senha ? TextInputAction.done : TextInputAction.next,
+      autocorrect: false,
+      onSubmitted: (_) {
+        if (senha) {
+          entrar();
+        } else {
+          senhaFocusNode.requestFocus();
+        }
+      },
+      onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
       obscureText: senha && !mostrarSenha,
       keyboardType: senha
           ? TextInputType.visiblePassword
@@ -110,6 +120,7 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
   void dispose() {
     emailController.dispose();
     senhaController.dispose();
+    senhaFocusNode.dispose();
     super.dispose();
   }
 
@@ -118,6 +129,7 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       body: Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(

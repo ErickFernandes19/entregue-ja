@@ -22,25 +22,22 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
   @override
   void initState() {
     super.initState();
-
     clienteController = TextEditingController(
       text: widget.entrega['cliente'] ?? '',
     );
-
     enderecoController = TextEditingController(
       text: widget.entrega['endereco'] ?? '',
     );
-
     valorController = TextEditingController(
       text: widget.entrega['valor']?.toString() ?? '',
     );
-
     observacaoController = TextEditingController(
       text: widget.entrega['observacao'] ?? '',
     );
   }
 
   Future<void> salvarAlteracoes() async {
+    FocusScope.of(context).unfocus();
     final cliente = clienteController.text.trim();
     final endereco = enderecoController.text.trim();
     final valorTexto = valorController.text.trim().replaceAll(',', '.');
@@ -54,7 +51,6 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
     }
 
     final valor = double.tryParse(valorTexto);
-
     if (valor == null) {
       ScaffoldMessenger.of(
         context,
@@ -71,12 +67,10 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
     );
 
     if (!mounted) return;
-
     if (sucesso) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Entrega alterada com sucesso')),
       );
-
       context.pop(true);
     } else {
       ScaffoldMessenger.of(
@@ -99,14 +93,17 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
     required String label,
     required IconData icon,
     TextInputType keyboardType = TextInputType.text,
+    TextInputAction? textInputAction,
     int maxLines = 1,
   }) {
     final theme = Theme.of(context);
-
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
+      textInputAction: textInputAction,
       maxLines: maxLines,
+      scrollPadding: const EdgeInsets.only(bottom: 120),
+      onTapOutside: (_) => FocusScope.of(context).unfocus(),
       style: TextStyle(color: theme.colorScheme.onSurface),
       decoration: InputDecoration(
         labelText: label,
@@ -124,10 +121,25 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-
     return Scaffold(
-      appBar: AppBar(title: const Text('Editar Entrega'), centerTitle: true),
+      resizeToAvoidBottomInset: true,
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar aos detalhes da entrega',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop(false);
+            } else {
+              context.go('/empresa/entregas');
+            }
+          },
+        ),
+        title: const Text('Editar Entrega'),
+        centerTitle: true,
+      ),
       body: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         padding: const EdgeInsets.all(20),
         children: [
           Container(
@@ -154,18 +166,16 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
                   controller: clienteController,
                   label: 'Cliente',
                   icon: Icons.person_outline,
+                  textInputAction: TextInputAction.next,
                 ),
-
                 const SizedBox(height: 16),
-
                 campo(
                   controller: enderecoController,
                   label: 'Endereço',
                   icon: Icons.location_on_outlined,
+                  textInputAction: TextInputAction.next,
                 ),
-
                 const SizedBox(height: 16),
-
                 campo(
                   controller: valorController,
                   label: 'Valor',
@@ -173,10 +183,9 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
+                  textInputAction: TextInputAction.next,
                 ),
-
                 const SizedBox(height: 16),
-
                 campo(
                   controller: observacaoController,
                   label: 'Observação',
@@ -186,9 +195,7 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
               ],
             ),
           ),
-
           const SizedBox(height: 24),
-
           SizedBox(
             height: 54,
             child: ElevatedButton.icon(

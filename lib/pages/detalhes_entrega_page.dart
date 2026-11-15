@@ -885,7 +885,21 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
         status == 'ENTREGUE' || status == 'NAO_ENTREGUE';
 
     return Scaffold(
-      appBar: AppBar(title: Text('Entrega #$id'), centerTitle: true),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar às entregas',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop();
+            } else {
+              context.go('/empresa/entregas');
+            }
+          },
+        ),
+        title: Text('Entrega #$id'),
+        centerTitle: true,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [

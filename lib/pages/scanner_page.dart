@@ -29,7 +29,21 @@ class _ScannerPageState extends State<ScannerPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Escanear QR Code'), centerTitle: true),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar às entregas',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop();
+            } else {
+              context.go('/entregador/entregas');
+            }
+          },
+        ),
+        title: const Text('Escanear QR Code'),
+        centerTitle: true,
+      ),
       body: Stack(
         fit: StackFit.expand,
         children: [

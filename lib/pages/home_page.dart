@@ -1,6 +1,10 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api_config.dart';
 import '../providers/entregas_provider.dart';
@@ -17,6 +21,8 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String nome = 'Usuário';
   String? fotoUrl;
+  Uint8List? fotoBytes;
+  int _requisicaoFoto = 0;
   bool verificandoVinculo = false;
   bool dialogoVinculoAberto = false;
 
@@ -41,6 +47,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       verificarVinculoPendente();
+      carregarFoto();
     }
   }
 
@@ -54,21 +61,72 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> carregarFoto() async {
-    final perfil = await AuthService.buscarPerfil();
-    if (!mounted) return;
+  String? resolverFoto(String? referencia) {
+    final valor = referencia?.trim() ?? '';
+    if (valor.isEmpty) return null;
 
-    final referencia = perfil?['foto']?.toString().trim() ?? '';
-    final url = referencia.isEmpty ? null : ApiConfig.urlArquivo(referencia);
-
-    if (url != null) {
-      await NetworkImage(url).evict();
+    final uri = Uri.tryParse(valor);
+    if (uri != null &&
+        (uri.scheme == 'http' || uri.scheme == 'https') &&
+        uri.host.isNotEmpty) {
+      return valor;
     }
 
-    if (!mounted) return;
-    setState(() {
-      fotoUrl = url;
-    });
+    return ApiConfig.urlArquivo(valor);
+  }
+
+  Future<void> carregarFoto() async {
+    final requisicao = ++_requisicaoFoto;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      var referencia = prefs.getString('usuario_foto');
+      final perfil = await AuthService.buscarPerfil();
+      if (!mounted || requisicao != _requisicaoFoto) return;
+
+      if (perfil != null) {
+        referencia = perfil['foto']?.toString().trim();
+        if (referencia == null || referencia.isEmpty) {
+          await prefs.remove('usuario_foto');
+        } else {
+          await prefs.setString('usuario_foto', referencia);
+        }
+      }
+
+      final url = resolverFoto(referencia);
+      if (url == null) {
+        if (!mounted || requisicao != _requisicaoFoto) return;
+        setState(() {
+          fotoUrl = null;
+          fotoBytes = null;
+        });
+        return;
+      }
+
+      final headers = await AuthService.headersAutenticados();
+      final response = await http
+          .get(Uri.parse(url), headers: headers)
+          .timeout(const Duration(seconds: 15));
+
+      if (!mounted || requisicao != _requisicaoFoto) return;
+
+      if (response.statusCode == 200) {
+        setState(() {
+          fotoUrl = url;
+          fotoBytes = response.bodyBytes;
+        });
+      } else {
+        debugPrint(
+          'Erro ao carregar foto na tela inicial: HTTP ${response.statusCode}',
+        );
+        setState(() {
+          fotoUrl = url;
+          fotoBytes = null;
+        });
+      }
+    } catch (e) {
+      debugPrint('Erro ao carregar foto do entregador: $e');
+    }
   }
 
   Future<void> verificarVinculoPendente() async {
@@ -271,12 +329,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               child: CircleAvatar(
                 radius: 25,
                 backgroundColor: Colors.white,
-                backgroundImage: fotoUrl == null
-                    ? null
-                    : NetworkImage(fotoUrl!),
-                child: fotoUrl == null
-                    ? const Icon(Icons.person, color: AppColors.primary)
-                    : null,
+                child: ClipOval(
+                  child: SizedBox(
+                    width: 50,
+                    height: 50,
+                    child: fotoBytes == null
+                        ? const Icon(Icons.person, color: AppColors.primary)
+                        : Image.memory(
+                            fotoBytes!,
+                            key: ValueKey(fotoUrl),
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) {
+                              return const Icon(
+                                Icons.person,
+                                color: AppColors.primary,
+                              );
+                            },
+                          ),
+                  ),
+                ),
               ),
             ),
           ),

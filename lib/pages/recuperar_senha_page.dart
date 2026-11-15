@@ -17,6 +17,7 @@ class RecuperarSenhaPage extends StatefulWidget {
 class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
   late final TextEditingController emailController;
   final codigoController = TextEditingController();
+  final FocusNode confirmarSenhaFocus = FocusNode();
   final senhaController = TextEditingController();
   final confirmarSenhaController = TextEditingController();
 
@@ -39,6 +40,7 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
     codigoController.dispose();
     senhaController.dispose();
     confirmarSenhaController.dispose();
+    confirmarSenhaFocus.dispose();
     super.dispose();
   }
 
@@ -122,6 +124,14 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
     }
   }
 
+  bool senhaForte(String senha) {
+    return senha.length >= 8 &&
+        RegExp(r'[A-Z]').hasMatch(senha) &&
+        RegExp(r'[a-z]').hasMatch(senha) &&
+        RegExp(r'[0-9]').hasMatch(senha) &&
+        RegExp(r'[^A-Za-z0-9]').hasMatch(senha);
+  }
+
   Future<void> redefinirSenha() async {
     final senha = senhaController.text;
     final confirmacao = confirmarSenhaController.text;
@@ -129,8 +139,10 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
       mostrarMensagem('Preencha os dois campos de senha.');
       return;
     }
-    if (senha.length < 8) {
-      mostrarMensagem('A nova senha deve ter pelo menos 8 caracteres.');
+    if (!senhaForte(senha)) {
+      mostrarMensagem(
+        'A senha deve ter pelo menos 8 caracteres, incluindo letra maiúscula, minúscula, número e caractere especial.',
+      );
       return;
     }
     if (senha != confirmacao) {
@@ -152,7 +164,8 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
         'Senha redefinida com sucesso! Faça login com a nova senha.',
         sucesso: true,
       );
-      context.pop();
+
+      context.go('/entregador/login');
     } else {
       mostrarMensagem(
         resultado['mensagem']?.toString() ??
@@ -163,8 +176,13 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
 
   void voltar() {
     if (carregando) return;
+
     if (etapa == 0) {
-      context.pop();
+      if (context.canPop()) {
+        context.pop();
+      } else {
+        context.go('/entregador/login');
+      }
     } else {
       setState(() => etapa--);
     }
@@ -178,15 +196,29 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
     bool senha = false,
     bool confirmacao = false,
     List<TextInputFormatter>? formatadores,
+    TextInputAction acao = TextInputAction.done,
+    FocusNode? focusNode,
+    VoidCallback? aoEnviar,
   }) {
     final ocultar = senha && !(confirmacao ? mostrarConfirmacao : mostrarSenha);
     return TextField(
       controller: controller,
+      focusNode: focusNode,
       enabled: !carregando,
       keyboardType: tipo,
       obscureText: ocultar,
+      enableSuggestions: !senha,
+      autocorrect: !senha,
       inputFormatters: formatadores,
-      textInputAction: TextInputAction.done,
+      textInputAction: acao,
+      onSubmitted: (_) {
+        if (aoEnviar != null) {
+          aoEnviar();
+        } else {
+          FocusScope.of(context).unfocus();
+        }
+      },
+      onTapOutside: (_) => FocusScope.of(context).unfocus(),
       decoration: InputDecoration(
         labelText: label,
         prefixIcon: Icon(icone),

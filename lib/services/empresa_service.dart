@@ -274,9 +274,39 @@ class EmpresaService {
     await prefs.setString('empresa_logada', email);
   }
 
+  static bool _tokenValido(String token) {
+    try {
+      final partes = token.split('.');
+      if (partes.length != 3) return false;
+
+      final payload = jsonDecode(
+        utf8.decode(base64Url.decode(base64Url.normalize(partes[1]))),
+      );
+      if (payload is! Map<String, dynamic>) return false;
+
+      final expiracao = payload['exp'];
+      if (expiracao is! num) return false;
+
+      final agora = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      return expiracao > agora;
+    } catch (_) {
+      return false;
+    }
+  }
+
   static Future<String?> empresaLogada() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('empresa_logada');
+    final email = prefs.getString('empresa_logada');
+    if (email == null || email.trim().isEmpty) return null;
+
+    try {
+      final token = await obterTokenEmpresa();
+      if (token == null || !_tokenValido(token)) return null;
+      return email;
+    } catch (e) {
+      debugPrint('Erro ao verificar sessão da empresa: $e');
+      return null;
+    }
   }
 
   static Future<void> logoutEmpresa() async {

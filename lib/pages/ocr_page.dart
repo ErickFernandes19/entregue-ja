@@ -149,7 +149,21 @@ class _OcrPageState extends State<OcrPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Ler etiqueta'), centerTitle: true),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar às entregas',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop();
+            } else {
+              context.go('/entregador/entregas');
+            }
+          },
+        ),
+        title: const Text('Ler etiqueta'),
+        centerTitle: true,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [

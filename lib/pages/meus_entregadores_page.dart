@@ -130,7 +130,17 @@ class _MeusEntregadoresPageState extends State<MeusEntregadoresPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Meus Entregadores'), centerTitle: true),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar ao início',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            context.go('/empresa/inicio');
+          },
+        ),
+        title: const Text('Meus Entregadores'),
+        centerTitle: true,
+      ),
       body: carregando
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(

@@ -18,8 +18,23 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
   final codigoController = TextEditingController();
   bool carregando = false;
 
+  void fecharTeclado() {
+    FocusManager.instance.primaryFocus?.unfocus();
+  }
+
+  void voltarAoCadastro() {
+    if (carregando) return;
+    fecharTeclado();
+    if (context.canPop()) {
+      context.pop();
+    } else {
+      context.go('/entregador/cadastro');
+    }
+  }
+
   Future<void> confirmar() async {
     if (carregando) return;
+    fecharTeclado();
 
     final codigo = codigoController.text.trim();
 
@@ -66,164 +81,182 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [AppColors.primary, AppColors.primaryLight],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-          ),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar ao cadastro',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: carregando ? null : voltarAoCadastro,
         ),
-        child: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(18),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.18),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.mark_email_read_outlined,
-                      size: 72,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Verificar e-mail',
-                    style: TextStyle(
-                      fontSize: 32,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Enviamos um código de 6 dígitos para',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 15, color: Colors.white70),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    widget.email,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 28),
-                  Container(
-                    padding: const EdgeInsets.all(22),
-                    decoration: BoxDecoration(
-                      color: theme.cardColor,
-                      borderRadius: BorderRadius.circular(26),
-                      border: Border.all(
-                        color: theme.colorScheme.outlineVariant.withValues(
-                          alpha: 0.35,
-                        ),
+        title: const Text('Verificar e-mail'),
+        centerTitle: true,
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+      ),
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: fecharTeclado,
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [AppColors.primary, AppColors.primaryLight],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
+          ),
+          child: SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(18),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.18),
+                        shape: BoxShape.circle,
                       ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(
-                            alpha: theme.brightness == Brightness.dark
-                                ? 0.28
-                                : 0.12,
-                          ),
-                          blurRadius: 20,
-                          offset: const Offset(0, 8),
-                        ),
-                      ],
+                      child: const Icon(
+                        Icons.mark_email_read_outlined,
+                        size: 72,
+                        color: Colors.white,
+                      ),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          'Código de verificação',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: theme.colorScheme.onSurface,
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Verificar e-mail',
+                      style: TextStyle(
+                        fontSize: 32,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Enviamos um código de 6 dígitos para',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 15, color: Colors.white70),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      widget.email,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 28),
+                    Container(
+                      padding: const EdgeInsets.all(22),
+                      decoration: BoxDecoration(
+                        color: theme.cardColor,
+                        borderRadius: BorderRadius.circular(26),
+                        border: Border.all(
+                          color: theme.colorScheme.outlineVariant.withValues(
+                            alpha: 0.35,
                           ),
                         ),
-                        const SizedBox(height: 16),
-                        TextField(
-                          controller: codigoController,
-                          autofocus: true,
-                          enabled: !carregando,
-                          keyboardType: TextInputType.number,
-                          textInputAction: TextInputAction.done,
-                          textAlign: TextAlign.center,
-                          maxLength: 6,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly,
-                          ],
-                          onSubmitted: (_) => confirmar(),
-                          style: TextStyle(
-                            fontSize: 26,
-                            letterSpacing: 8,
-                            fontWeight: FontWeight.bold,
-                            color: theme.colorScheme.onSurface,
-                          ),
-                          decoration: const InputDecoration(
-                            hintText: '000000',
-                            prefixIcon: Icon(Icons.pin_outlined),
-                            counterText: '',
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Text(
-                          'O código é válido por 10 minutos.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                        const SizedBox(height: 24),
-                        SizedBox(
-                          height: 54,
-                          child: ElevatedButton(
-                            onPressed: carregando ? null : confirmar,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppColors.primary,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(18),
-                              ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(
+                              alpha: theme.brightness == Brightness.dark
+                                  ? 0.28
+                                  : 0.12,
                             ),
-                            child: carregando
-                                ? const SizedBox(
-                                    width: 22,
-                                    height: 22,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white,
-                                    ),
-                                  )
-                                : const Text(
-                                    'Confirmar cadastro',
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
+                            blurRadius: 20,
+                            offset: const Offset(0, 8),
                           ),
-                        ),
-                        const SizedBox(height: 12),
-                        TextButton(
-                          onPressed: carregando ? null : () => context.pop(),
-                          child: const Text('Voltar ao cadastro'),
-                        ),
-                      ],
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            'Código de verificação',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: theme.colorScheme.onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          TextField(
+                            controller: codigoController,
+                            autofocus: true,
+                            enabled: !carregando,
+                            keyboardType: TextInputType.number,
+                            textInputAction: TextInputAction.done,
+                            textAlign: TextAlign.center,
+                            maxLength: 6,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                            ],
+                            onSubmitted: (_) => confirmar(),
+                            onTapOutside: (_) => fecharTeclado(),
+                            style: TextStyle(
+                              fontSize: 26,
+                              letterSpacing: 8,
+                              fontWeight: FontWeight.bold,
+                              color: theme.colorScheme.onSurface,
+                            ),
+                            decoration: const InputDecoration(
+                              hintText: '000000',
+                              prefixIcon: Icon(Icons.pin_outlined),
+                              counterText: '',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            'O código é válido por 10 minutos.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                          SizedBox(
+                            height: 54,
+                            child: ElevatedButton(
+                              onPressed: carregando ? null : confirmar,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.primary,
+                                foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(18),
+                                ),
+                              ),
+                              child: carregando
+                                  ? const SizedBox(
+                                      width: 22,
+                                      height: 22,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  : const Text(
+                                      'Confirmar cadastro',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextButton(
+                            onPressed: carregando ? null : voltarAoCadastro,
+                            child: const Text('Voltar ao cadastro'),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

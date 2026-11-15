@@ -178,7 +178,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
         children: [
           IconButton(
             onPressed: () {
-              context.pop();
+              context.go('/entregador/inicio');
             },
             icon: const Icon(Icons.arrow_back, color: Colors.white),
           ),

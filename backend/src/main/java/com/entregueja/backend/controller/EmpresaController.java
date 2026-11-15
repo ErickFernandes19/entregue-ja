@@ -120,6 +120,15 @@ public class EmpresaController {
                 && idAutenticado.equals(empresa.getId());
     }
 
+    private boolean senhaForte(String senha) {
+        return senha != null
+                && senha.length() >= 8
+                && senha.matches("(?s).*[A-Z].*")
+                && senha.matches("(?s).*[a-z].*")
+                && senha.matches("(?s).*[0-9].*")
+                && senha.matches("(?s).*[^A-Za-z0-9].*");
+    }
+
     private String referenciaFoto(Empresa empresa) {
         String foto = empresa.getFoto();
 
@@ -156,6 +165,12 @@ public class EmpresaController {
                 || empresa.getSenha().isEmpty()) {
             return ResponseEntity.badRequest().body(
                     Map.of("mensagem", "Senha é obrigatória")
+            );
+        }
+
+        if (!senhaForte(empresa.getSenha())) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "A senha deve ter pelo menos 8 caracteres, incluindo letra maiúscula, minúscula, número e caractere especial")
             );
         }
 
@@ -306,9 +321,9 @@ public class EmpresaController {
             );
         }
 
-        if (novaSenha.length() < 6) {
+        if (!senhaForte(novaSenha)) {
             return ResponseEntity.badRequest().body(
-                    Map.of("mensagem", "A nova senha deve possuir pelo menos 6 caracteres")
+                    Map.of("mensagem", "A nova senha deve ter pelo menos 8 caracteres, incluindo letra maiúscula, minúscula, número e caractere especial")
             );
         }
 

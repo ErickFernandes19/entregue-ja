@@ -2333,7 +2333,11 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
             foregroundColor: AppColors.primary,
 
             onPressed: () {
-              context.pop();
+              if (context.canPop()) {
+                context.pop();
+              } else {
+                context.go('/entregador/inicio');
+              }
             },
 
             child: const Icon(Icons.arrow_back),

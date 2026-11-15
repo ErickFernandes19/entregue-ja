@@ -120,8 +120,6 @@ class _CadastrarEntregaManualPageState
     return partes.join(', ');
   }
 
-  // O complemento não integra a localização geográfica: apartamentos e
-  // unidades diferentes do mesmo prédio podem compartilhar coordenadas.
   String normalizarEndereco(String endereco) {
     const acentos = 'áàâãäéèêëíìîïóòôõöúùûüç';
     const semAcentos = 'aaaaaeeeeiiiiooooouuuuc';
@@ -181,8 +179,6 @@ class _CadastrarEntregaManualPageState
     setState(() => salvando = true);
 
     try {
-      // Busca diretamente no backend: se a consulta falhar, não tratamos
-      // uma lista antiga/incompleta como se não existissem duplicatas.
       final email = await AuthService.usuarioLogado();
       if (email == null || email.isEmpty) {
         throw StateError('Entregador não autenticado');
@@ -263,7 +259,6 @@ class _CadastrarEntregaManualPageState
           montarEnderecoParaMapa(),
         );
 
-        // Mantém o fallback original, caso a consulta principal falhe.
         if (coordenadas == null) {
           coordenadas = await GeocodingService.buscarCoordenadas(
             '$cep, $numero, $cidade - $uf',
@@ -315,6 +310,7 @@ class _CadastrarEntregaManualPageState
     final theme = Theme.of(context);
 
     return TextField(
+      onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
       controller: controller,
       enabled: !salvando,
       keyboardType: keyboardType,
@@ -323,7 +319,15 @@ class _CadastrarEntregaManualPageState
       textCapitalization: textCapitalization,
       textInputAction: textInputAction,
       onChanged: onChanged,
-      onSubmitted: (_) => onSubmitted?.call(),
+      onSubmitted: (_) {
+        if (onSubmitted != null) {
+          onSubmitted();
+        } else if (textInputAction == TextInputAction.done) {
+          FocusScope.of(context).unfocus();
+        } else if (textInputAction == TextInputAction.next) {
+          FocusScope.of(context).nextFocus();
+        }
+      },
       style: TextStyle(color: theme.colorScheme.onSurface),
       decoration: InputDecoration(
         labelText: label,
@@ -361,9 +365,26 @@ class _CadastrarEntregaManualPageState
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Cadastrar Entrega'), centerTitle: true),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar às entregas',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: salvando
+              ? null
+              : () {
+                  if (context.canPop()) {
+                    context.pop();
+                  } else {
+                    context.go('/entregador/entregas');
+                  }
+                },
+        ),
+        title: const Text('Cadastrar Entrega'),
+        centerTitle: true,
+      ),
       body: ListView(
-        padding: const EdgeInsets.all(20),
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
         children: [
           Container(
             padding: const EdgeInsets.all(20),
@@ -415,6 +436,7 @@ class _CadastrarEntregaManualPageState
                   hint: 'Nome do destinatário',
                   icon: Icons.person_outline,
                   textCapitalization: TextCapitalization.words,
+                  textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 16),
                 campo(
@@ -452,6 +474,7 @@ class _CadastrarEntregaManualPageState
                   hint: 'Rua ou avenida',
                   icon: Icons.signpost_outlined,
                   textCapitalization: TextCapitalization.words,
+                  textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 16),
                 campo(
@@ -459,7 +482,8 @@ class _CadastrarEntregaManualPageState
                   label: 'Número',
                   hint: 'Ex: 123',
                   icon: Icons.numbers,
-                  keyboardType: TextInputType.streetAddress,
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 16),
                 campo(
@@ -468,6 +492,7 @@ class _CadastrarEntregaManualPageState
                   hint: 'Apto, bloco, casa...',
                   icon: Icons.home_outlined,
                   textCapitalization: TextCapitalization.words,
+                  textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 16),
                 campo(
@@ -476,6 +501,7 @@ class _CadastrarEntregaManualPageState
                   hint: 'Bairro',
                   icon: Icons.location_city_outlined,
                   textCapitalization: TextCapitalization.words,
+                  textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 16),
                 campo(
@@ -484,6 +510,7 @@ class _CadastrarEntregaManualPageState
                   hint: 'Cidade',
                   icon: Icons.location_city,
                   textCapitalization: TextCapitalization.words,
+                  textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 16),
                 campo(
@@ -493,6 +520,7 @@ class _CadastrarEntregaManualPageState
                   icon: Icons.map_outlined,
                   textCapitalization: TextCapitalization.characters,
                   inputFormatters: [LengthLimitingTextInputFormatter(2)],
+                  textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 16),
                 campo(
@@ -504,6 +532,7 @@ class _CadastrarEntregaManualPageState
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
+                  textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 16),
                 campo(

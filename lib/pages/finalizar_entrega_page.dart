@@ -501,217 +501,238 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
     final naoEntregue = tipoFinalizacao == 'NAO_ENTREGUE';
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Finalizar Entrega'), centerTitle: true),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: theme.cardColor,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: enviando
+              ? null
+              : () {
+                  if (context.canPop()) {
+                    context.pop(false);
+                  } else {
+                    context.go('/entregador/entregas');
+                  }
+                },
+        ),
+        title: const Text('Finalizar Entrega'),
+        centerTitle: true,
+      ),
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+        child: ListView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: const EdgeInsets.all(20),
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: theme.cardColor,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                ),
               ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Entrega #${widget.entregaId}',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: 5),
-                Text(
-                  widget.cliente,
-                  style: TextStyle(
-                    fontSize: 19,
-                    fontWeight: FontWeight.bold,
-                    color: theme.colorScheme.onSurface,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(
-                      Icons.location_on,
-                      size: 19,
-                      color: AppColors.primary,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Entrega #${widget.entregaId}',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: theme.colorScheme.onSurfaceVariant,
                     ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        widget.endereco,
-                        style: TextStyle(
-                          color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    widget.cliente,
+                    style: TextStyle(
+                      fontSize: 19,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(
+                        Icons.location_on,
+                        size: 19,
+                        color: AppColors.primary,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          widget.endereco,
+                          style: TextStyle(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 16),
-          statusLocalizacao(),
-          const SizedBox(height: 24),
-
-          Text(
-            'Resultado da entrega',
-            style: TextStyle(
-              fontSize: 19,
-              fontWeight: FontWeight.bold,
-              color: theme.colorScheme.onSurface,
-            ),
-          ),
-
-          const SizedBox(height: 12),
-
-          opcaoFinalizacao(
-            valor: 'ENTREGUE',
-            icon: Icons.check_circle,
-            titulo: 'Entrega realizada',
-            descricao: 'O pedido foi entregue ao destinatário.',
-            color: AppColors.success,
-          ),
-
-          opcaoFinalizacao(
-            valor: 'NAO_ENTREGUE',
-            icon: Icons.report_problem,
-            titulo: 'Não foi possível entregar',
-            descricao: 'Registre a tentativa e informe o motivo.',
-            color: AppColors.error,
-          ),
-
-          if (naoEntregue) ...[
-            const SizedBox(height: 8),
-            DropdownButtonFormField<String>(
-              value: motivoSelecionado,
-              dropdownColor: theme.cardColor,
-              style: TextStyle(color: theme.colorScheme.onSurface),
-              decoration: const InputDecoration(
-                labelText: 'Motivo da não entrega',
-                prefixIcon: Icon(Icons.help_outline),
+                    ],
+                  ),
+                ],
               ),
-              items: motivos.entries.map((motivo) {
-                return DropdownMenuItem<String>(
-                  value: motivo.key,
-                  child: Text(motivo.value),
-                );
-              }).toList(),
-              onChanged: enviando
-                  ? null
-                  : (valor) {
-                      if (valor == null) return;
+            ),
 
-                      setState(() {
-                        motivoSelecionado = valor;
-                      });
-                    },
+            const SizedBox(height: 16),
+            statusLocalizacao(),
+            const SizedBox(height: 24),
+
+            Text(
+              'Resultado da entrega',
+              style: TextStyle(
+                fontSize: 19,
+                fontWeight: FontWeight.bold,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+
+            const SizedBox(height: 12),
+
+            opcaoFinalizacao(
+              valor: 'ENTREGUE',
+              icon: Icons.check_circle,
+              titulo: 'Entrega realizada',
+              descricao: 'O pedido foi entregue ao destinatário.',
+              color: AppColors.success,
+            ),
+
+            opcaoFinalizacao(
+              valor: 'NAO_ENTREGUE',
+              icon: Icons.report_problem,
+              titulo: 'Não foi possível entregar',
+              descricao: 'Registre a tentativa e informe o motivo.',
+              color: AppColors.error,
+            ),
+
+            if (naoEntregue) ...[
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: motivoSelecionado,
+                dropdownColor: theme.cardColor,
+                style: TextStyle(color: theme.colorScheme.onSurface),
+                decoration: const InputDecoration(
+                  labelText: 'Motivo da não entrega',
+                  prefixIcon: Icon(Icons.help_outline),
+                ),
+                items: motivos.entries.map((motivo) {
+                  return DropdownMenuItem<String>(
+                    value: motivo.key,
+                    child: Text(motivo.value),
+                  );
+                }).toList(),
+                onChanged: enviando
+                    ? null
+                    : (valor) {
+                        if (valor == null) return;
+
+                        setState(() {
+                          motivoSelecionado = valor;
+                        });
+                      },
+              ),
+
+              const SizedBox(height: 14),
+
+              TextField(
+                controller: justificativaController,
+                enabled: !enviando,
+                maxLines: 4,
+                maxLength: 500,
+                style: TextStyle(color: theme.colorScheme.onSurface),
+                decoration: const InputDecoration(
+                  labelText: 'Justificativa',
+                  hintText:
+                      'Ex: Toquei o interfone várias vezes e ninguém respondeu.',
+                  alignLabelWithHint: true,
+                  prefixIcon: Padding(
+                    padding: EdgeInsets.only(bottom: 65),
+                    child: Icon(Icons.description),
+                  ),
+                ),
+              ),
+            ] else ...[
+              const SizedBox(height: 8),
+
+              TextField(
+                controller: observacaoController,
+                enabled: !enviando,
+                maxLines: 3,
+                maxLength: 300,
+                style: TextStyle(color: theme.colorScheme.onSurface),
+                decoration: const InputDecoration(
+                  labelText: 'Observação (opcional)',
+                  hintText: 'Ex: Entregue ao próprio destinatário.',
+                  alignLabelWithHint: true,
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 18),
+
+            Text(
+              'Comprovante fotográfico',
+              style: TextStyle(
+                fontSize: 19,
+                fontWeight: FontWeight.bold,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+
+            const SizedBox(height: 6),
+
+            Text(
+              naoEntregue
+                  ? 'Fotografe o local para comprovar que a tentativa foi realizada.'
+                  : 'Fotografe o pedido no local da entrega para registrar a conclusão.',
+              style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
             ),
 
             const SizedBox(height: 14),
+            areaFoto(),
+            const SizedBox(height: 30),
 
-            TextField(
-              controller: justificativaController,
-              enabled: !enviando,
-              maxLines: 4,
-              maxLength: 500,
-              style: TextStyle(color: theme.colorScheme.onSurface),
-              decoration: const InputDecoration(
-                labelText: 'Justificativa',
-                hintText:
-                    'Ex: Toquei o interfone várias vezes e ninguém respondeu.',
-                alignLabelWithHint: true,
-                prefixIcon: Padding(
-                  padding: EdgeInsets.only(bottom: 65),
-                  child: Icon(Icons.description),
-                ),
-              ),
-            ),
-          ] else ...[
-            const SizedBox(height: 8),
-
-            TextField(
-              controller: observacaoController,
-              enabled: !enviando,
-              maxLines: 3,
-              maxLength: 300,
-              style: TextStyle(color: theme.colorScheme.onSurface),
-              decoration: const InputDecoration(
-                labelText: 'Observação (opcional)',
-                hintText: 'Ex: Entregue ao próprio destinatário.',
-                alignLabelWithHint: true,
-              ),
-            ),
-          ],
-
-          const SizedBox(height: 18),
-
-          Text(
-            'Comprovante fotográfico',
-            style: TextStyle(
-              fontSize: 19,
-              fontWeight: FontWeight.bold,
-              color: theme.colorScheme.onSurface,
-            ),
-          ),
-
-          const SizedBox(height: 6),
-
-          Text(
-            naoEntregue
-                ? 'Fotografe o local para comprovar que a tentativa foi realizada.'
-                : 'Fotografe o pedido no local da entrega para registrar a conclusão.',
-            style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
-          ),
-
-          const SizedBox(height: 14),
-          areaFoto(),
-          const SizedBox(height: 30),
-
-          SizedBox(
-            height: 54,
-            child: ElevatedButton.icon(
-              onPressed: enviando ? null : finalizar,
-              icon: enviando
-                  ? const SizedBox(
-                      width: 21,
-                      height: 21,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
+            SizedBox(
+              height: 54,
+              child: ElevatedButton.icon(
+                onPressed: enviando ? null : finalizar,
+                icon: enviando
+                    ? const SizedBox(
+                        width: 21,
+                        height: 21,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : Icon(
+                        naoEntregue ? Icons.report_problem : Icons.check_circle,
                       ),
-                    )
-                  : Icon(
-                      naoEntregue ? Icons.report_problem : Icons.check_circle,
-                    ),
-              label: Text(
-                enviando
-                    ? 'Enviando...'
-                    : naoEntregue
-                    ? 'Registrar Tentativa'
-                    : 'Confirmar Entrega',
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: naoEntregue
-                    ? AppColors.error
-                    : AppColors.success,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
+                label: Text(
+                  enviando
+                      ? 'Enviando...'
+                      : naoEntregue
+                      ? 'Registrar Tentativa'
+                      : 'Confirmar Entrega',
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: naoEntregue
+                      ? AppColors.error
+                      : AppColors.success,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
                 ),
               ),
             ),
-          ),
 
-          const SizedBox(height: 20),
-        ],
+            const SizedBox(height: 20),
+          ],
+        ),
       ),
     );
   }

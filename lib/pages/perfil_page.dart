@@ -1,4 +1,7 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -17,9 +20,23 @@ class _PerfilPageState extends State<PerfilPage> {
   String nome = 'Entregador';
   String email = '';
   String? fotoUrl;
+  Uint8List? fotoBytes;
+  bool carregandoFoto = false;
+  int versaoFoto = 0;
   Map<String, dynamic>? empresaVinculada;
 
   final ImagePicker picker = ImagePicker();
+  bool enviandoFoto = false;
+
+  String? resolverFoto(String? referencia) {
+    final valor = referencia?.trim() ?? '';
+    if (valor.isEmpty) return null;
+    final uri = Uri.tryParse(valor);
+    if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+      return valor;
+    }
+    return ApiConfig.urlArquivo(valor);
+  }
 
   @override
   void initState() {
@@ -34,39 +51,118 @@ class _PerfilPageState extends State<PerfilPage> {
     if (!mounted) return;
 
     final foto = perfil?['foto']?.toString() ?? '';
+    final referencia = resolverFoto(foto);
 
     setState(() {
       nome = perfil?['nome'] ?? 'Entregador';
       email = perfil?['email'] ?? '';
-      fotoUrl = foto.isEmpty ? null : ApiConfig.urlArquivo(foto);
       empresaVinculada = empresa;
     });
+
+    await carregarFotoAutenticada(referencia);
   }
 
-  Future<void> escolherFoto(ImageSource source) async {
-    final imagem = await picker.pickImage(source: source, imageQuality: 70);
+  Future<void> carregarFotoAutenticada(String? url) async {
+    final requisicao = ++versaoFoto;
 
-    if (imagem == null) return;
-
-    final foto = await AuthService.atualizarFotoPerfil(imagem.path);
-
-    if (!mounted) return;
-
-    if (foto == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Erro ao atualizar foto')));
-
+    if (url == null) {
+      if (!mounted) return;
+      setState(() {
+        fotoUrl = null;
+        fotoBytes = null;
+        carregandoFoto = false;
+      });
       return;
     }
 
+    if (!mounted) return;
     setState(() {
-      fotoUrl = ApiConfig.urlArquivo(foto);
+      fotoUrl = url;
+      carregandoFoto = true;
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Foto atualizada com sucesso')),
-    );
+    try {
+      final token = await AuthService.obterToken();
+      final response = await http
+          .get(
+            Uri.parse(url),
+            headers: {
+              if (token != null && token.isNotEmpty)
+                'Authorization': 'Bearer $token',
+            },
+          )
+          .timeout(const Duration(seconds: 20));
+
+      if (response.statusCode != 200) {
+        debugPrint('Erro ao carregar foto: HTTP ${response.statusCode}');
+        return;
+      }
+
+      if (!mounted || requisicao != versaoFoto) return;
+      setState(() {
+        fotoBytes = response.bodyBytes;
+      });
+    } catch (e) {
+      debugPrint('Erro ao carregar foto do entregador: $e');
+    } finally {
+      if (mounted && requisicao == versaoFoto) {
+        setState(() {
+          carregandoFoto = false;
+        });
+      }
+    }
+  }
+
+  Future<void> escolherFoto(ImageSource source) async {
+    if (enviandoFoto) return;
+
+    try {
+      final imagem = await picker.pickImage(source: source, imageQuality: 70);
+      if (imagem == null || !mounted) return;
+
+      setState(() {
+        enviandoFoto = true;
+      });
+
+      final bytes = await imagem.readAsBytes();
+      final foto = await AuthService.atualizarFotoPerfilBytes(
+        bytes: bytes,
+        nomeArquivo: imagem.name,
+      );
+
+      if (!mounted) return;
+
+      if (foto == null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Erro ao atualizar foto')));
+        return;
+      }
+
+      final url = resolverFoto(foto);
+      if (!mounted) return;
+      setState(() {
+        fotoBytes = bytes;
+      });
+      await carregarFotoAutenticada(url);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Foto atualizada com sucesso')),
+      );
+    } catch (e) {
+      debugPrint('Erro ao selecionar ou atualizar foto: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Erro ao atualizar foto')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          enviandoFoto = false;
+        });
+      }
+    }
   }
 
   Future<void> abrirOpcoesFoto() async {
@@ -154,7 +250,7 @@ class _PerfilPageState extends State<PerfilPage> {
 
     return Center(
       child: GestureDetector(
-        onTap: abrirOpcoesFoto,
+        onTap: enviandoFoto ? null : abrirOpcoesFoto,
         child: Stack(
           alignment: Alignment.bottomRight,
           children: [
@@ -178,16 +274,29 @@ class _PerfilPageState extends State<PerfilPage> {
               child: CircleAvatar(
                 radius: 62,
                 backgroundColor: theme.cardColor,
-                backgroundImage: fotoUrl == null
-                    ? null
-                    : NetworkImage(fotoUrl!),
-                child: fotoUrl == null
-                    ? const Icon(
-                        Icons.person,
-                        color: AppColors.primary,
-                        size: 64,
-                      )
-                    : null,
+                child: ClipOval(
+                  child: fotoBytes != null
+                      ? Image.memory(
+                          fotoBytes!,
+                          width: 124,
+                          height: 124,
+                          fit: BoxFit.cover,
+                          gaplessPlayback: true,
+                          errorBuilder: (context, error, stackTrace) =>
+                              const Icon(
+                                Icons.person,
+                                color: AppColors.primary,
+                                size: 64,
+                              ),
+                        )
+                      : carregandoFoto
+                      ? const CircularProgressIndicator()
+                      : const Icon(
+                          Icons.person,
+                          color: AppColors.primary,
+                          size: 64,
+                        ),
+                ),
               ),
             ),
             Container(
@@ -282,7 +391,21 @@ class _PerfilPageState extends State<PerfilPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Meu Perfil'), centerTitle: true),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar ao início',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop();
+            } else {
+              context.go('/entregador/inicio');
+            }
+          },
+        ),
+        title: const Text('Meu Perfil'),
+        centerTitle: true,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
@@ -340,7 +463,7 @@ class _PerfilPageState extends State<PerfilPage> {
             titulo: 'Foto de perfil',
             valor: 'Toque para adicionar ou alterar foto',
             color: AppColors.success,
-            onTap: abrirOpcoesFoto,
+            onTap: enviandoFoto ? null : abrirOpcoesFoto,
           ),
 
           const SizedBox(height: 8),

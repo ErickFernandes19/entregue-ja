@@ -1,12 +1,37 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../services/auth_service.dart';
+import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 
 class SuportePage extends StatelessWidget {
   const SuportePage({super.key});
 
   static const String emailSuporte = 'entregueja1@gmail.com';
+
+  Future<void> voltarAoInicio(BuildContext context) async {
+    final empresa = await EmpresaService.empresaLogada();
+
+    if (!context.mounted) return;
+
+    if (empresa != null) {
+      context.go('/empresa/inicio');
+      return;
+    }
+
+    final entregador = await AuthService.usuarioLogado();
+
+    if (!context.mounted) return;
+
+    if (entregador != null) {
+      context.go('/entregador/inicio');
+      return;
+    }
+
+    context.go('/selecionar');
+  }
 
   Future<void> abrirEmail(BuildContext context) async {
     final uri = Uri(
@@ -298,7 +323,15 @@ class SuportePage extends StatelessWidget {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Suporte'), centerTitle: true),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar ao início',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => voltarAoInicio(context),
+        ),
+        title: const Text('Suporte'),
+        centerTitle: true,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../services/auth_service.dart';
 import '../services/configuracoes_service.dart';
@@ -261,6 +262,12 @@ class _VeiculoConfiguracoesPageState extends State<VeiculoConfiguracoesPage> {
 
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            context.go('/entregador/inicio');
+          },
+        ),
         title: const Text('Veículo e Combustível'),
         centerTitle: true,
       ),

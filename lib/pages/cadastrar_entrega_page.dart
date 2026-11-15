@@ -570,7 +570,23 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Cadastrar Entrega'), centerTitle: true),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: carregando
+              ? null
+              : () {
+                  if (context.canPop()) {
+                    context.pop(false);
+                  } else {
+                    context.go('/empresa/inicio');
+                  }
+                },
+        ),
+        title: const Text('Cadastrar Entrega'),
+        centerTitle: true,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
@@ -672,7 +688,7 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
                   label: 'Número',
                   hint: 'Ex: 123',
                   icon: Icons.numbers,
-                  keyboardType: TextInputType.streetAddress,
+                  keyboardType: TextInputType.number,
                 ),
                 const SizedBox(height: 16),
                 campo(

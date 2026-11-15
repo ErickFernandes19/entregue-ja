@@ -1,16 +1,49 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
+import '../services/auth_service.dart';
+import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 
 class SobrePage extends StatelessWidget {
   const SobrePage({super.key});
+
+  Future<void> voltarAoInicio(BuildContext context) async {
+    final empresa = await EmpresaService.empresaLogada();
+
+    if (!context.mounted) return;
+
+    if (empresa != null) {
+      context.go('/empresa/inicio');
+      return;
+    }
+
+    final entregador = await AuthService.usuarioLogado();
+
+    if (!context.mounted) return;
+
+    if (entregador != null) {
+      context.go('/entregador/inicio');
+      return;
+    }
+
+    context.go('/selecionar');
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Sobre o App'), centerTitle: true),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar ao início',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => voltarAoInicio(context),
+        ),
+        title: const Text('Sobre o App'),
+        centerTitle: true,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [

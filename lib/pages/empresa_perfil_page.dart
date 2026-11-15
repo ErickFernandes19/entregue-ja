@@ -393,7 +393,17 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Perfil da Empresa'), centerTitle: true),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar ao início',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            context.go('/empresa/inicio');
+          },
+        ),
+        title: const Text('Perfil da Empresa'),
+        centerTitle: true,
+      ),
       body: carregando
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
