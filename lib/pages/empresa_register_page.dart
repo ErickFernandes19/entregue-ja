@@ -25,6 +25,66 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
   final senhaFocus = FocusNode();
   final confirmarSenhaFocus = FocusNode();
 
+  @override
+  void initState() {
+    super.initState();
+    senhaController.addListener(atualizarValidacao);
+    confirmarSenhaController.addListener(atualizarValidacao);
+  }
+
+  void atualizarValidacao() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Widget requisitoSenha(String texto, bool atendido) {
+    final theme = Theme.of(context);
+    final cor = atendido
+        ? Colors.green.shade700
+        : theme.colorScheme.onSurfaceVariant;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(
+            atendido
+                ? Icons.check_circle_outline
+                : Icons.radio_button_unchecked,
+            size: 17,
+            color: cor,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(texto, style: TextStyle(fontSize: 12, color: cor)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget requisitosSenha() {
+    final senha = senhaController.text;
+    final confirmacao = confirmarSenhaController.text;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        requisitoSenha('Pelo menos 8 caracteres', senha.length >= 8),
+        requisitoSenha('Uma letra maiúscula', RegExp(r'[A-Z]').hasMatch(senha)),
+        requisitoSenha('Uma letra minúscula', RegExp(r'[a-z]').hasMatch(senha)),
+        requisitoSenha('Um número', RegExp(r'[0-9]').hasMatch(senha)),
+        requisitoSenha(
+          'Um caractere especial',
+          RegExp(r'[^A-Za-z0-9]').hasMatch(senha),
+        ),
+        if (confirmacao.isNotEmpty)
+          requisitoSenha('As senhas coincidem', senha == confirmacao),
+      ],
+    );
+  }
+
   bool senhaForte(String senha) {
     return senha.length >= 8 &&
         RegExp(r'[A-Z]').hasMatch(senha) &&
@@ -41,7 +101,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
 
   Future<void> cadastrar() async {
     final nome = nomeController.text.trim();
-    final email = emailController.text.trim();
+    final email = emailController.text.trim().toLowerCase();
     final senha = senhaController.text;
     final confirmarSenha = confirmarSenhaController.text;
 
@@ -52,6 +112,14 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Preencha todos os campos')));
+      return;
+    }
+
+    if (!RegExp(
+          r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$',
+        ).hasMatch(email) ||
+        email.length > 254) {
+      mostrarErro('Informe um e-mail válido');
       return;
     }
 
@@ -74,11 +142,8 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
       carregando = true;
     });
 
-    final sucesso = await empresa_service.EmpresaService.cadastrar(
-      nome,
-      email,
-      senha,
-    );
+    final resultado = await empresa_service
+        .EmpresaService.cadastrarComResultado(nome, email, senha);
 
     if (!mounted) return;
 
@@ -86,7 +151,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
       carregando = false;
     });
 
-    if (sucesso) {
+    if (resultado['sucesso'] == true) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Código de verificação enviado para seu e-mail'),
@@ -95,8 +160,11 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
 
       context.push('/empresa/verificar-cadastro', extra: email);
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Erro ao solicitar cadastro da empresa')),
+      final mensagem = resultado['mensagem']?.toString().trim();
+      mostrarErro(
+        mensagem != null && mensagem.isNotEmpty
+            ? mensagem
+            : 'Não foi possível enviar o código de verificação',
       );
     }
   }
@@ -153,6 +221,8 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
 
   @override
   void dispose() {
+    senhaController.removeListener(atualizarValidacao);
+    confirmarSenhaController.removeListener(atualizarValidacao);
     nomeController.dispose();
     emailController.dispose();
     senhaController.dispose();
@@ -266,13 +336,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
                                   confirmarSenhaFocus.requestFocus(),
                             ),
                             const SizedBox(height: 10),
-                            Text(
-                              'Mínimo de 8 caracteres, com maiúscula, minúscula, número e símbolo.',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: theme.colorScheme.onSurfaceVariant,
-                              ),
-                            ),
+                            requisitosSenha(),
                             const SizedBox(height: 16),
                             campo(
                               controller: confirmarSenhaController,

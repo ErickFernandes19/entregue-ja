@@ -22,6 +22,7 @@ import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 @RestController
@@ -129,6 +130,17 @@ public class EmpresaController {
                 && senha.matches("(?s).*[^A-Za-z0-9].*");
     }
 
+    private boolean emailValido(String email) {
+        return email != null
+                && email.length() <= 254
+                && email.matches("^[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
+    }
+
+    private boolean emailEmUso(String email) {
+        return empresaRepository.findByEmail(email).isPresent()
+                || usuarioRepository.findByEmail(email).isPresent();
+    }
+
     private String referenciaFoto(Empresa empresa) {
         String foto = empresa.getFoto();
 
@@ -174,9 +186,15 @@ public class EmpresaController {
             );
         }
 
-        String email = empresa.getEmail().trim().toLowerCase();
+        String email = empresa.getEmail().trim().toLowerCase(Locale.ROOT);
 
-        if (empresaRepository.findByEmail(email).isPresent()) {
+        if (!emailValido(email)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe um e-mail válido")
+            );
+        }
+
+        if (emailEmUso(email)) {
             return ResponseEntity.badRequest().body(
                     Map.of("mensagem", "E-mail já cadastrado")
             );
@@ -204,6 +222,49 @@ public class EmpresaController {
         );
     }
 
+    @PostMapping("/reenviar-codigo")
+    public ResponseEntity<?> reenviarCodigo(
+            @RequestBody Map<String, String> body
+    ) {
+        String email = body.get("email");
+
+        if (email == null || email.isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe o e-mail")
+            );
+        }
+
+        String emailNormalizado = email.trim().toLowerCase(Locale.ROOT);
+
+        if (!emailValido(emailNormalizado)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe um e-mail válido")
+            );
+        }
+
+        if (emailEmUso(emailNormalizado)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "E-mail já cadastrado")
+            );
+        }
+
+        try {
+            cadastroPendenteService.reenviarCodigo("EMPRESA", emailNormalizado);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", e.getMessage())
+            );
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(
+                    Map.of("mensagem", "Não foi possível reenviar o código de verificação")
+            );
+        }
+
+        return ResponseEntity.ok(
+                Map.of("mensagem", "Novo código de verificação enviado para o e-mail")
+        );
+    }
+
     @PostMapping("/confirmar-cadastro")
     public ResponseEntity<?> confirmarCadastro(
             @RequestBody Map<String, String> body
@@ -218,9 +279,15 @@ public class EmpresaController {
             );
         }
 
-        String emailNormalizado = email.trim().toLowerCase();
+        String emailNormalizado = email.trim().toLowerCase(Locale.ROOT);
 
-        if (empresaRepository.findByEmail(emailNormalizado).isPresent()) {
+        if (!emailValido(emailNormalizado)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe um e-mail válido")
+            );
+        }
+
+        if (emailEmUso(emailNormalizado)) {
             return ResponseEntity.badRequest().body(
                     Map.of("mensagem", "E-mail já cadastrado")
             );
@@ -887,23 +954,22 @@ public class EmpresaController {
         }
 
         novoNome = novoNome.trim();
-        novoEmail = novoEmail.trim();
+        novoEmail = novoEmail.trim().toLowerCase(Locale.ROOT);
 
-        if (!email.equalsIgnoreCase(novoEmail)) {
-            var empresaComMesmoEmail =
-                    empresaRepository.findByEmail(novoEmail);
+        if (!emailValido(novoEmail)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe um e-mail válido")
+            );
+        }
 
-            if (empresaComMesmoEmail.isPresent()
-                    && !empresaComMesmoEmail.get()
-                    .getId()
-                    .equals(empresa.getId())) {
-                return ResponseEntity.badRequest().body(
-                        Map.of(
-                                "mensagem",
-                                "E-mail já está sendo utilizado"
-                        )
-                );
-            }
+        var empresaComMesmoEmail = empresaRepository.findByEmail(novoEmail);
+
+        if ((empresaComMesmoEmail.isPresent()
+                && !empresaComMesmoEmail.get().getId().equals(empresa.getId()))
+                || usuarioRepository.findByEmail(novoEmail).isPresent()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "E-mail já está sendo utilizado")
+            );
         }
 
         empresa.setNome(novoNome);

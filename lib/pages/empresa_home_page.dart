@@ -15,27 +15,43 @@ class EmpresaHomePage extends StatefulWidget {
   State<EmpresaHomePage> createState() => _EmpresaHomePageState();
 }
 
-class _EmpresaHomePageState extends State<EmpresaHomePage> {
+class _EmpresaHomePageState extends State<EmpresaHomePage>
+    with WidgetsBindingObserver {
   String nomeEmpresa = 'Empresa';
   Uint8List? fotoEmpresaBytes;
   Timer? timer;
   Map<String, dynamic>? estatisticas;
   bool carregando = true;
+  bool _consultandoDados = false;
+  bool _appAtivo = true;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     carregarNomeEmpresa();
     carregarFotoEmpresa();
     carregarDados();
 
     timer = Timer.periodic(const Duration(seconds: 10), (_) {
-      carregarDados();
+      if (_appAtivo) {
+        unawaited(carregarDados());
+      }
     });
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final ativo = state == AppLifecycleState.resumed;
+    if (ativo && !_appAtivo) {
+      unawaited(carregarDados());
+    }
+    _appAtivo = ativo;
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
     super.dispose();
   }
@@ -66,14 +82,26 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
   }
 
   Future<void> carregarDados() async {
-    final resultado = await EmpresaEstatisticasService.buscarEstatisticas();
-
-    if (!mounted) return;
-
-    setState(() {
-      estatisticas = resultado;
-      carregando = false;
-    });
+    if (_consultandoDados || !mounted) return;
+    _consultandoDados = true;
+    try {
+      final resultado = await EmpresaEstatisticasService.buscarEstatisticas();
+      if (!mounted) return;
+      setState(() {
+        if (resultado != null) {
+          estatisticas = resultado;
+        }
+        carregando = false;
+      });
+    } catch (e) {
+      debugPrint('Erro ao atualizar estatísticas da empresa: $e');
+      if (!mounted) return;
+      setState(() {
+        carregando = false;
+      });
+    } finally {
+      _consultandoDados = false;
+    }
   }
 
   void abrirPagina(String rota) {
@@ -141,7 +169,7 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
             child: Container(
               padding: const EdgeInsets.all(3),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.25),
+                color: Colors.white.withValues(alpha: 0.25),
                 shape: BoxShape.circle,
               ),
               child: CircleAvatar(
@@ -176,13 +204,13 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
         decoration: BoxDecoration(
           color: theme.cardColor,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: color.withOpacity(0.22)),
+          border: Border.all(color: color.withValues(alpha: 0.22)),
         ),
         child: Row(
           children: [
             CircleAvatar(
               radius: 17,
-              backgroundColor: color.withOpacity(0.18),
+              backgroundColor: color.withValues(alpha: 0.18),
               child: Icon(icon, color: color, size: 18),
             ),
             const SizedBox(width: 8),
@@ -239,7 +267,7 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
           decoration: BoxDecoration(
             color: theme.cardColor,
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: color.withOpacity(0.22)),
+            border: Border.all(color: color.withValues(alpha: 0.22)),
           ),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -271,6 +299,8 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
     final pendentes = estatisticas?['pendentes']?.toString() ?? '0';
 
     final emRota = estatisticas?['emRota']?.toString() ?? '0';
+
+    final naoEntregues = estatisticas?['naoEntregues']?.toString() ?? '0';
 
     final theme = Theme.of(context);
 
@@ -324,6 +354,19 @@ class _EmpresaHomePageState extends State<EmpresaHomePage> {
                           titulo: 'Pendentes',
                           color: AppColors.warning,
                         ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        cardResumo(
+                          icon: Icons.report_problem_outlined,
+                          valor: naoEntregues,
+                          titulo: 'Não entregues',
+                          color: AppColors.error,
+                        ),
+                        const SizedBox(width: 12),
+                        const Spacer(),
                       ],
                     ),
                   ],

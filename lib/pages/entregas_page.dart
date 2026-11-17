@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../models/entrega_model.dart';
 import '../providers/entregas_provider.dart';
-import '../services/api_service.dart';
+import '../services/entrega_service.dart';
 import '../theme/app_colors.dart';
 
 class EntregasPage extends StatefulWidget {
@@ -17,6 +17,8 @@ class EntregasPage extends StatefulWidget {
 class _EntregasPageState extends State<EntregasPage> {
   final TextEditingController pesquisaController = TextEditingController();
   String filtro = 'em_rota';
+  bool processandoQr = false;
+  bool processandoAcao = false;
 
   @override
   void dispose() {
@@ -39,7 +41,7 @@ class _EntregasPageState extends State<EntregasPage> {
     return provider.entregas.asMap().entries.where((item) {
       final entrega = item.value;
       final status = entrega.status.toUpperCase();
-      if (status == 'CANCELADA') return false;
+      if (status == 'CANCELADA' && filtro != 'todas') return false;
       final correspondePesquisa =
           pesquisa.isEmpty ||
           entrega.cliente.toLowerCase().contains(pesquisa) ||
@@ -88,7 +90,9 @@ class _EntregasPageState extends State<EntregasPage> {
               : theme.colorScheme.outlineVariant,
         ),
       ),
-      onSelected: (_) => setState(() => filtro = valor),
+      onSelected: processandoAcao
+          ? null
+          : (_) => setState(() => filtro = valor),
     );
   }
 
@@ -97,7 +101,7 @@ class _EntregasPageState extends State<EntregasPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: cor.withOpacity(0.13),
+        color: cor.withValues(alpha: 0.13),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -122,82 +126,151 @@ class _EntregasPageState extends State<EntregasPage> {
   void initState() {
     super.initState();
 
-    Future.microtask(() {
-      Provider.of<EntregasProvider>(
-        context,
-        listen: false,
-      ).carregarEntregasDoBackend();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<EntregasProvider>().carregarEntregasDoBackend();
     });
   }
 
   Future<void> adicionarEntregaManual() async {
-    final resultado = await context.push<EntregaModel>(
-      '/entregador/entregas/cadastro-manual',
-    );
+    if (processandoAcao) return;
+    setState(() => processandoAcao = true);
+    try {
+      final resultado = await context.push<EntregaModel>(
+        '/entregador/entregas/cadastro-manual',
+      );
 
-    if (!mounted || resultado == null) return;
+      if (!mounted || resultado == null) return;
 
-    final entregasProvider = Provider.of<EntregasProvider>(
-      context,
-      listen: false,
-    );
+      final entregasProvider = Provider.of<EntregasProvider>(
+        context,
+        listen: false,
+      );
 
-    await entregasProvider.adicionarEntrega(resultado);
+      await entregasProvider.adicionarEntrega(resultado);
+    } catch (e) {
+      mostrarMensagem(
+        'Não foi possível atualizar a lista de entregas.',
+        erro: true,
+      );
+    } finally {
+      if (mounted) setState(() => processandoAcao = false);
+    }
   }
 
   Future<void> escanearQRCode() async {
-    final resultado = await context.push<Object?>(
-      '/entregador/entregas/scanner',
-    );
+    if (processandoQr || processandoAcao) return;
+    setState(() => processandoQr = true);
 
-    if (!mounted || resultado == null) return;
+    try {
+      final resultado = await context.push<Object?>(
+        '/entregador/entregas/scanner',
+      );
 
-    final entrega = await ApiService.buscarEntrega(resultado.toString());
+      if (!mounted || resultado == null) return;
 
-    if (!mounted) return;
+      final id = resultado.toString().trim();
+      if (id.isEmpty) {
+        mostrarMensagem('O QR Code não contém um ID válido.', erro: true);
+        return;
+      }
 
-    if (entrega == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Entrega não encontrada')));
+      final dados = await EntregaService.consultarEntregaQr(id);
+      if (!mounted) return;
 
-      return;
+      final cliente = (dados['cliente'] ?? '').toString();
+      final endereco = (dados['endereco'] ?? '').toString();
+      final complemento = (dados['complemento'] ?? '').toString();
+      final idEntrega = (dados['id'] ?? id).toString();
+
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Assumir entrega?'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Entrega #$idEntrega'),
+                const SizedBox(height: 12),
+                Text('Cliente: $cliente'),
+                const SizedBox(height: 8),
+                Text('Endereço: $endereco'),
+                if (complemento.trim().isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text('Complemento: $complemento'),
+                ],
+                const SizedBox(height: 16),
+                const Text('Deseja assumir esta entrega?'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Assumir entrega'),
+            ),
+          ],
+        ),
+      );
+
+      if (!mounted || confirmar != true) return;
+
+      await EntregaService.assumirEntregaQr(idEntrega);
+      if (!mounted) return;
+
+      setState(() => filtro = 'pendentes');
+      final provider = context.read<EntregasProvider>();
+      await provider.carregarEntregasDoBackend();
+      if (!mounted) return;
+
+      mostrarMensagem('Entrega assumida com sucesso!');
+    } on EntregaQrException catch (e) {
+      mostrarMensagem(e.mensagem, erro: true);
+    } catch (e) {
+      mostrarMensagem('Não foi possível processar o QR Code.', erro: true);
+    } finally {
+      if (mounted) setState(() => processandoQr = false);
     }
-
-    final entregasProvider = Provider.of<EntregasProvider>(
-      context,
-      listen: false,
-    );
-
-    await entregasProvider.adicionarEntrega(
-      EntregaModel.fromJson(Map<String, dynamic>.from(entrega)),
-    );
   }
 
   Future<void> lerEtiqueta() async {
-    final resultado = await context.push<Object?>('/entregador/entregas/ocr');
+    if (processandoAcao) return;
+    setState(() => processandoAcao = true);
+    try {
+      final texto = await context.push<String>('/entregador/entregas/ocr');
 
-    if (!mounted || resultado == null) return;
+      if (!mounted || texto == null || texto.trim().isEmpty) return;
 
-    final entregasProvider = Provider.of<EntregasProvider>(
-      context,
-      listen: false,
-    );
+      final entrega = await context.push<EntregaModel>(
+        '/entregador/entregas/cadastro-manual',
+        extra: {'textoOcr': texto},
+      );
 
-    await entregasProvider.adicionarEntrega(
-      EntregaModel(
-        endereco: resultado.toString(),
-        cliente: 'Lido por OCR',
-        valor: 0.0,
-        observacao: 'Texto extraído da etiqueta',
-      ),
-    );
+      if (!mounted || entrega == null) return;
+
+      final provider = context.read<EntregasProvider>();
+      await provider.adicionarEntrega(entrega);
+    } catch (e) {
+      mostrarMensagem(
+        'Não foi possível atualizar a lista de entregas.',
+        erro: true,
+      );
+    } finally {
+      if (mounted) setState(() => processandoAcao = false);
+    }
   }
 
   Future<void> abrirDetalhesEntrega(
     EntregaModel entrega,
     EntregasProvider provider,
   ) async {
+    if (processandoAcao) return;
     if (entrega.id == null) {
       mostrarMensagem(
         'Esta entrega não possui ID para consultar os detalhes.',
@@ -206,22 +279,26 @@ class _EntregasPageState extends State<EntregasPage> {
       return;
     }
 
-    final atualizado = await context.push<bool>(
-      '/entregador/entregas/detalhes',
-      extra: {
-        'id': entrega.id,
-        'cliente': entrega.cliente,
-        'endereco': entrega.endereco,
-        'complemento': entrega.complemento,
-        'observacao': entrega.observacao,
-        'valor': entrega.valor,
-        'status': entrega.status,
-      },
-    );
+    setState(() => processandoAcao = true);
+    try {
+      await context.push<bool>(
+        '/entregador/entregas/detalhes',
+        extra: {
+          'id': entrega.id,
+          'cliente': entrega.cliente,
+          'endereco': entrega.endereco,
+          'complemento': entrega.complemento,
+          'observacao': entrega.observacao,
+          'valor': entrega.valor,
+          'status': entrega.status,
+        },
+      );
 
-    if (!mounted) return;
-    if (atualizado == true) {
-      await provider.carregarEntregasDoBackend();
+      if (mounted) await provider.carregarEntregasDoBackend();
+    } catch (e) {
+      mostrarMensagem('Não foi possível atualizar as entregas.', erro: true);
+    } finally {
+      if (mounted) setState(() => processandoAcao = false);
     }
   }
 
@@ -229,6 +306,7 @@ class _EntregasPageState extends State<EntregasPage> {
     EntregaModel entrega,
     EntregasProvider provider,
   ) async {
+    if (processandoAcao) return;
     if (entrega.id == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -241,19 +319,22 @@ class _EntregasPageState extends State<EntregasPage> {
       return;
     }
 
-    final resultado = await context.push<bool>(
-      '/entregador/entregas/finalizar',
-      extra: {
-        'entregaId': entrega.id!,
-        'cliente': entrega.cliente,
-        'endereco': entrega.endereco,
-      },
-    );
+    setState(() => processandoAcao = true);
+    try {
+      await context.push<bool>(
+        '/entregador/entregas/finalizar',
+        extra: {
+          'entregaId': entrega.id!,
+          'cliente': entrega.cliente,
+          'endereco': entrega.endereco,
+        },
+      );
 
-    if (!mounted) return;
-
-    if (resultado == true) {
-      await provider.carregarEntregasDoBackend();
+      if (mounted) await provider.carregarEntregasDoBackend();
+    } catch (e) {
+      mostrarMensagem('Não foi possível atualizar as entregas.', erro: true);
+    } finally {
+      if (mounted) setState(() => processandoAcao = false);
     }
   }
 
@@ -261,6 +342,13 @@ class _EntregasPageState extends State<EntregasPage> {
     int indexOriginal,
     EntregasProvider provider,
   ) async {
+    if (processandoAcao) return;
+    if (indexOriginal < 0 || indexOriginal >= provider.entregas.length) return;
+    final entregaOriginal = provider.entregas[indexOriginal];
+    final idOriginal =
+        provider.entregas.length > indexOriginal && indexOriginal >= 0
+        ? provider.entregas[indexOriginal].id
+        : null;
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (context) {
@@ -289,9 +377,29 @@ class _EntregasPageState extends State<EntregasPage> {
       },
     );
 
-    if (confirmar != true) return;
+    if (!mounted || confirmar != true) return;
 
-    final sucesso = await provider.removerEntrega(indexOriginal);
+    final indiceAtual = idOriginal == null
+        ? indexOriginal
+        : provider.entregas.indexWhere((item) => item.id == idOriginal);
+    if (indiceAtual < 0 ||
+        indiceAtual >= provider.entregas.length ||
+        (idOriginal != null &&
+            provider.entregas[indiceAtual].id != idOriginal) ||
+        (idOriginal == null &&
+            !identical(provider.entregas[indiceAtual], entregaOriginal))) {
+      mostrarMensagem('A lista mudou. Atualize e tente novamente.', erro: true);
+      return;
+    }
+    setState(() => processandoAcao = true);
+    bool sucesso;
+    try {
+      sucesso = await provider.removerEntrega(indiceAtual);
+    } catch (e) {
+      sucesso = false;
+    } finally {
+      if (mounted) setState(() => processandoAcao = false);
+    }
 
     if (!mounted) return;
 
@@ -383,14 +491,14 @@ class _EntregasPageState extends State<EntregasPage> {
     return Expanded(
       child: InkWell(
         borderRadius: BorderRadius.circular(18),
-        onTap: onTap,
+        onTap: processandoAcao || processandoQr ? null : onTap,
         child: Container(
           height: 86,
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
             color: theme.cardColor,
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: color.withOpacity(0.22)),
+            border: Border.all(color: color.withValues(alpha: 0.22)),
           ),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -432,12 +540,12 @@ class _EntregasPageState extends State<EntregasPage> {
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(22),
         border: Border.all(
-          color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(
-              theme.brightness == Brightness.dark ? 0.18 : 0.05,
+            color: Colors.black.withValues(
+              alpha: theme.brightness == Brightness.dark ? 0.18 : 0.05,
             ),
             blurRadius: 12,
             offset: const Offset(0, 5),
@@ -453,7 +561,7 @@ class _EntregasPageState extends State<EntregasPage> {
               children: [
                 CircleAvatar(
                   radius: 22,
-                  backgroundColor: AppColors.primary.withOpacity(0.14),
+                  backgroundColor: AppColors.primary.withValues(alpha: 0.14),
                   child: const Icon(
                     Icons.inventory_2,
                     color: AppColors.primary,
@@ -590,7 +698,9 @@ class _EntregasPageState extends State<EntregasPage> {
                 if (podeExcluir)
                   IconButton(
                     tooltip: 'Remover entrega',
-                    onPressed: () => confirmarExclusao(indexOriginal, provider),
+                    onPressed: processandoAcao
+                        ? null
+                        : () => confirmarExclusao(indexOriginal, provider),
                     icon: const Icon(
                       Icons.delete_outline,
                       color: AppColors.error,
@@ -603,7 +713,9 @@ class _EntregasPageState extends State<EntregasPage> {
               width: double.infinity,
               height: 48,
               child: OutlinedButton.icon(
-                onPressed: () => abrirDetalhesEntrega(entrega, provider),
+                onPressed: processandoAcao
+                    ? null
+                    : () => abrirDetalhesEntrega(entrega, provider),
                 icon: const Icon(Icons.info_outline),
                 label: const Text('Ver detalhes'),
               ),
@@ -614,7 +726,9 @@ class _EntregasPageState extends State<EntregasPage> {
                 width: double.infinity,
                 height: 48,
                 child: ElevatedButton.icon(
-                  onPressed: () => finalizarEntrega(entrega, provider),
+                  onPressed: processandoAcao
+                      ? null
+                      : () => finalizarEntrega(entrega, provider),
                   icon: const Icon(Icons.fact_check_outlined),
                   label: const Text(
                     'Finalizar entrega',
@@ -634,9 +748,9 @@ class _EntregasPageState extends State<EntregasPage> {
                 height: 48,
                 width: double.infinity,
                 decoration: BoxDecoration(
-                  color: cor.withOpacity(0.10),
+                  color: cor.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: cor.withOpacity(0.22)),
+                  border: Border.all(color: cor.withValues(alpha: 0.22)),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,

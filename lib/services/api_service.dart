@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -8,8 +9,11 @@ import '../config/api_config.dart';
 import 'auth_service.dart';
 
 class ApiService {
+  static const Duration _tempoLimite = Duration(seconds: 20);
+  static const Duration _tempoLimiteUpload = Duration(seconds: 60);
+
   static Future<Map<String, String>> _headersAutenticados() async {
-    return await AuthService.headersAutenticados();
+    return AuthService.headersAutenticados();
   }
 
   static void _registrarErro(String operacao, int statusCode, String body) {
@@ -47,19 +51,21 @@ class ApiService {
       throw ArgumentError('Informe o cliente e o endereço da entrega.');
     }
     final headers = await _headersAutenticados();
-    final response = await http.post(
-      Uri.parse('${ApiConfig.entregas}/entregador'),
-      headers: {...headers, 'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'cliente': cliente.trim(),
-        'endereco': endereco.trim(),
-        'valor': valor,
-        'complemento': complemento,
-        'observacao': observacao,
-        'latitude': latitude,
-        'longitude': longitude,
-      }),
-    );
+    final response = await http
+        .post(
+          Uri.parse('${ApiConfig.entregas}/entregador'),
+          headers: {...headers, 'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'cliente': cliente.trim(),
+            'endereco': endereco.trim(),
+            'valor': valor,
+            'complemento': complemento,
+            'observacao': observacao,
+            'latitude': latitude,
+            'longitude': longitude,
+          }),
+        )
+        .timeout(_tempoLimite);
     if (response.statusCode == 200 || response.statusCode == 201) {
       final dados = jsonDecode(response.body);
       if (dados is Map<String, dynamic> && dados['id'] != null) {
@@ -80,12 +86,18 @@ class ApiService {
   static Future<Map<String, dynamic>?> buscarEntrega(String id) async {
     try {
       final headers = await _headersAutenticados();
-      final response = await http.get(
-        Uri.parse('${ApiConfig.entregas}/${Uri.encodeComponent(id)}'),
-        headers: headers,
-      );
+      final response = await http
+          .get(
+            Uri.parse('${ApiConfig.entregas}/${Uri.encodeComponent(id)}'),
+            headers: headers,
+          )
+          .timeout(_tempoLimite);
       if (response.statusCode == 200) {
-        return Map<String, dynamic>.from(jsonDecode(response.body));
+        final dados = jsonDecode(response.body);
+        if (dados is Map) {
+          return Map<String, dynamic>.from(dados);
+        }
+        throw const FormatException('Resposta inválida do servidor.');
       }
       _registrarErro(
         'Erro ao buscar entrega',
@@ -102,12 +114,14 @@ class ApiService {
   static Future<List<dynamic>> buscarEntregasDoEntregador(String email) async {
     try {
       final headers = await _headersAutenticados();
-      final response = await http.get(
-        Uri.parse(
-          '${ApiConfig.entregas}/entregador/${Uri.encodeComponent(email)}',
-        ),
-        headers: headers,
-      );
+      final response = await http
+          .get(
+            Uri.parse(
+              '${ApiConfig.entregas}/entregador/${Uri.encodeComponent(email)}',
+            ),
+            headers: headers,
+          )
+          .timeout(_tempoLimite);
       if (response.statusCode == 200) {
         final dados = jsonDecode(response.body);
         if (dados is List) return dados;
@@ -132,10 +146,9 @@ class ApiService {
   static Future<bool> excluirEntrega(int id) async {
     try {
       final headers = await _headersAutenticados();
-      final response = await http.delete(
-        Uri.parse('${ApiConfig.entregas}/$id'),
-        headers: headers,
-      );
+      final response = await http
+          .delete(Uri.parse('${ApiConfig.entregas}/$id'), headers: headers)
+          .timeout(_tempoLimite);
       if (response.statusCode == 200 || response.statusCode == 204) return true;
       _registrarErro(
         'Erro ao excluir entrega',
@@ -152,10 +165,9 @@ class ApiService {
   static Future<bool> marcarEntregaEmRota(int id) async {
     try {
       final headers = await _headersAutenticados();
-      final response = await http.put(
-        Uri.parse('${ApiConfig.entregas}/$id/em-rota'),
-        headers: headers,
-      );
+      final response = await http
+          .put(Uri.parse('${ApiConfig.entregas}/$id/em-rota'), headers: headers)
+          .timeout(_tempoLimite);
       if (response.statusCode == 200) return true;
       _registrarErro(
         'Erro ao marcar entrega em rota',
@@ -172,10 +184,9 @@ class ApiService {
   static Future<bool> atualizarStatusEntrega(int id) async {
     try {
       final headers = await _headersAutenticados();
-      final response = await http.put(
-        Uri.parse('${ApiConfig.entregas}/$id/status'),
-        headers: headers,
-      );
+      final response = await http
+          .put(Uri.parse('${ApiConfig.entregas}/$id/status'), headers: headers)
+          .timeout(_tempoLimite);
       if (response.statusCode == 200) return true;
       _registrarErro(
         'Erro ao atualizar status',
@@ -274,8 +285,9 @@ class ApiService {
       request.headers['Authorization'] = autorizacao;
       request.fields['latitude'] = latitude.toString();
       request.fields['longitude'] = longitude.toString();
-      if (observacao.trim().isNotEmpty)
+      if (observacao.trim().isNotEmpty) {
         request.fields['observacao'] = observacao.trim();
+      }
       request.files.add(
         await http.MultipartFile.fromPath(
           'foto',
@@ -284,11 +296,17 @@ class ApiService {
         ),
       );
       debugPrint('Enviando comprovante da entrega #$id...');
-      final streamedResponse = await request.send();
-      final body = await streamedResponse.stream.bytesToString();
+      final streamedResponse = await request.send().timeout(_tempoLimiteUpload);
+      final body = await streamedResponse.stream.bytesToString().timeout(
+        _tempoLimiteUpload,
+      );
       if (streamedResponse.statusCode == 200) {
         if (body.isEmpty) return {'sucesso': true, 'status': 'ENTREGUE'};
-        return Map<String, dynamic>.from(jsonDecode(body));
+        final dados = jsonDecode(body);
+        if (dados is Map) {
+          return Map<String, dynamic>.from(dados);
+        }
+        throw const FormatException('Resposta inválida do servidor.');
       }
       _registrarErro(
         'Erro ao concluir entrega',
@@ -342,11 +360,17 @@ class ApiService {
         ),
       );
       debugPrint('Registrando tentativa da entrega #$id...');
-      final streamedResponse = await request.send();
-      final body = await streamedResponse.stream.bytesToString();
+      final streamedResponse = await request.send().timeout(_tempoLimiteUpload);
+      final body = await streamedResponse.stream.bytesToString().timeout(
+        _tempoLimiteUpload,
+      );
       if (streamedResponse.statusCode == 200) {
         if (body.isEmpty) return {'sucesso': true, 'status': 'NAO_ENTREGUE'};
-        return Map<String, dynamic>.from(jsonDecode(body));
+        final dados = jsonDecode(body);
+        if (dados is Map) {
+          return Map<String, dynamic>.from(dados);
+        }
+        throw const FormatException('Resposta inválida do servidor.');
       }
       _registrarErro(
         'Erro ao registrar não entrega',

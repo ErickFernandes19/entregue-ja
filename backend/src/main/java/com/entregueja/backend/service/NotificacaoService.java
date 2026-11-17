@@ -170,7 +170,8 @@ public class NotificacaoService {
                 ? "ANDROID"
                 : plataforma.trim().toUpperCase(Locale.ROOT);
 
-        if (!plataformaNormalizada.equals("ANDROID")) {
+        if (!plataformaNormalizada.equals("ANDROID")
+                && !plataformaNormalizada.equals("WEB")) {
             throw new IllegalArgumentException("Plataforma não suportada");
         }
 

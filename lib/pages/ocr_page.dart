@@ -17,129 +17,136 @@ class OcrPage extends StatefulWidget {
 class _OcrPageState extends State<OcrPage> {
   final ImagePicker picker = ImagePicker();
   final TextRecognizer textRecognizer = TextRecognizer();
+  final TextEditingController textoController = TextEditingController();
 
   File? imagem;
-  String textoExtraido = '';
+  bool processando = false;
+  bool destinatarioIdentificado = false;
 
-  Future<void> tirarFotoELerTexto() async {
-    final XFile? foto = await picker.pickImage(source: ImageSource.camera);
-
-    if (foto == null) {
-      return;
+  String normalizar(String valor) {
+    const acentos = 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ';
+    const simples = 'AAAAAEEEEIIIIOOOOOUUUUC';
+    var resultado = valor.toUpperCase();
+    for (var i = 0; i < acentos.length; i++) {
+      resultado = resultado.replaceAll(acentos[i], simples[i]);
     }
-
-    final inputImage = InputImage.fromFilePath(foto.path);
-
-    final RecognizedText recognizedText = await textRecognizer.processImage(
-      inputImage,
-    );
-
-    final textoCompleto = recognizedText.text;
-    final textoDestinatario = extrairDestinatario(textoCompleto);
-
-    if (!mounted) return;
-
-    setState(() {
-      imagem = File(foto.path);
-
-      textoExtraido = textoDestinatario.trim().isEmpty
-          ? textoCompleto
-          : textoDestinatario;
-    });
+    return resultado.replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
-  void usarTexto() {
-    if (textoExtraido.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nenhum texto foi identificado ainda')),
-      );
-      return;
-    }
-
-    context.pop(textoExtraido);
+  bool marcadorDestinatario(String linha) {
+    final texto = normalizar(linha);
+    return RegExp(
+      r'^(?:DESTINATARIO|DESTINATARIA|DEST\.?|DADOS DO DESTINATARIO|DADOS DE ENTREGA|ENTREGAR PARA|ENTREGA PARA|RECEBEDOR|CONSIGNATARIO)\s*(?:[:\-–]|$|\s)',
+    ).hasMatch(texto);
   }
 
-  String extrairDestinatario(String textoCompleto) {
+  bool marcadorOutraSecao(String linha) {
+    final texto = normalizar(linha);
+    return RegExp(
+      r'^(?:REMETENTE|REM\.?|EMITENTE|EXPEDIDOR|ORIGEM|DADOS DO REMETENTE|TRANSPORTADORA|DADOS DA TRANSPORTADORA|NOTA FISCAL|DANFE|NF-?E|CHAVE DE ACESSO|DECLARACAO DE CONTEUDO|CONTEUDO|DESCRICAO DOS PRODUTOS|PRODUTOS|PEDIDO|RASTREAMENTO|CODIGO DE BARRAS|PESO|VOLUME|VALOR TOTAL|FRETE|DOCUMENTO AUXILIAR)\b',
+    ).hasMatch(texto);
+  }
+
+  String? extrairDestinatario(String textoCompleto) {
     final linhas = textoCompleto
-        .split('\n')
+        .split(RegExp(r'\r?\n'))
         .map((linha) => linha.trim())
         .where((linha) => linha.isNotEmpty)
         .toList();
 
-    final List<String> resultado = [];
-    bool encontrouDestinatario = false;
+    for (var i = 0; i < linhas.length; i++) {
+      if (!marcadorDestinatario(linhas[i])) continue;
 
-    for (final texto in linhas) {
-      final textoMaiusculo = texto.toUpperCase();
+      final resultado = <String>[];
+      final primeiraLinha = linhas[i]
+          .replaceFirst(
+            RegExp(
+              r'^\s*(?:dados\s+(?:do\s+)?destinat[aá]ri[oa]|dados\s+de\s+entrega|destinat[aá]ri[oa]|dest\.?|entregar\s+para|entrega\s+para|recebedor|consignat[aá]rio)\s*[:\-–]?\s*',
+              caseSensitive: false,
+            ),
+            '',
+          )
+          .trim();
 
-      if (textoMaiusculo.contains('DESTINAT')) {
-        encontrouDestinatario = true;
-        continue;
+      if (primeiraLinha.isNotEmpty) {
+        resultado.add(primeiraLinha);
       }
 
-      if (encontrouDestinatario) {
-        if (textoMaiusculo.contains('REMETENTE') ||
-            textoMaiusculo.contains('NOTA') ||
-            textoMaiusculo.contains('PESO') ||
-            textoMaiusculo.contains('VOLUME') ||
-            textoMaiusculo.contains('CHAVE') ||
-            textoMaiusculo.contains('NF-E') ||
-            textoMaiusculo.contains('DECLARA')) {
+      for (var j = i + 1; j < linhas.length && resultado.length < 7; j++) {
+        final linha = linhas[j];
+        if (marcadorOutraSecao(linha) || marcadorDestinatario(linha)) {
           break;
         }
+        resultado.add(linha);
+      }
 
-        resultado.add(texto);
-
-        if (resultado.length >= 5) {
-          break;
-        }
+      if (resultado.isNotEmpty) {
+        return resultado.join('\n');
       }
     }
 
-    if (resultado.isNotEmpty) {
-      return resultado.join('\n');
-    }
-
-    return extrairEnderecoSemDestinatario(linhas);
+    return null;
   }
 
-  String extrairEnderecoSemDestinatario(List<String> linhas) {
-    final palavrasEndereco = [
-      'RUA',
-      'AVENIDA',
-      'AV ',
-      'AV.',
-      'TRAVESSA',
-      'TV ',
-      'TV.',
-      'RODOVIA',
-      'ESTRADA',
-      'ALAMEDA',
-      'PRAÇA',
-      'PRACA',
-      'CEP',
-    ];
+  Future<void> tirarFotoELerTexto() async {
+    if (processando) return;
 
-    for (int i = 0; i < linhas.length; i++) {
-      final linhaMaiuscula = linhas[i].toUpperCase();
+    setState(() => processando = true);
 
-      final pareceEndereco = palavrasEndereco.any(
-        (palavra) => linhaMaiuscula.contains(palavra),
+    try {
+      final foto = await picker.pickImage(source: ImageSource.camera);
+      if (foto == null) return;
+
+      final recognizedText = await textRecognizer.processImage(
+        InputImage.fromFilePath(foto.path),
       );
+      final destinatario = extrairDestinatario(recognizedText.text);
 
-      if (pareceEndereco) {
-        final inicio = i > 0 ? i - 1 : i;
-        final fim = (i + 4) < linhas.length ? i + 4 : linhas.length;
+      if (!mounted) return;
 
-        return linhas.sublist(inicio, fim).join('\n');
+      setState(() {
+        imagem = File(foto.path);
+        destinatarioIdentificado = destinatario != null;
+        textoController.text = destinatario ?? '';
+      });
+
+      if (destinatario == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Não foi possível identificar o destinatário. Tire outra foto ou preencha os dados manualmente.',
+            ),
+            backgroundColor: AppColors.error,
+          ),
+        );
       }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Não foi possível ler a etiqueta: $e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => processando = false);
     }
+  }
 
-    return '';
+  void usarTexto() {
+    final texto = textoController.text.trim();
+    if (texto.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Informe os dados do destinatário.')),
+      );
+      return;
+    }
+    context.pop(texto);
   }
 
   @override
   void dispose() {
+    textoController.dispose();
     textRecognizer.close();
     super.dispose();
   }
@@ -171,11 +178,17 @@ class _OcrPageState extends State<OcrPage> {
             width: double.infinity,
             height: 52,
             child: ElevatedButton.icon(
-              onPressed: tirarFotoELerTexto,
-              icon: const Icon(Icons.camera_alt),
-              label: const Text(
-                'Tirar foto da etiqueta',
-                style: TextStyle(fontWeight: FontWeight.bold),
+              onPressed: processando ? null : tirarFotoELerTexto,
+              icon: processando
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.camera_alt),
+              label: Text(
+                processando ? 'Lendo etiqueta...' : 'Tirar foto da etiqueta',
+                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primary,
@@ -183,9 +196,7 @@ class _OcrPageState extends State<OcrPage> {
               ),
             ),
           ),
-
           const SizedBox(height: 18),
-
           if (imagem != null) ...[
             ClipRRect(
               borderRadius: BorderRadius.circular(20),
@@ -198,7 +209,6 @@ class _OcrPageState extends State<OcrPage> {
             ),
             const SizedBox(height: 18),
           ],
-
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(18),
@@ -206,12 +216,12 @@ class _OcrPageState extends State<OcrPage> {
               color: theme.cardColor,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(
-                color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
               ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(
-                    theme.brightness == Brightness.dark ? 0.16 : 0.04,
+                  color: Colors.black.withValues(
+                    alpha: theme.brightness == Brightness.dark ? 0.16 : 0.04,
                   ),
                   blurRadius: 10,
                   offset: const Offset(0, 4),
@@ -224,50 +234,58 @@ class _OcrPageState extends State<OcrPage> {
                 Row(
                   children: [
                     CircleAvatar(
-                      backgroundColor: AppColors.primary.withOpacity(0.14),
+                      backgroundColor: AppColors.primary.withValues(
+                        alpha: 0.14,
+                      ),
                       child: const Icon(
                         Icons.document_scanner,
                         color: AppColors.primary,
                       ),
                     ),
                     const SizedBox(width: 10),
-                    Text(
-                      'Texto identificado',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: theme.colorScheme.onSurface,
+                    Expanded(
+                      child: Text(
+                        'Dados do destinatário',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: theme.colorScheme.onSurface,
+                        ),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 Text(
-                  textoExtraido.isEmpty
-                      ? 'Nenhum texto lido ainda'
-                      : textoExtraido,
-                  style: TextStyle(
-                    fontSize: 16,
-                    height: 1.5,
-                    color: textoExtraido.isEmpty
-                        ? theme.colorScheme.onSurfaceVariant
-                        : theme.colorScheme.onSurface,
+                  destinatarioIdentificado
+                      ? 'Confira os dados reconhecidos e corrija se necessário.'
+                      : 'O texto deve conter somente os dados do destinatário. Você pode corrigir ou preencher manualmente.',
+                  style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: textoController,
+                  minLines: 4,
+                  maxLines: 8,
+                  textCapitalization: TextCapitalization.sentences,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    hintText:
+                        'Nome, rua, número, complemento, bairro, cidade, UF e CEP',
                   ),
                 ),
               ],
             ),
           ),
-
           const SizedBox(height: 24),
-
           SizedBox(
             width: double.infinity,
             height: 52,
             child: ElevatedButton.icon(
-              onPressed: textoExtraido.trim().isEmpty ? null : usarTexto,
+              onPressed: processando ? null : usarTexto,
               icon: const Icon(Icons.check),
               label: const Text(
-                'Usar texto lido',
+                'Usar dados do destinatário',
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
               style: ElevatedButton.styleFrom(
@@ -276,7 +294,6 @@ class _OcrPageState extends State<OcrPage> {
               ),
             ),
           ),
-
           const SizedBox(height: 20),
         ],
       ),

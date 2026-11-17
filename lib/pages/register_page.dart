@@ -41,7 +41,7 @@ class _RegisterPageState extends State<RegisterPage> {
 
   Future<void> cadastrar() async {
     final nome = nomeController.text.trim();
-    final email = emailController.text.trim();
+    final email = emailController.text.trim().toLowerCase();
     final senha = senhaController.text;
     final confirmarSenha = confirmarSenhaController.text;
 
@@ -52,6 +52,14 @@ class _RegisterPageState extends State<RegisterPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Preencha todos os campos')));
+      return;
+    }
+
+    if (!RegExp(
+          r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$',
+        ).hasMatch(email) ||
+        email.length > 254) {
+      mostrarErro('Informe um e-mail válido');
       return;
     }
 
@@ -76,7 +84,11 @@ class _RegisterPageState extends State<RegisterPage> {
       carregando = true;
     });
 
-    final sucesso = await AuthService.cadastrar(nome, email, senha);
+    final resultado = await AuthService.cadastrarComResultado(
+      nome,
+      email,
+      senha,
+    );
 
     if (!mounted) return;
 
@@ -84,7 +96,7 @@ class _RegisterPageState extends State<RegisterPage> {
       carregando = false;
     });
 
-    if (sucesso) {
+    if (resultado['sucesso'] == true) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Código de verificação enviado para seu e-mail'),
@@ -93,10 +105,11 @@ class _RegisterPageState extends State<RegisterPage> {
 
       context.push('/entregador/verificar-cadastro', extra: email);
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Não foi possível enviar o código de verificação'),
-        ),
+      final mensagem = resultado['mensagem']?.toString().trim();
+      mostrarErro(
+        mensagem != null && mensagem.isNotEmpty
+            ? mensagem
+            : 'Não foi possível enviar o código de verificação',
       );
     }
   }
@@ -124,11 +137,13 @@ class _RegisterPageState extends State<RegisterPage> {
     FocusNode? focusNode,
     TextInputAction textInputAction = TextInputAction.next,
     VoidCallback? onSubmitted,
+    ValueChanged<String>? onChanged,
   }) {
     final theme = Theme.of(context);
 
     return TextField(
       controller: controller,
+      onChanged: onChanged,
       focusNode: focusNode,
       textInputAction: textInputAction,
       onSubmitted: (_) => onSubmitted?.call(),
@@ -148,6 +163,30 @@ class _RegisterPageState extends State<RegisterPage> {
               )
             : null,
         labelText: label,
+      ),
+    );
+  }
+
+  Widget requisitoSenha(String texto, bool atendido) {
+    final theme = Theme.of(context);
+    final cor = atendido
+        ? Colors.green.shade600
+        : theme.colorScheme.onSurfaceVariant;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(
+            atendido ? Icons.check_circle : Icons.radio_button_unchecked,
+            color: cor,
+            size: 18,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(texto, style: TextStyle(fontSize: 12, color: cor)),
+          ),
+        ],
       ),
     );
   }
@@ -283,6 +322,7 @@ class _RegisterPageState extends State<RegisterPage> {
                               senha: true,
                               mostrar: mostrarSenha,
                               focusNode: senhaFocus,
+                              onChanged: (_) => setState(() {}),
                               onSubmitted: () =>
                                   confirmarSenhaFocus.requestFocus(),
                               onMostrar: () {
@@ -293,11 +333,49 @@ class _RegisterPageState extends State<RegisterPage> {
                             ),
 
                             const SizedBox(height: 10),
-                            Text(
-                              'Mínimo de 8 caracteres, com maiúscula, minúscula, número e símbolo.',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: theme.colorScheme.onSurfaceVariant,
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Sua senha deve conter:',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  requisitoSenha(
+                                    'Pelo menos 8 caracteres',
+                                    senhaController.text.length >= 8,
+                                  ),
+                                  requisitoSenha(
+                                    'Uma letra maiúscula',
+                                    RegExp(
+                                      r'[A-Z]',
+                                    ).hasMatch(senhaController.text),
+                                  ),
+                                  requisitoSenha(
+                                    'Uma letra minúscula',
+                                    RegExp(
+                                      r'[a-z]',
+                                    ).hasMatch(senhaController.text),
+                                  ),
+                                  requisitoSenha(
+                                    'Um número',
+                                    RegExp(
+                                      r'[0-9]',
+                                    ).hasMatch(senhaController.text),
+                                  ),
+                                  requisitoSenha(
+                                    'Um caractere especial',
+                                    RegExp(
+                                      r'[^A-Za-z0-9]',
+                                    ).hasMatch(senhaController.text),
+                                  ),
+                                ],
                               ),
                             ),
                             const SizedBox(height: 16),

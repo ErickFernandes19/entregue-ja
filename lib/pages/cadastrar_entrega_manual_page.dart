@@ -32,6 +32,27 @@ class _CadastrarEntregaManualPageState
 
   bool buscandoCep = false;
   bool salvando = false;
+  bool textoInicialOcrProcessado = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (textoInicialOcrProcessado) return;
+    textoInicialOcrProcessado = true;
+
+    final extra = GoRouterState.of(context).extra;
+    String? texto;
+    if (extra is Map) {
+      final valor = extra['textoOcr'];
+      if (valor is String) texto = valor;
+    }
+    if (texto == null || texto.trim().isEmpty) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      preencherComTextoOcr(texto!);
+    });
+  }
 
   void mostrarMensagem(String mensagem, {bool erro = false}) {
     if (!mounted) return;
@@ -42,6 +63,134 @@ class _CadastrarEntregaManualPageState
         backgroundColor: erro ? AppColors.error : AppColors.success,
       ),
     );
+  }
+
+  String normalizarLinhaOcr(String valor) {
+    const acentos = 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ';
+    const simples = 'AAAAAEEEEIIIIOOOOOUUUUC';
+    var texto = valor.toUpperCase();
+    for (var i = 0; i < acentos.length; i++) {
+      texto = texto.replaceAll(acentos[i], simples[i]);
+    }
+    return texto.trim();
+  }
+
+  String? extrairCampoOcr(List<String> linhas, List<String> rotulos) {
+    for (var i = 0; i < linhas.length; i++) {
+      final normalizada = normalizarLinhaOcr(linhas[i]);
+      for (final rotulo in rotulos) {
+        final padrao = RegExp('^${RegExp.escape(rotulo)}\\s*[:\\-]?\\s*');
+        final correspondencia = padrao.firstMatch(normalizada);
+        if (correspondencia == null) continue;
+        final restante = linhas[i].substring(correspondencia.end).trim();
+        if (restante.isNotEmpty) return restante;
+        if (i + 1 < linhas.length) return linhas[i + 1].trim();
+      }
+    }
+    return null;
+  }
+
+  void preencherComTextoOcr(String texto) {
+    final linhas = texto
+        .split(RegExp(r'\r?\n'))
+        .map((linha) => linha.trim())
+        .where((linha) => linha.isNotEmpty)
+        .toList();
+    if (linhas.isEmpty) {
+      mostrarMensagem(
+        'A etiqueta não contém dados para preencher.',
+        erro: true,
+      );
+      return;
+    }
+
+    final cepEncontrado = RegExp(r'\b\d{5}[-\s]?\d{3}\b').firstMatch(texto);
+    final cep = cepEncontrado?.group(0)?.replaceAll(RegExp(r'\D'), '');
+    final nome = extrairCampoOcr(linhas, ['NOME', 'RECEBEDOR', 'CLIENTE']);
+    final bairro = extrairCampoOcr(linhas, ['BAIRRO']);
+    final complemento = extrairCampoOcr(linhas, [
+      'COMPLEMENTO',
+      'COMPL',
+      'APTO',
+      'APARTAMENTO',
+    ]);
+    final cidade = extrairCampoOcr(linhas, ['CIDADE', 'MUNICIPIO']);
+    final uf = extrairCampoOcr(linhas, ['UF', 'ESTADO']);
+    final numero = extrairCampoOcr(linhas, ['NUMERO', 'Nº', 'N°']);
+    final ruaRotulada = extrairCampoOcr(linhas, ['LOGRADOURO', 'ENDERECO']);
+    final ruaPadrao = RegExp(
+      r'^(?:RUA|R\.|AVENIDA|AV\.|AV\s|TRAVESSA|TV\.|ALAMEDA|ESTRADA|RODOVIA|PRACA|PRAÇA)\b',
+      caseSensitive: false,
+    );
+    String? rua = ruaRotulada;
+    for (final linha in linhas) {
+      if (rua == null && ruaPadrao.hasMatch(normalizarLinhaOcr(linha))) {
+        rua = linha;
+      }
+    }
+
+    String? numeroDaRua = numero;
+    if (rua != null) {
+      final match = RegExp(r'^(.*?),\s*(\d+[A-Za-z]?)\b').firstMatch(rua);
+      if (match != null) {
+        rua = match.group(1)!.trim();
+        numeroDaRua ??= match.group(2);
+      }
+    }
+
+    String? cidadeEncontrada = cidade;
+    String? ufEncontrada = uf;
+    for (final linha in linhas) {
+      final match = RegExp(
+        r'^(.+?)\s*[-/]\s*([A-Za-z]{2})\s*$',
+      ).firstMatch(linha);
+      if (match != null && cidadeEncontrada == null) {
+        cidadeEncontrada = match.group(1)?.trim();
+        ufEncontrada ??= match.group(2)?.toUpperCase();
+      }
+    }
+
+    final primeira = linhas.first;
+    final primeiraNormalizada = normalizarLinhaOcr(primeira);
+    final nomeProvavel =
+        nome ??
+        (primeiraNormalizada.startsWith('DESTINATARIO:')
+            ? primeira.substring(primeira.indexOf(':') + 1).trim()
+            : (!primeiraNormalizada.startsWith('DESTINATARIO') &&
+                      !primeiraNormalizada.startsWith('DEST.') &&
+                      !ruaPadrao.hasMatch(primeiraNormalizada) &&
+                      !RegExp(r'\d{5}[-\s]?\d{3}').hasMatch(primeira)
+                  ? primeira
+                  : null));
+
+    setState(() {
+      if (nomeProvavel != null && nomeProvavel.isNotEmpty) {
+        clienteController.text = nomeProvavel;
+      }
+      if (cep != null && cep.length == 8) cepController.text = cep;
+      if (rua != null && rua.isNotEmpty) ruaController.text = rua;
+      if (numeroDaRua != null && numeroDaRua.isNotEmpty) {
+        numeroController.text = numeroDaRua;
+      }
+      if (bairro != null && bairro.isNotEmpty) bairroController.text = bairro;
+      if (cidadeEncontrada != null && cidadeEncontrada.isNotEmpty) {
+        cidadeController.text = cidadeEncontrada;
+      }
+      if (ufEncontrada != null && ufEncontrada.trim().length == 2) {
+        ufController.text = ufEncontrada.trim().toUpperCase();
+      }
+      if (complemento != null && complemento.isNotEmpty) {
+        complementoController.text = complemento;
+      }
+    });
+    mostrarMensagem('Confira os campos preenchidos antes de cadastrar.');
+  }
+
+  Future<void> lerEtiquetaParaCadastro() async {
+    if (salvando || buscandoCep) return;
+    final texto = await context.push<String>('/entregador/entregas/ocr');
+    if (!mounted || texto == null || texto.trim().isEmpty) return;
+    preencherComTextoOcr(texto);
   }
 
   Future<void> buscarCep() async {
@@ -430,6 +579,17 @@ class _CadastrarEntregaManualPageState
                   ],
                 ),
                 const SizedBox(height: 22),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: salvando || buscandoCep
+                        ? null
+                        : lerEtiquetaParaCadastro,
+                    icon: const Icon(Icons.document_scanner_outlined),
+                    label: const Text('Ler etiqueta com a câmera'),
+                  ),
+                ),
+                const SizedBox(height: 18),
                 campo(
                   controller: clienteController,
                   label: 'Cliente',

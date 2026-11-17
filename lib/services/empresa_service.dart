@@ -25,10 +25,25 @@ class EmpresaService {
     return _filaFcm;
   }
 
+  static const String _chaveVapid =
+      'BJSQHCGoeyvu-Za4k1aR_LFVP2A1W3895Pyws5yV4kvuB9BvwfUK2CikQDbzAldyjPNZ2CshUhgdkg1MF8p-V5o';
+
   static bool get _firebaseDisponivel =>
-      !kIsWeb &&
-      defaultTargetPlatform == TargetPlatform.android &&
+      (kIsWeb || defaultTargetPlatform == TargetPlatform.android) &&
       Firebase.apps.isNotEmpty;
+
+  static Future<String?> _obterTokenFcm() async {
+    if (kIsWeb) {
+      final permissao = await FirebaseMessaging.instance
+          .getNotificationSettings();
+      if (permissao.authorizationStatus != AuthorizationStatus.authorized) {
+        return null;
+      }
+    }
+    return FirebaseMessaging.instance.getToken(
+      vapidKey: kIsWeb ? _chaveVapid : null,
+    );
+  }
 
   static Uri get _urlDispositivos {
     final empresasUri = Uri.parse(ApiConfig.empresas);
@@ -48,35 +63,61 @@ class EmpresaService {
   static Future<void> registrarDispositivoFcm() =>
       _enfileirarFcm(_registrarDispositivoFcm);
 
+  static Future<void> registrarDispositivoFcmConfirmado() {
+    final operacao = _filaFcm.then((_) => _registrarDispositivoFcmEstrito());
+    _filaFcm = operacao.catchError((Object erro) {
+      debugPrint('Erro na operação FCM da empresa: $erro');
+    });
+    return operacao;
+  }
+
   static Future<void> _registrarDispositivoFcm() async {
-    if (!_firebaseDisponivel || _encerrandoSessao) return;
-
     try {
-      final jwt = await obterTokenEmpresa();
-      if (jwt == null || jwt.isEmpty) return;
-
-      final tokenFcm = await FirebaseMessaging.instance.getToken();
-      if (tokenFcm == null || tokenFcm.isEmpty) return;
-      if (_encerrandoSessao || await obterTokenEmpresa() != jwt) return;
-
-      final response = await http
-          .post(
-            _urlDispositivos,
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer $jwt',
-            },
-            body: jsonEncode({'token': tokenFcm, 'plataforma': 'ANDROID'}),
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode != 204 && response.statusCode != 200) {
-        debugPrint(
-          'Falha ao registrar dispositivo FCM da empresa: ${response.statusCode}',
-        );
-      }
+      await _registrarDispositivoFcmEstrito();
     } catch (e) {
       debugPrint('Erro ao registrar dispositivo FCM da empresa: $e');
+    }
+  }
+
+  static Future<void> _registrarDispositivoFcmEstrito() async {
+    if (!_firebaseDisponivel) {
+      throw StateError('Firebase não está disponível neste dispositivo.');
+    }
+    if (_encerrandoSessao) {
+      throw StateError('A sessão da empresa está sendo encerrada.');
+    }
+
+    final jwt = await obterTokenEmpresa();
+    if (jwt == null || jwt.isEmpty) {
+      throw StateError('A empresa precisa estar autenticada.');
+    }
+
+    final tokenFcm = await _obterTokenFcm();
+    if (tokenFcm == null || tokenFcm.isEmpty) {
+      throw StateError('Não foi possível obter o token de notificações.');
+    }
+    if (_encerrandoSessao || await obterTokenEmpresa() != jwt) {
+      throw StateError('A sessão da empresa foi alterada.');
+    }
+
+    final response = await http
+        .post(
+          _urlDispositivos,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $jwt',
+          },
+          body: jsonEncode({
+            'token': tokenFcm,
+            'plataforma': kIsWeb ? 'WEB' : 'ANDROID',
+          }),
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 200 && response.statusCode != 204) {
+      throw StateError(
+        'O servidor não confirmou o registro FCM (HTTP ${response.statusCode}).',
+      );
     }
   }
 
@@ -99,7 +140,7 @@ class EmpresaService {
       final jwt = await obterTokenEmpresa();
       if (jwt == null || jwt.isEmpty) return;
 
-      final tokenFcm = await FirebaseMessaging.instance.getToken();
+      final tokenFcm = await _obterTokenFcm();
       if (tokenFcm == null || tokenFcm.isEmpty) return;
 
       final request = http.Request('DELETE', _urlDispositivos)
@@ -107,7 +148,10 @@ class EmpresaService {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $jwt',
         })
-        ..body = jsonEncode({'token': tokenFcm, 'plataforma': 'ANDROID'});
+        ..body = jsonEncode({
+          'token': tokenFcm,
+          'plataforma': kIsWeb ? 'WEB' : 'ANDROID',
+        });
 
       final client = http.Client();
       try {
@@ -662,23 +706,63 @@ class EmpresaService {
   }
 
   static Future<bool> confirmarCadastro(String email, String codigo) async {
+    final resultado = await confirmarCadastroComResultado(email, codigo);
+    return resultado['sucesso'] == true;
+  }
+
+  static Future<Map<String, dynamic>> confirmarCadastroComResultado(
+    String email,
+    String codigo,
+  ) {
+    return _requisicaoCadastro('confirmar-cadastro', {
+      'email': email.trim().toLowerCase(),
+      'codigo': codigo.trim(),
+    });
+  }
+
+  static Future<Map<String, dynamic>> reenviarCodigoCadastro(String email) {
+    return _requisicaoCadastro('reenviar-codigo', {
+      'email': email.trim().toLowerCase(),
+    });
+  }
+
+  static Future<Map<String, dynamic>> _requisicaoCadastro(
+    String endpoint,
+    Map<String, String> dados,
+  ) async {
     try {
       final response = await http
           .post(
-            Uri.parse('${ApiConfig.empresas}/confirmar-cadastro'),
+            Uri.parse('${ApiConfig.empresas}/$endpoint'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'email': email.trim(), 'codigo': codigo.trim()}),
+            body: jsonEncode(dados),
           )
           .timeout(const Duration(seconds: 15));
 
-      debugPrint(
-        'Confirmação de cadastro empresa status: ${response.statusCode}',
-      );
+      final sucesso = response.statusCode >= 200 && response.statusCode < 300;
+      String mensagem = sucesso
+          ? 'Solicitação realizada com sucesso.'
+          : 'Não foi possível concluir a solicitação.';
 
-      return response.statusCode == 200 || response.statusCode == 201;
+      try {
+        final resposta = jsonDecode(utf8.decode(response.bodyBytes));
+        if (resposta is Map) {
+          final valor =
+              resposta['mensagem'] ?? resposta['message'] ?? resposta['erro'];
+          if (valor is String && valor.trim().isNotEmpty) {
+            mensagem = valor.trim();
+          }
+        }
+      } catch (_) {}
+
+      debugPrint('Cadastro empresa ($endpoint): ${response.statusCode}');
+      return {'sucesso': sucesso, 'mensagem': mensagem};
     } catch (e) {
-      debugPrint('Erro ao confirmar cadastro empresa: $e');
-      return false;
+      debugPrint('Erro na solicitação de cadastro da empresa ($endpoint): $e');
+      return {
+        'sucesso': false,
+        'mensagem': 'Não foi possível conectar ao servidor. Tente novamente.',
+      };
     }
   }
 
@@ -756,21 +840,19 @@ class EmpresaService {
   }
 
   static Future<bool> cadastrar(String nome, String email, String senha) async {
-    try {
-      final response = await http
-          .post(
-            Uri.parse('${ApiConfig.empresas}/register'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'nome': nome, 'email': email, 'senha': senha}),
-          )
-          .timeout(const Duration(seconds: 15));
+    final resultado = await cadastrarComResultado(nome, email, senha);
+    return resultado['sucesso'] == true;
+  }
 
-      debugPrint('Cadastro empresa status: ${response.statusCode}');
-
-      return response.statusCode == 200 || response.statusCode == 201;
-    } catch (e) {
-      debugPrint('Erro cadastro empresa: $e');
-      return false;
-    }
+  static Future<Map<String, dynamic>> cadastrarComResultado(
+    String nome,
+    String email,
+    String senha,
+  ) {
+    return _requisicaoCadastro('register', {
+      'nome': nome.trim(),
+      'email': email.trim().toLowerCase(),
+      'senha': senha,
+    });
   }
 }

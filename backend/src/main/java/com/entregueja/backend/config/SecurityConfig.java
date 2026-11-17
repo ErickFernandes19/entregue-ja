@@ -1,3 +1,4 @@
+
 package com.entregueja.backend.config;
 
 import com.entregueja.backend.security.JwtAuthenticationFilter;
@@ -80,11 +81,13 @@ public class SecurityConfig {
                                 "/auth/login",
                                 "/auth/register",
                                 "/auth/confirmar-cadastro",
+                                "/auth/reenviar-codigo",
                                 "/auth/esqueci-senha",
                                 "/auth/verificar-codigo",
                                 "/empresas/login",
                                 "/empresas/register",
                                 "/empresas/confirmar-cadastro",
+                                "/empresas/reenviar-codigo",
                                 "/empresas/esqueci-senha",
                                 "/empresas/verificar-codigo"
                         ).permitAll()

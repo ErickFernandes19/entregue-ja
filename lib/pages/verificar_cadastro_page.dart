@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -17,13 +19,62 @@ class VerificarCadastroPage extends StatefulWidget {
 class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
   final codigoController = TextEditingController();
   bool carregando = false;
+  bool reenviando = false;
+  int segundosParaReenvio = 0;
+  Timer? temporizadorReenvio;
+
+  void iniciarEsperaReenvio() {
+    temporizadorReenvio?.cancel();
+    setState(() => segundosParaReenvio = 60);
+    temporizadorReenvio = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (segundosParaReenvio <= 1) {
+        timer.cancel();
+        setState(() => segundosParaReenvio = 0);
+      } else {
+        setState(() => segundosParaReenvio--);
+      }
+    });
+  }
+
+  void mostrarMensagem(String mensagem) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensagem)));
+  }
+
+  Future<void> reenviarCodigo() async {
+    if (carregando || reenviando || segundosParaReenvio > 0) return;
+    fecharTeclado();
+    setState(() => reenviando = true);
+
+    final resultado = await AuthService.reenviarCodigoCadastro(widget.email);
+    if (!mounted) return;
+
+    setState(() => reenviando = false);
+    final sucesso = resultado['sucesso'] == true;
+    final mensagem =
+        resultado['mensagem']?.toString() ??
+        (sucesso
+            ? 'Código reenviado para seu e-mail.'
+            : 'Não foi possível reenviar o código.');
+    mostrarMensagem(mensagem);
+
+    if (sucesso) {
+      codigoController.clear();
+      iniciarEsperaReenvio();
+    }
+  }
 
   void fecharTeclado() {
     FocusManager.instance.primaryFocus?.unfocus();
   }
 
   void voltarAoCadastro() {
-    if (carregando) return;
+    if (carregando || reenviando) return;
     fecharTeclado();
     if (context.canPop()) {
       context.pop();
@@ -33,7 +84,7 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
   }
 
   Future<void> confirmar() async {
-    if (carregando) return;
+    if (carregando || reenviando) return;
     fecharTeclado();
 
     final codigo = codigoController.text.trim();
@@ -47,31 +98,32 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
 
     setState(() => carregando = true);
 
-    final sucesso = await AuthService.confirmarCadastro(widget.email, codigo);
+    final resultado = await AuthService.confirmarCadastroComResultado(
+      widget.email,
+      codigo,
+    );
 
     if (!mounted) return;
 
     setState(() => carregando = false);
 
-    if (sucesso) {
+    if (resultado['sucesso'] == true) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Cadastro confirmado com sucesso!')),
       );
 
       context.go('/entregador/login');
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Não foi possível confirmar o código. Verifique se está correto e dentro do prazo.',
-          ),
-        ),
+      mostrarMensagem(
+        resultado['mensagem']?.toString() ??
+            'Não foi possível confirmar o código. Tente novamente.',
       );
     }
   }
 
   @override
   void dispose() {
+    temporizadorReenvio?.cancel();
     codigoController.dispose();
     super.dispose();
   }
@@ -85,7 +137,7 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
         leading: IconButton(
           tooltip: 'Voltar ao cadastro',
           icon: const Icon(Icons.arrow_back),
-          onPressed: carregando ? null : voltarAoCadastro,
+          onPressed: carregando || reenviando ? null : voltarAoCadastro,
         ),
         title: const Text('Verificar e-mail'),
         centerTitle: true,
@@ -187,7 +239,7 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
                           TextField(
                             controller: codigoController,
                             autofocus: true,
-                            enabled: !carregando,
+                            enabled: !carregando && !reenviando,
                             keyboardType: TextInputType.number,
                             textInputAction: TextInputAction.done,
                             textAlign: TextAlign.center,
@@ -221,7 +273,9 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
                           SizedBox(
                             height: 54,
                             child: ElevatedButton(
-                              onPressed: carregando ? null : confirmar,
+                              onPressed: carregando || reenviando
+                                  ? null
+                                  : confirmar,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: AppColors.primary,
                                 foregroundColor: Colors.white,
@@ -249,7 +303,9 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
                           ),
                           const SizedBox(height: 12),
                           TextButton(
-                            onPressed: carregando ? null : voltarAoCadastro,
+                            onPressed: carregando || reenviando
+                                ? null
+                                : voltarAoCadastro,
                             child: const Text('Voltar ao cadastro'),
                           ),
                         ],

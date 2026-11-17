@@ -1,5 +1,6 @@
 package com.entregueja.backend.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
@@ -110,12 +111,15 @@ public class Entrega {
     public Double getLongitude() { return longitude; }
     public void setLongitude(Double longitude) { this.longitude = longitude; }
 
+    @JsonIgnore
     public Double getLatitudeEntregador() { return latitudeEntregador; }
     public void setLatitudeEntregador(Double latitudeEntregador) { this.latitudeEntregador = latitudeEntregador; }
 
+    @JsonIgnore
     public Double getLongitudeEntregador() { return longitudeEntregador; }
     public void setLongitudeEntregador(Double longitudeEntregador) { this.longitudeEntregador = longitudeEntregador; }
 
+    @JsonIgnore
     public LocalDateTime getDataAtualizacaoLocalizacao() { return dataAtualizacaoLocalizacao; }
     public void setDataAtualizacaoLocalizacao(LocalDateTime dataAtualizacaoLocalizacao) {
         this.dataAtualizacaoLocalizacao = dataAtualizacaoLocalizacao;

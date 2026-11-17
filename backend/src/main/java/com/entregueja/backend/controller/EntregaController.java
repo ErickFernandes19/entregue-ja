@@ -21,6 +21,7 @@ import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Locale;
 import java.util.List;
 import java.util.LinkedHashMap;
@@ -423,6 +424,7 @@ public class EntregaController {
 
         entrega.setStatus("PENDENTE");
         entrega.setEntregue(false);
+        limparLocalizacaoEntregador(entrega);
         entrega.setFotoComprovante(null);
         entrega.setMotivoNaoEntrega(null);
         entrega.setJustificativa(null);
@@ -671,7 +673,7 @@ public class EntregaController {
 
         entrega.setLatitudeEntregador(latitude);
         entrega.setLongitudeEntregador(longitude);
-        entrega.setDataAtualizacaoLocalizacao(LocalDateTime.now());
+        entrega.setDataAtualizacaoLocalizacao(LocalDateTime.now(ZoneId.of("America/Sao_Paulo")));
         entregaRepository.save(entrega);
 
         return ResponseEntity.ok(dadosLocalizacao(entrega));
@@ -692,13 +694,20 @@ public class EntregaController {
         return ResponseEntity.ok(dadosLocalizacao(entrega));
     }
 
+    private void limparLocalizacaoEntregador(Entrega entrega) {
+        entrega.setLatitudeEntregador(null);
+        entrega.setLongitudeEntregador(null);
+        entrega.setDataAtualizacaoLocalizacao(null);
+    }
+
     private Map<String, Object> dadosLocalizacao(Entrega entrega) {
         Map<String, Object> dados = new LinkedHashMap<>();
         dados.put("entregaId", entrega.getId());
         dados.put("status", entrega.getStatus());
-        dados.put("latitude", entrega.getLatitudeEntregador());
-        dados.put("longitude", entrega.getLongitudeEntregador());
-        dados.put("dataAtualizacao", entrega.getDataAtualizacaoLocalizacao());
+        boolean emRota = "EM_ROTA".equals(entrega.getStatus());
+        dados.put("latitude", emRota ? entrega.getLatitudeEntregador() : null);
+        dados.put("longitude", emRota ? entrega.getLongitudeEntregador() : null);
+        dados.put("dataAtualizacao", emRota ? entrega.getDataAtualizacaoLocalizacao() : null);
         return dados;
     }
 
@@ -720,6 +729,114 @@ public class EntregaController {
         }
 
         return ResponseEntity.ok(entrega);
+    }
+
+    @GetMapping("/{id}/consultar-qr")
+    public ResponseEntity<?> consultarEntregaQr(@PathVariable Long id) {
+        Long entregadorId = obterIdAutenticado("ENTREGADOR");
+
+        if (entregadorId == null) {
+            return ResponseEntity.status(403).body(
+                    Map.of("mensagem", "Acesso permitido apenas a entregadores")
+            );
+        }
+
+        var entregadorOptional = usuarioRepository.findById(entregadorId);
+        if (entregadorOptional.isEmpty()) {
+            return ResponseEntity.status(403).build();
+        }
+
+        var entregaOptional = entregaRepository.findById(id);
+        if (entregaOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        var entregador = entregadorOptional.get();
+        var entrega = entregaOptional.get();
+
+        if (entregador.getEmpresa() == null
+                || entrega.getEmpresa() == null
+                || !entregador.getEmpresa().getId().equals(entrega.getEmpresa().getId())) {
+            return ResponseEntity.status(403).body(
+                    Map.of("mensagem", "Esta entrega não pertence à sua empresa")
+            );
+        }
+
+        if (entrega.getEntregador() != null) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Esta entrega já possui um entregador")
+            );
+        }
+
+        if (!"PENDENTE".equals(entrega.getStatus())
+                || Boolean.TRUE.equals(entrega.getEntregue())) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Esta entrega não está disponível para atribuição")
+            );
+        }
+
+        Map<String, Object> dados = new LinkedHashMap<>();
+        dados.put("id", entrega.getId());
+        dados.put("cliente", entrega.getCliente());
+        dados.put("endereco", entrega.getEndereco());
+        dados.put("complemento", entrega.getComplemento());
+        dados.put("observacao", entrega.getObservacao());
+        dados.put("status", entrega.getStatus());
+        dados.put("disponivel", true);
+
+        return ResponseEntity.ok(dados);
+    }
+
+    @PutMapping("/{id}/assumir-qr")
+    @Transactional
+    public ResponseEntity<?> assumirEntregaQr(@PathVariable Long id) {
+        Long entregadorId = obterIdAutenticado("ENTREGADOR");
+
+        if (entregadorId == null) {
+            return ResponseEntity.status(403).body(
+                    Map.of("mensagem", "Acesso permitido apenas a entregadores")
+            );
+        }
+
+        var entregadorOptional = usuarioRepository.findById(entregadorId);
+        if (entregadorOptional.isEmpty()) {
+            return ResponseEntity.status(403).build();
+        }
+
+        var entregaOptional = entregaRepository.buscarPorIdComBloqueio(id);
+        if (entregaOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        var entregador = entregadorOptional.get();
+        var entrega = entregaOptional.get();
+
+        if (entregador.getEmpresa() == null
+                || entrega.getEmpresa() == null
+                || !entregador.getEmpresa().getId().equals(entrega.getEmpresa().getId())) {
+            return ResponseEntity.status(403).body(
+                    Map.of("mensagem", "Esta entrega não pertence à sua empresa")
+            );
+        }
+
+        if (entrega.getEntregador() != null) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Esta entrega já possui um entregador")
+            );
+        }
+
+        if (!"PENDENTE".equals(entrega.getStatus())
+                || Boolean.TRUE.equals(entrega.getEntregue())) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Esta entrega não está disponível para atribuição")
+            );
+        }
+
+        entrega.setEntregador(entregador);
+        Entrega entregaSalva = entregaRepository.save(entrega);
+        notificarNovaEntrega(entregaSalva);
+
+        return ResponseEntity.ok(entregaSalva);
     }
 
     @GetMapping("/{id}/comprovante/arquivo")
@@ -1088,6 +1205,7 @@ public class EntregaController {
 
         entrega.setStatus("CANCELADA");
         entrega.setEntregue(false);
+        limparLocalizacaoEntregador(entrega);
 
         entregaRepository.save(entrega);
         if (obterIdAutenticado("EMPRESA") != null) {
@@ -1131,7 +1249,8 @@ public class EntregaController {
 
         entrega.setEntregue(true);
         entrega.setStatus("ENTREGUE");
-        entrega.setDataFinalizacao(LocalDateTime.now());
+        limparLocalizacaoEntregador(entrega);
+        entrega.setDataFinalizacao(LocalDateTime.now(ZoneId.of("America/Sao_Paulo")));
 
         entregaRepository.save(entrega);
         notificarEntregaConcluida(entrega);
@@ -1165,6 +1284,7 @@ public class EntregaController {
         }
 
         entrega.setStatus("EM_ROTA");
+        limparLocalizacaoEntregador(entrega);
 
         entregaRepository.save(entrega);
 
@@ -1235,10 +1355,11 @@ public class EntregaController {
             entrega.setLatitudeComprovante(latitude);
             entrega.setLongitudeComprovante(longitude);
             entrega.setDataFinalizacao(
-                    LocalDateTime.now()
+                    LocalDateTime.now(ZoneId.of("America/Sao_Paulo"))
             );
             entrega.setStatus("ENTREGUE");
             entrega.setEntregue(true);
+            limparLocalizacaoEntregador(entrega);
             entrega.setMotivoNaoEntrega(null);
             entrega.setJustificativa(observacao);
 
@@ -1371,10 +1492,11 @@ public class EntregaController {
             entrega.setLatitudeComprovante(latitude);
             entrega.setLongitudeComprovante(longitude);
             entrega.setDataFinalizacao(
-                    LocalDateTime.now()
+                    LocalDateTime.now(ZoneId.of("America/Sao_Paulo"))
             );
             entrega.setStatus("NAO_ENTREGUE");
             entrega.setEntregue(false);
+            limparLocalizacaoEntregador(entrega);
 
             TentativaEntrega tentativa = new TentativaEntrega();
             tentativa.setEntrega(entrega);

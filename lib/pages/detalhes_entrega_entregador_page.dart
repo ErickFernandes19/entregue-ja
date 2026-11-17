@@ -31,6 +31,7 @@ class _DetalhesEntregaEntregadorPageState
   bool erroHistorico = false;
   bool preparandoTentativa = false;
   bool salvandoEdicao = false;
+  bool atualizandoDados = false;
   List<Map<String, dynamic>> tentativas = [];
   final Map<String, Uint8List> fotosTentativas = {};
   final Set<String> carregandoFotos = {};
@@ -48,13 +49,32 @@ class _DetalhesEntregaEntregadorPageState
   }
 
   Future<void> atualizarDados() async {
-    if (id.isEmpty) return;
-    final entregaAtual = await EntregaService.buscarEntrega(id);
-    if (!mounted) return;
-    if (entregaAtual != null) {
-      setState(() => dados = entregaAtual);
+    if (atualizandoDados) return;
+    if (id.isEmpty) {
+      if (mounted) {
+        setState(() {
+          carregandoHistorico = false;
+          erroHistorico = true;
+        });
+      }
+      return;
     }
-    await Future.wait([carregarHistorico(), carregarFotoAtual()]);
+
+    setState(() => atualizandoDados = true);
+    try {
+      final entregaAtual = await EntregaService.buscarEntrega(id);
+      if (!mounted) return;
+      if (entregaAtual != null) {
+        setState(() => dados = entregaAtual);
+      }
+      fotosTentativas.clear();
+      await Future.wait([carregarHistorico(), carregarFotoAtual()]);
+    } catch (e) {
+      debugPrint('Erro ao atualizar detalhes da entrega: $e');
+      if (mounted) mensagem('Não foi possível atualizar os dados da entrega.');
+    } finally {
+      if (mounted) setState(() => atualizandoDados = false);
+    }
   }
 
   Future<void> carregarFotoAtual() async {
@@ -64,19 +84,31 @@ class _DetalhesEntregaEntregadorPageState
       return;
     }
     setState(() => carregandoFoto = true);
-    final bytes = await EntregaService.buscarBytesComprovante(
-      idEntrega: id,
-      referencia: referencia,
-    );
-    if (!mounted) return;
-    setState(() {
-      fotoAtual = bytes;
-      carregandoFoto = false;
-    });
+    try {
+      final bytes = await EntregaService.buscarBytesComprovante(
+        idEntrega: id,
+        referencia: referencia,
+      );
+      if (!mounted) return;
+      setState(() => fotoAtual = bytes);
+    } catch (e) {
+      debugPrint('Erro ao carregar comprovante: $e');
+      if (mounted) setState(() => fotoAtual = null);
+    } finally {
+      if (mounted) setState(() => carregandoFoto = false);
+    }
   }
 
   Future<void> carregarHistorico() async {
-    if (id.isEmpty) return;
+    if (id.isEmpty) {
+      if (mounted) {
+        setState(() {
+          carregandoHistorico = false;
+          erroHistorico = true;
+        });
+      }
+      return;
+    }
     setState(() {
       carregandoHistorico = true;
       erroHistorico = false;
@@ -105,7 +137,12 @@ class _DetalhesEntregaEntregadorPageState
       });
     } catch (e) {
       debugPrint('Erro ao buscar histórico: $e');
-      if (mounted) setState(() => erroHistorico = true);
+      if (mounted) {
+        setState(() {
+          erroHistorico = true;
+          tentativas = [];
+        });
+      }
     } finally {
       if (mounted) setState(() => carregandoHistorico = false);
     }
@@ -348,8 +385,9 @@ class _DetalhesEntregaEntregadorPageState
                     ? null
                     : () async {
                         if (!(chaveFormulario.currentState?.validate() ??
-                            false))
+                            false)) {
                           return;
+                        }
                         atualizarDialogo(() => enviando = true);
                         setState(() => salvandoEdicao = true);
                         try {
@@ -380,8 +418,9 @@ class _DetalhesEntregaEntregadorPageState
                           if (resposta.statusCode == 200) {
                             Navigator.pop(dialogContext);
                             await atualizarDados();
-                            if (mounted)
+                            if (mounted) {
                               mensagem('Entrega atualizada com sucesso.');
+                            }
                           } else {
                             String detalhe =
                                 'Não foi possível editar a entrega (${resposta.statusCode}).';
@@ -394,12 +433,14 @@ class _DetalhesEntregaEntregadorPageState
                             mensagem(detalhe);
                           }
                         } catch (e) {
-                          if (mounted)
+                          if (mounted) {
                             mensagem('Erro de conexão ao editar a entrega.');
+                          }
                         } finally {
                           if (mounted) setState(() => salvandoEdicao = false);
-                          if (dialogContext.mounted)
+                          if (dialogContext.mounted) {
                             atualizarDialogo(() => enviando = false);
+                          }
                         }
                       },
                 child: enviando
@@ -584,8 +625,9 @@ class _DetalhesEntregaEntregadorPageState
         ],
       );
     }
-    if (tentativas.isEmpty)
+    if (tentativas.isEmpty) {
       return const Text('Nenhuma tentativa registrada no histórico.');
+    }
     return Column(
       children: tentativas.map((t) {
         final resultado = (t['resultado'] ?? '').toString();
@@ -712,9 +754,15 @@ class _DetalhesEntregaEntregadorPageState
         centerTitle: true,
         actions: [
           IconButton(
-            onPressed: atualizarDados,
+            onPressed: atualizandoDados ? null : atualizarDados,
             tooltip: 'Atualizar',
-            icon: const Icon(Icons.refresh),
+            icon: atualizandoDados
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh),
           ),
         ],
       ),

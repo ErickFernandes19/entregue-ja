@@ -6,17 +6,17 @@
 
   <meta charset="UTF-8">
   <meta http-equiv="X-UA-Compatible" content="IE=Edge">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
   <meta name="description"
     content="Entregue Já - Plataforma de gerenciamento de entregas para empresas e entregadores.">
 
-  <meta name="theme-color" content="#0175C2">
+  <meta name="theme-color" content="#0F172A">
   <meta name="application-name" content="Entregue Já">
 
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Entregue Já">
 
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
@@ -25,7 +25,31 @@
 
   <title>Entregue Já</title>
 
+  <style>
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background-color: #0F172A;
+    }
+  </style>
+
   <script src="https://maps.googleapis.com/maps/api/js?key=GOOGLE_MAPS_WEB_KEY"></script>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.firebaseMessagingServiceWorkerReady = navigator.serviceWorker.register(
+        'firebase-messaging-sw.js',
+        { scope: 'firebase-cloud-messaging-push-scope' }
+      ).then((registro) => {
+        console.log('Firebase Messaging Service Worker registrado:', registro.scope);
+        return registro;
+      }).catch((erro) => {
+        console.error('Erro ao registrar Firebase Messaging Service Worker:', erro);
+        return null;
+      });
+    }
+  </script>
 </head>
 
 <body>

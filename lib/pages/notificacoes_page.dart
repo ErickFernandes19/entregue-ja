@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
@@ -26,6 +28,8 @@ class _NotificacoesPageState extends State<NotificacoesPage> {
   bool atualizando = false;
   bool salvandoPreferencias = false;
   bool preferenciasCarregadas = false;
+  bool ativandoNotificacoesWeb = false;
+  bool notificacoesWebAtivadas = false;
 
   int totalNaoLidas = 0;
   String? erro;
@@ -50,6 +54,71 @@ class _NotificacoesPageState extends State<NotificacoesPage> {
   void initState() {
     super.initState();
     carregar();
+    if (kIsWeb) {
+      verificarPermissaoWeb();
+    }
+  }
+
+  Future<void> verificarPermissaoWeb() async {
+    try {
+      final configuracao = await FirebaseMessaging.instance
+          .getNotificationSettings();
+      if (!mounted) return;
+      setState(() {
+        notificacoesWebAtivadas =
+            configuracao.authorizationStatus == AuthorizationStatus.authorized;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => notificacoesWebAtivadas = false);
+    }
+  }
+
+  Future<void> ativarNotificacoesWeb() async {
+    if (ativandoNotificacoesWeb) return;
+    setState(() => ativandoNotificacoesWeb = true);
+
+    try {
+      final permissao = await FirebaseMessaging.instance.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      if (permissao.authorizationStatus != AuthorizationStatus.authorized) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Autorize as notificações nas configurações do navegador.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      await AuthService.registrarDispositivoFcmConfirmado();
+      if (!mounted) return;
+      setState(() => notificacoesWebAtivadas = true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Notificações ativadas e dispositivo registrado com sucesso.',
+          ),
+        ),
+      );
+    } catch (erro) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Não foi possível ativar as notificações: $erro'),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => ativandoNotificacoesWeb = false);
+      }
+    }
   }
 
   Future<void> carregar() async {
@@ -692,6 +761,51 @@ class _NotificacoesPageState extends State<NotificacoesPage> {
                         icon: const Icon(Icons.refresh),
                         label: const Text('Tentar novamente'),
                       ),
+                  ],
+                  if (kIsWeb) ...[
+                    const SizedBox(height: 18),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Notificações do navegador',
+                              style: theme.textTheme.titleMedium,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              notificacoesWebAtivadas
+                                  ? 'O navegador permite notificações. Você pode atualizar o registro deste dispositivo.'
+                                  : 'Ative a permissão para receber avisos mesmo quando esta aba não estiver em primeiro plano.',
+                            ),
+                            const SizedBox(height: 12),
+                            FilledButton.icon(
+                              onPressed: ativandoNotificacoesWeb
+                                  ? null
+                                  : ativarNotificacoesWeb,
+                              icon: ativandoNotificacoesWeb
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(
+                                      Icons.notifications_active_outlined,
+                                    ),
+                              label: Text(
+                                notificacoesWebAtivadas
+                                    ? 'Atualizar registro'
+                                    : 'Ativar notificações',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ],
                   const SizedBox(height: 22),
                   opcao(

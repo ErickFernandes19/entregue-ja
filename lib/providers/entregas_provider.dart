@@ -9,6 +9,10 @@ class EntregasProvider extends ChangeNotifier {
   final EntregasRepository _repository = EntregasRepository();
 
   bool carregando = false;
+  Future<void>? _carregamentoAtual;
+  String? _emailDasEntregas;
+  bool _descartado = false;
+  int _versao = 0;
 
   EntregasProvider() {
     carregarEntregasDoBackend();
@@ -16,22 +20,61 @@ class EntregasProvider extends ChangeNotifier {
 
   List<EntregaModel> get entregas => _repository.entregas;
 
-  Future<void> carregarEntregasDoBackend() async {
+  void _notificar() {
+    if (!_descartado) {
+      notifyListeners();
+    }
+  }
+
+  Future<void> carregarEntregasDoBackend() {
+    if (_descartado) return Future<void>.value();
+    if (_carregamentoAtual != null) return _carregamentoAtual!;
+
+    final operacao = _carregarEntregas();
+    _carregamentoAtual = operacao;
+    return operacao.whenComplete(() {
+      if (identical(_carregamentoAtual, operacao)) {
+        _carregamentoAtual = null;
+      }
+    });
+  }
+
+  Future<void> _carregarEntregas() async {
+    final versaoAtual = ++_versao;
     carregando = true;
-    notifyListeners();
+    _notificar();
 
     try {
       final email = await AuthService.usuarioLogado();
+      if (_descartado || versaoAtual != _versao) return;
 
       if (email == null || email.isEmpty) {
+        _repository.entregas.clear();
+        _emailDasEntregas = null;
+        _notificar();
         debugPrint('Não foi possível carregar entregas: usuário não logado.');
         return;
       }
 
+      if (_emailDasEntregas != null && _emailDasEntregas != email) {
+        _repository.entregas.clear();
+        _notificar();
+      }
+      _emailDasEntregas = email;
+
       final lista = await ApiService.buscarEntregasDoEntregador(email);
+      if (_descartado || versaoAtual != _versao) return;
+
+      final emailAtual = await AuthService.usuarioLogado();
+      if (_descartado || versaoAtual != _versao) return;
+      if (emailAtual != email) {
+        _repository.entregas.clear();
+        _emailDasEntregas = null;
+        _notificar();
+        return;
+      }
 
       final novasEntregas = <EntregaModel>[];
-
       for (final item in lista) {
         novasEntregas.add(
           EntregaModel.fromJson(Map<String, dynamic>.from(item)),
@@ -41,15 +84,17 @@ class EntregasProvider extends ChangeNotifier {
       _repository.entregas
         ..clear()
         ..addAll(novasEntregas);
-
       _repository.ordenarEntregas();
+      _notificar();
 
       debugPrint('Entregas carregadas: ${_repository.entregas.length}');
     } catch (e) {
       debugPrint('Erro ao carregar entregas no provider: $e');
     } finally {
-      carregando = false;
-      notifyListeners();
+      if (!_descartado && versaoAtual == _versao) {
+        carregando = false;
+        _notificar();
+      }
     }
   }
 
@@ -63,9 +108,8 @@ class EntregasProvider extends ChangeNotifier {
         if (!jaExiste) {
           _repository.adicionarEntrega(entrega);
           _repository.ordenarEntregas();
-          notifyListeners();
+          _notificar();
         }
-
         return;
       }
 
@@ -79,7 +123,7 @@ class EntregasProvider extends ChangeNotifier {
         longitude: entrega.longitude,
       );
 
-      await carregarEntregasDoBackend();
+      await _atualizarDepoisDeAlteracao();
     } catch (e) {
       debugPrint('Erro ao cadastrar entrega no backend: $e');
       rethrow;
@@ -87,27 +131,19 @@ class EntregasProvider extends ChangeNotifier {
   }
 
   Future<bool> removerEntrega(int index) async {
-    if (index < 0 || index >= entregas.length) {
-      return false;
-    }
+    if (index < 0 || index >= entregas.length) return false;
 
     final entrega = entregas[index];
-
     if (entrega.id == null) {
       _repository.removerEntrega(index);
-      notifyListeners();
+      _notificar();
       return true;
     }
 
     try {
       final sucesso = await ApiService.excluirEntrega(entrega.id!);
-
-      if (!sucesso) {
-        return false;
-      }
-
-      await carregarEntregasDoBackend();
-
+      if (!sucesso) return false;
+      await _atualizarDepoisDeAlteracao();
       return true;
     } catch (e) {
       debugPrint('Erro ao remover entrega: $e');
@@ -116,26 +152,33 @@ class EntregasProvider extends ChangeNotifier {
   }
 
   Future<void> alternarStatusEntrega(int index) async {
-    if (index < 0 || index >= entregas.length) {
-      return;
-    }
+    if (index < 0 || index >= entregas.length) return;
 
     final entrega = entregas[index];
-
-    if (entrega.id == null) {
-      return;
-    }
+    if (entrega.id == null) return;
 
     final sucesso = await ApiService.atualizarStatusEntrega(entrega.id!);
+    if (!sucesso) return;
 
-    if (!sucesso) {
-      return;
+    await _atualizarDepoisDeAlteracao();
+  }
+
+  Future<void> _atualizarDepoisDeAlteracao() async {
+    final carregamento = _carregamentoAtual;
+    if (carregamento != null) {
+      await carregamento;
     }
-
     await carregarEntregasDoBackend();
   }
 
   Future<void> atualizarLista() async {
     await carregarEntregasDoBackend();
+  }
+
+  @override
+  void dispose() {
+    _descartado = true;
+    _versao++;
+    super.dispose();
   }
 }

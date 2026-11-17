@@ -9,6 +9,16 @@ import '../config/api_config.dart';
 import 'auth_service.dart';
 import 'empresa_service.dart';
 
+class EntregaQrException implements Exception {
+  final String mensagem;
+  final int? statusCode;
+
+  const EntregaQrException(this.mensagem, {this.statusCode});
+
+  @override
+  String toString() => mensagem;
+}
+
 class EntregaService {
   static Future<Map<String, String>> _headersAutenticados({
     bool empresa = false,
@@ -134,6 +144,102 @@ class EntregaService {
     } catch (e) {
       debugPrint('Erro ao buscar entrega: $e');
       return null;
+    }
+  }
+
+  static String _mensagemErroQr(
+    http.Response response, {
+    required bool assumir,
+  }) {
+    final padrao = switch (response.statusCode) {
+      400 => 'Esta entrega não está disponível para atribuição.',
+      401 => 'Sua sessão expirou. Entre novamente no aplicativo.',
+      403 => 'Você não tem permissão para acessar esta entrega.',
+      404 => 'Entrega não encontrada.',
+      409 => 'Esta entrega já foi assumida ou não está mais disponível.',
+      _ =>
+        assumir
+            ? 'Não foi possível assumir a entrega. Tente novamente.'
+            : 'Não foi possível consultar o QR Code. Tente novamente.',
+    };
+
+    try {
+      final dados = jsonDecode(response.body);
+      if (dados is Map && dados['mensagem'] is String) {
+        final mensagem = (dados['mensagem'] as String).trim();
+        if (mensagem.isNotEmpty) {
+          return mensagem;
+        }
+      }
+    } catch (_) {}
+
+    return padrao;
+  }
+
+  static Future<Map<String, dynamic>> _respostaQr(
+    http.Response response, {
+    required bool assumir,
+  }) async {
+    if (response.statusCode != 200) {
+      throw EntregaQrException(
+        _mensagemErroQr(response, assumir: assumir),
+        statusCode: response.statusCode,
+      );
+    }
+
+    try {
+      final dados = jsonDecode(response.body);
+      if (dados is Map<String, dynamic>) {
+        return dados;
+      }
+    } catch (_) {}
+
+    throw const EntregaQrException('O servidor retornou dados inválidos.');
+  }
+
+  static Future<Map<String, dynamic>> consultarEntregaQr(String id) async {
+    if (id.trim().isEmpty) {
+      throw const EntregaQrException('O QR Code não contém um ID válido.');
+    }
+
+    try {
+      final headers = await AuthService.headersAutenticados();
+      final response = await http.get(
+        Uri.parse(
+          '${ApiConfig.entregas}/${Uri.encodeComponent(id.trim())}/consultar-qr',
+        ),
+        headers: headers,
+      );
+      return await _respostaQr(response, assumir: false);
+    } on EntregaQrException {
+      rethrow;
+    } catch (e) {
+      debugPrint('Erro ao consultar QR Code: $e');
+      throw const EntregaQrException(
+        'Falha de conexão ao consultar a entrega.',
+      );
+    }
+  }
+
+  static Future<Map<String, dynamic>> assumirEntregaQr(String id) async {
+    if (id.trim().isEmpty) {
+      throw const EntregaQrException('O QR Code não contém um ID válido.');
+    }
+
+    try {
+      final headers = await AuthService.headersAutenticados();
+      final response = await http.put(
+        Uri.parse(
+          '${ApiConfig.entregas}/${Uri.encodeComponent(id.trim())}/assumir-qr',
+        ),
+        headers: headers,
+      );
+      return await _respostaQr(response, assumir: true);
+    } on EntregaQrException {
+      rethrow;
+    } catch (e) {
+      debugPrint('Erro ao assumir entrega pelo QR Code: $e');
+      throw const EntregaQrException('Falha de conexão ao assumir a entrega.');
     }
   }
 

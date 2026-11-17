@@ -1,3 +1,4 @@
+
 package com.entregueja.backend.service;
 
 import com.entregueja.backend.entity.PreferenciaNotificacao;
@@ -8,6 +9,8 @@ import com.google.firebase.messaging.FirebaseMessaging;
 import com.google.firebase.messaging.FirebaseMessagingException;
 import com.google.firebase.messaging.Message;
 import com.google.firebase.messaging.Notification;
+import com.google.firebase.messaging.WebpushConfig;
+import com.google.firebase.messaging.WebpushNotification;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -78,6 +81,7 @@ public class FirebasePushService {
         }
 
         List<String> tokens = notificacaoService.listarTokens(tipoConta, contaId);
+
         if (tokens.isEmpty()) {
             return 0;
         }
@@ -95,6 +99,13 @@ public class FirebasePushService {
                     .setAndroidConfig(AndroidConfig.builder()
                             .setNotification(AndroidNotification.builder()
                                     .setChannelId(canal)
+                                    .build())
+                            .build())
+                    .setWebpushConfig(WebpushConfig.builder()
+                            .setNotification(WebpushNotification.builder()
+                                    .setTitle(titulo)
+                                    .setBody(mensagem)
+                                    .setIcon("/icons/Icon-192.png")
                                     .build())
                             .build())
                     .putData("tipo", tipo)

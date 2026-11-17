@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'config/app_router.dart';
+import 'firebase_options.dart';
 import 'pages/empresa_home_page.dart';
 import 'pages/home_page.dart';
 import 'pages/selection_page.dart';
@@ -206,6 +207,35 @@ Future<void> exibirNotificacao(RemoteMessage mensagem) async {
 
     if (!permitido) return;
 
+    if (kIsWeb) {
+      final tituloWeb =
+          mensagem.notification?.title ??
+          mensagem.data['titulo']?.toString() ??
+          'Entregue Já';
+      final textoWeb =
+          mensagem.notification?.body ??
+          mensagem.data['mensagem']?.toString() ??
+          '';
+      final contexto = navigatorKey.currentContext;
+      if (contexto != null && contexto.mounted) {
+        final mensageiro = ScaffoldMessenger.maybeOf(contexto);
+        mensageiro?.showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 8),
+            content: Text(
+              textoWeb.isEmpty ? tituloWeb : '$tituloWeb\n$textoWeb',
+            ),
+            action: SnackBarAction(
+              label: 'Abrir',
+              onPressed: () =>
+                  abrirNotificacoes(tipoConta: tipoConta, contaId: contaId),
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
     final som =
         preferencias.getBool(contaEmpresa ? 'empresa_sons' : 'notif_sons') ??
         true;
@@ -302,40 +332,46 @@ Future<void> configurarNotificacoes() async {
   notificacoesConfiguradas = true;
 
   try {
-    const inicializacaoAndroid = AndroidInitializationSettings(
-      '@mipmap/ic_launcher',
-    );
+    if (!kIsWeb) {
+      const inicializacaoAndroid = AndroidInitializationSettings(
+        '@mipmap/ic_launcher',
+      );
 
-    await notificacoesLocais.initialize(
-      const InitializationSettings(android: inicializacaoAndroid),
-      onDidReceiveNotificationResponse: (resposta) {
-        String? tipoConta;
-        String? contaId;
+      await notificacoesLocais.initialize(
+        const InitializationSettings(android: inicializacaoAndroid),
+        onDidReceiveNotificationResponse: (resposta) {
+          String? tipoConta;
+          String? contaId;
 
-        if (resposta.payload != null) {
-          try {
-            final dados = jsonDecode(resposta.payload!);
+          if (resposta.payload != null) {
+            try {
+              final dados = jsonDecode(resposta.payload!);
 
-            if (dados is Map) {
-              tipoConta = dados['tipoConta']?.toString().toUpperCase();
-              contaId = dados['contaId']?.toString();
+              if (dados is Map) {
+                tipoConta = dados['tipoConta']?.toString().toUpperCase();
+                contaId = dados['contaId']?.toString();
+              }
+            } catch (erro) {
+              debugPrint('Erro ao interpretar notificação: $erro');
             }
-          } catch (erro) {
-            debugPrint('Erro ao interpretar notificação: $erro');
           }
-        }
 
-        abrirNotificacoes(tipoConta: tipoConta, contaId: contaId);
-      },
-    );
+          abrirNotificacoes(tipoConta: tipoConta, contaId: contaId);
+        },
+      );
 
-    await criarCanaisNotificacao();
+      await criarCanaisNotificacao();
+    }
 
-    await FirebaseMessaging.instance.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
+    if (!kIsWeb) {
+      final permissao = await FirebaseMessaging.instance.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      debugPrint('Permissão de notificações: ${permissao.authorizationStatus}');
+    }
 
     await assinaturaMensagens?.cancel();
 
@@ -364,6 +400,8 @@ Future<void> verificarNotificacaoInicial() async {
         contaId: mensagem.data['contaId']?.toString(),
       );
     }
+
+    if (kIsWeb) return;
 
     final detalhes = await notificacoesLocais.getNotificationAppLaunchDetails();
 
@@ -398,11 +436,16 @@ Future<void> verificarNotificacaoInicial() async {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+  if (kIsWeb || defaultTargetPlatform == TargetPlatform.android) {
     try {
-      await Firebase.initializeApp();
-
-      FirebaseMessaging.onBackgroundMessage(tratarMensagemEmSegundoPlano);
+      if (kIsWeb) {
+        await Firebase.initializeApp(
+          options: DefaultFirebaseOptions.currentPlatform,
+        );
+      } else {
+        await Firebase.initializeApp();
+        FirebaseMessaging.onBackgroundMessage(tratarMensagemEmSegundoPlano);
+      }
 
       await configurarNotificacoes();
     } catch (erro) {

@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -37,9 +38,7 @@ public class CadastroPendenteService {
             String email,
             String senha
     ) {
-        if (!"ENTREGADOR".equals(tipo) && !"EMPRESA".equals(tipo)) {
-            throw new IllegalArgumentException("Tipo de cadastro inválido");
-        }
+        validarTipo(tipo);
 
         if (nome == null || nome.isBlank()
                 || email == null || email.isBlank()
@@ -47,40 +46,28 @@ public class CadastroPendenteService {
             throw new IllegalArgumentException("Preencha todos os campos");
         }
 
-        if (senha.length() < 6) {
+        if (!senhaForte(senha)) {
             throw new IllegalArgumentException(
-                    "A senha deve possuir pelo menos 6 caracteres"
+                    "A senha deve ter pelo menos 8 caracteres, incluindo letra maiúscula, minúscula, número e caractere especial"
             );
         }
 
-        String emailNormalizado = email.trim().toLowerCase();
+        String emailNormalizado = normalizarEmail(email);
         String chave = tipo + ":" + emailNormalizado;
 
         CadastroPendente existente = cadastros.get(chave);
+        validarIntervaloEnvio(existente);
 
-        if (existente != null
-                && LocalDateTime.now().isBefore(
-                existente.ultimoEnvio.plusSeconds(
-                        INTERVALO_REENVIO_SEGUNDOS
-                )
-        )) {
-            throw new IllegalArgumentException(
-                    "Aguarde 60 segundos antes de solicitar outro código"
-            );
-        }
-
-        String codigo = String.format(
-                "%06d",
-                secureRandom.nextInt(1000000)
-        );
+        String codigo = gerarCodigo();
+        LocalDateTime agora = LocalDateTime.now();
 
         CadastroPendente pendente = new CadastroPendente(
                 nome.trim(),
                 emailNormalizado,
                 passwordEncoder.encode(senha),
                 passwordEncoder.encode(codigo),
-                LocalDateTime.now().plusMinutes(VALIDADE_MINUTOS),
-                LocalDateTime.now()
+                agora.plusMinutes(VALIDADE_MINUTOS),
+                agora
         );
 
         emailService.enviarCodigoVerificacaoCadastro(
@@ -91,18 +78,64 @@ public class CadastroPendenteService {
         cadastros.put(chave, pendente);
     }
 
+    public synchronized void reenviarCodigo(
+            String tipo,
+            String email
+    ) {
+        validarTipo(tipo);
+
+        if (email == null || email.isBlank()) {
+            throw new IllegalArgumentException("Informe o e-mail");
+        }
+
+        String emailNormalizado = normalizarEmail(email);
+        String chave = tipo + ":" + emailNormalizado;
+
+        CadastroPendente pendente = cadastros.get(chave);
+
+        if (pendente == null) {
+            throw new IllegalArgumentException(
+                    "Cadastro pendente não encontrado. Inicie o cadastro novamente"
+            );
+        }
+
+        validarIntervaloEnvio(pendente);
+
+        String codigo = gerarCodigo();
+        LocalDateTime agora = LocalDateTime.now();
+
+        CadastroPendente atualizado = new CadastroPendente(
+                pendente.nome,
+                pendente.email,
+                pendente.senhaHash,
+                passwordEncoder.encode(codigo),
+                agora.plusMinutes(VALIDADE_MINUTOS),
+                agora
+        );
+
+        emailService.enviarCodigoVerificacaoCadastro(
+                emailNormalizado,
+                codigo
+        );
+
+        cadastros.put(chave, atualizado);
+    }
+
     public synchronized DadosCadastro confirmarCodigo(
             String tipo,
             String email,
             String codigo
     ) {
-        if (tipo == null || email == null || codigo == null) {
+        validarTipo(tipo);
+
+        if (email == null || email.isBlank()
+                || codigo == null || codigo.isBlank()) {
             throw new IllegalArgumentException(
                     "Informe o e-mail e o código"
             );
         }
 
-        String chave = tipo + ":" + email.trim().toLowerCase();
+        String chave = tipo + ":" + normalizarEmail(email);
         CadastroPendente pendente = cadastros.get(chave);
 
         if (pendente == null) {
@@ -121,7 +154,7 @@ public class CadastroPendenteService {
         if (pendente.tentativas >= MAX_TENTATIVAS) {
             cadastros.remove(chave);
             throw new IllegalArgumentException(
-                    "Limite de tentativas excedido. Solicite outro código"
+                    "Limite de tentativas excedido. Inicie o cadastro novamente"
             );
         }
 
@@ -134,7 +167,7 @@ public class CadastroPendenteService {
             if (pendente.tentativas >= MAX_TENTATIVAS) {
                 cadastros.remove(chave);
                 throw new IllegalArgumentException(
-                        "Limite de tentativas excedido. Solicite outro código"
+                        "Limite de tentativas excedido. Inicie o cadastro novamente"
                 );
             }
 
@@ -147,6 +180,49 @@ public class CadastroPendenteService {
                 pendente.nome,
                 pendente.email,
                 pendente.senhaHash
+        );
+    }
+
+    private void validarTipo(String tipo) {
+        if (!"ENTREGADOR".equals(tipo) && !"EMPRESA".equals(tipo)) {
+            throw new IllegalArgumentException("Tipo de cadastro inválido");
+        }
+    }
+
+    private String normalizarEmail(String email) {
+        return email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private boolean senhaForte(String senha) {
+        return senha != null
+                && senha.length() >= 8
+                && senha.matches("(?s).*[A-Z].*")
+                && senha.matches("(?s).*[a-z].*")
+                && senha.matches("(?s).*[0-9].*")
+                && senha.matches("(?s).*[^A-Za-z0-9].*");
+    }
+
+    private void validarIntervaloEnvio(CadastroPendente pendente) {
+        if (pendente == null) {
+            return;
+        }
+
+        if (LocalDateTime.now().isBefore(
+                pendente.ultimoEnvio.plusSeconds(
+                        INTERVALO_REENVIO_SEGUNDOS
+                )
+        )) {
+            throw new IllegalArgumentException(
+                    "Aguarde 60 segundos antes de solicitar outro código"
+            );
+        }
+    }
+
+    private String gerarCodigo() {
+        return String.format(
+                Locale.ROOT,
+                "%06d",
+                secureRandom.nextInt(1000000)
         );
     }
 

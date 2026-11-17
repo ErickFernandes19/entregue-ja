@@ -1,6 +1,7 @@
 package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.Usuario;
+import com.entregueja.backend.repository.EmpresaRepository;
 import com.entregueja.backend.repository.UsuarioRepository;
 import com.entregueja.backend.service.EmailService;
 import com.entregueja.backend.service.CadastroPendenteService;
@@ -14,6 +15,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import java.time.ZoneId;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,6 +23,7 @@ import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Locale;
 
 @RestController
 @RequestMapping("/auth")
@@ -28,6 +31,7 @@ import java.util.Map;
 public class AuthController {
 
     private final UsuarioRepository usuarioRepository;
+    private final EmpresaRepository empresaRepository;
     private final PasswordEncoder passwordEncoder;
     private final EmailService emailService;
     private final CadastroPendenteService cadastroPendenteService;
@@ -37,6 +41,7 @@ public class AuthController {
 
     public AuthController(
             UsuarioRepository usuarioRepository,
+            EmpresaRepository empresaRepository,
             PasswordEncoder passwordEncoder,
             EmailService emailService,
             CadastroPendenteService cadastroPendenteService,
@@ -45,6 +50,7 @@ public class AuthController {
             FirebasePushService firebasePushService
     ) {
         this.usuarioRepository = usuarioRepository;
+        this.empresaRepository = empresaRepository;
         this.passwordEncoder = passwordEncoder;
         this.emailService = emailService;
         this.cadastroPendenteService = cadastroPendenteService;
@@ -437,6 +443,14 @@ public class AuthController {
             );
         }
 
+        String email = normalizarEmail(usuario.getEmail());
+
+        if (!emailValido(email)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe um e-mail válido")
+            );
+        }
+
         if (usuario.getSenha() == null
                 || usuario.getSenha().isEmpty()) {
             return ResponseEntity.badRequest().body(
@@ -450,11 +464,9 @@ public class AuthController {
             );
         }
 
-        String email = usuario.getEmail().trim().toLowerCase();
-
-        if (usuarioRepository.findByEmail(email).isPresent()) {
+        if (emailJaCadastrado(email)) {
             return ResponseEntity.badRequest().body(
-                    Map.of("mensagem", "E-mail já cadastrado")
+                    Map.of("mensagem", "Este e-mail já está cadastrado")
             );
         }
 
@@ -480,6 +492,45 @@ public class AuthController {
         );
     }
 
+    @PostMapping("/reenviar-codigo")
+    public ResponseEntity<?> reenviarCodigo(
+            @RequestBody Map<String, String> body
+    ) {
+        String email = body.get("email");
+
+        if (email == null || !emailValido(normalizarEmail(email))) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe um e-mail válido")
+            );
+        }
+
+        String emailNormalizado = normalizarEmail(email);
+
+        if (emailJaCadastrado(emailNormalizado)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Este e-mail já está cadastrado")
+            );
+        }
+
+        try {
+            cadastroPendenteService.reenviarCodigo(
+                    "ENTREGADOR", emailNormalizado
+            );
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", e.getMessage())
+            );
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(
+                    Map.of("mensagem", "Não foi possível reenviar o código de verificação")
+            );
+        }
+
+        return ResponseEntity.ok(
+                Map.of("mensagem", "Novo código de verificação enviado para o e-mail")
+        );
+    }
+
     @PostMapping("/confirmar-cadastro")
     public ResponseEntity<?> confirmarCadastro(
             @RequestBody Map<String, String> body
@@ -494,11 +545,17 @@ public class AuthController {
             );
         }
 
-        String emailNormalizado = email.trim().toLowerCase();
+        String emailNormalizado = normalizarEmail(email);
 
-        if (usuarioRepository.findByEmail(emailNormalizado).isPresent()) {
+        if (!emailValido(emailNormalizado)) {
             return ResponseEntity.badRequest().body(
-                    Map.of("mensagem", "E-mail já cadastrado")
+                    Map.of("mensagem", "Informe um e-mail válido")
+            );
+        }
+
+        if (emailJaCadastrado(emailNormalizado)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Este e-mail já está cadastrado")
             );
         }
 
@@ -719,7 +776,9 @@ public class AuthController {
 
         usuario.setEmpresa(usuario.getEmpresaPendente());
         usuario.setEmpresaPendente(null);
-        usuario.setDataVinculo(LocalDateTime.now());
+        usuario.setDataVinculo(
+                LocalDateTime.now(ZoneId.of("America/Sao_Paulo"))
+        );
 
         usuarioRepository.save(usuario);
         notificarEmpresaVinculo(
@@ -834,17 +893,22 @@ public class AuthController {
         }
 
         novoNome = novoNome.trim();
-        novoEmail = novoEmail.trim();
+        novoEmail = normalizarEmail(novoEmail);
 
-        if (!email.equalsIgnoreCase(novoEmail)) {
-            var usuarioComMesmoEmail =
-                    usuarioRepository.findByEmail(novoEmail);
+        if (!emailValido(novoEmail)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe um e-mail válido")
+            );
+        }
 
-            if (usuarioComMesmoEmail.isPresent()) {
-                return ResponseEntity.badRequest().body(
-                        Map.of("mensagem", "E-mail já está sendo utilizado")
-                );
-            }
+        var usuarioComMesmoEmail = usuarioRepository.findByEmail(novoEmail);
+
+        if (empresaRepository.findByEmail(novoEmail).isPresent()
+                || (usuarioComMesmoEmail.isPresent()
+                && !usuarioComMesmoEmail.get().getId().equals(usuario.getId()))) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Este e-mail já está sendo utilizado")
+            );
         }
 
         usuario.setNome(novoNome);
@@ -869,6 +933,21 @@ public class AuthController {
         );
 
         return ResponseEntity.ok(resposta);
+    }
+
+    private String normalizarEmail(String email) {
+        return email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private boolean emailValido(String email) {
+        return email != null
+                && email.length() <= 254
+                && email.matches("^[A-Za-z0-9._%+\\-]+@[A-Za-z0-9\\-]+(\\.[A-Za-z0-9\\-]+)+$");
+    }
+
+    private boolean emailJaCadastrado(String email) {
+        return usuarioRepository.findByEmail(email).isPresent()
+                || empresaRepository.findByEmail(email).isPresent();
     }
 
     private boolean senhaForte(String senha) {

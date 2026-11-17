@@ -29,6 +29,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
   bool erroComprovante = false;
   bool atribuindoEntregador = false;
   Timer? _timerAcompanhamento;
+  GoogleMapController? _mapaAcompanhamentoController;
   Map<String, dynamic>? _dadosAcompanhamento;
   Map<String, dynamic>? _localizacaoRecebida;
   bool _consultandoAcompanhamento = false;
@@ -36,7 +37,10 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
   Map<String, dynamic> get entrega => widget.entrega;
 
   String statusEntrega() {
-    final status = (entrega['status'] ?? '').toString().trim();
+    final status = (_dadosAcompanhamento?['status'] ?? entrega['status'] ?? '')
+        .toString()
+        .trim()
+        .toUpperCase();
 
     if (status.isNotEmpty) {
       return status;
@@ -137,6 +141,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
   @override
   void dispose() {
     _timerAcompanhamento?.cancel();
+    _mapaAcompanhamentoController?.dispose();
     super.dispose();
   }
 
@@ -181,13 +186,31 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
     _consultandoAcompanhamento = true;
     try {
       final dados = await ApiService.buscarLocalizacaoEntregador(id);
-      if (!mounted) return;
-      if (dados != null) {
+      if (!mounted || dados == null) return;
+
+      final status = (dados['status'] ?? '').toString().trim().toUpperCase();
+      if (status.isEmpty) return;
+
+      if (status != 'EM_ROTA') {
+        _timerAcompanhamento?.cancel();
         setState(() {
-          _localizacaoRecebida = dados;
+          _dadosAcompanhamento = {...?_dadosAcompanhamento, 'status': status};
+          _localizacaoRecebida = null;
         });
-        if (dados['status'] != 'EM_ROTA') {
-          _timerAcompanhamento?.cancel();
+        return;
+      }
+
+      final posicao = _coordenadaValida(dados['latitude'], dados['longitude']);
+      setState(() {
+        _localizacaoRecebida = dados;
+      });
+      if (posicao != null && _mapaAcompanhamentoController != null) {
+        try {
+          await _mapaAcompanhamentoController!.animateCamera(
+            CameraUpdate.newLatLng(posicao),
+          );
+        } catch (e) {
+          debugPrint('Não foi possível atualizar a câmera: $e');
         }
       }
     } catch (e) {
@@ -301,12 +324,14 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
               child: SizedBox(
                 height: 260,
                 child: GoogleMap(
-                  key: ValueKey('${centro.latitude},${centro.longitude}'),
                   initialCameraPosition: CameraPosition(
                     target: centro,
                     zoom: 15,
                   ),
                   markers: pontos,
+                  onMapCreated: (controller) {
+                    _mapaAcompanhamentoController = controller;
+                  },
                   myLocationButtonEnabled: false,
                   zoomControlsEnabled: false,
                   mapToolbarEnabled: false,

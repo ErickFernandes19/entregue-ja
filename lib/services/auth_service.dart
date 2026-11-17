@@ -21,13 +21,28 @@ class AuthService {
     _filaFcm = proxima.catchError((Object erro) {
       debugPrint('Erro na operação FCM do entregador: $erro');
     });
-    return _filaFcm;
+    return proxima;
   }
 
+  static const String _chaveVapid =
+      'BJSQHCGoeyvu-Za4k1aR_LFVP2A1W3895Pyws5yV4kvuB9BvwfUK2CikQDbzAldyjPNZ2CshUhgdkg1MF8p-V5o';
+
   static bool get _firebaseDisponivel =>
-      !kIsWeb &&
-      defaultTargetPlatform == TargetPlatform.android &&
+      (kIsWeb || defaultTargetPlatform == TargetPlatform.android) &&
       Firebase.apps.isNotEmpty;
+
+  static Future<String?> _obterTokenFcm() async {
+    if (kIsWeb) {
+      final permissao = await FirebaseMessaging.instance
+          .getNotificationSettings();
+      if (permissao.authorizationStatus != AuthorizationStatus.authorized) {
+        return null;
+      }
+    }
+    return FirebaseMessaging.instance.getToken(
+      vapidKey: kIsWeb ? _chaveVapid : null,
+    );
+  }
 
   static Uri get _urlDispositivos {
     final authUri = Uri.parse(ApiConfig.auth);
@@ -55,38 +70,56 @@ class AuthService {
     };
   }
 
-  static Future<void> registrarDispositivoFcm() =>
-      _enfileirarFcm(_registrarDispositivoFcm);
-
-  static Future<void> _registrarDispositivoFcm() async {
-    if (!_firebaseDisponivel || _encerrandoSessao) return;
-
+  static Future<void> registrarDispositivoFcm() async {
     try {
-      final jwt = await obterToken();
-      if (jwt == null || jwt.isEmpty) return;
+      await _enfileirarFcm(_registrarDispositivoFcmConfirmado);
+    } catch (erro) {
+      debugPrint('Erro ao registrar dispositivo FCM: $erro');
+    }
+  }
 
-      final tokenFcm = await FirebaseMessaging.instance.getToken();
-      if (tokenFcm == null || tokenFcm.isEmpty) return;
-      if (_encerrandoSessao || await obterToken() != jwt) return;
+  static Future<void> registrarDispositivoFcmConfirmado() =>
+      _enfileirarFcm(_registrarDispositivoFcmConfirmado);
 
-      final response = await http
-          .post(
-            _urlDispositivos,
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer $jwt',
-            },
-            body: jsonEncode({'token': tokenFcm, 'plataforma': 'ANDROID'}),
-          )
-          .timeout(const Duration(seconds: 10));
+  static Future<void> _registrarDispositivoFcmConfirmado() async {
+    if (!_firebaseDisponivel) {
+      throw StateError('Firebase não está disponível neste dispositivo.');
+    }
+    if (_encerrandoSessao) {
+      throw StateError('A sessão está sendo encerrada.');
+    }
 
-      if (response.statusCode != 204 && response.statusCode != 200) {
-        debugPrint(
-          'Falha ao registrar dispositivo FCM: ${response.statusCode}',
-        );
-      }
-    } catch (e) {
-      debugPrint('Erro ao registrar dispositivo FCM: $e');
+    final jwt = await obterToken();
+    if (jwt == null || jwt.isEmpty) {
+      throw StateError('Faça login novamente para ativar as notificações.');
+    }
+
+    final tokenFcm = await _obterTokenFcm();
+    if (tokenFcm == null || tokenFcm.isEmpty) {
+      throw StateError('Não foi possível obter o token de notificações.');
+    }
+    if (_encerrandoSessao || await obterToken() != jwt) {
+      throw StateError('A sessão foi alterada durante o registro.');
+    }
+
+    final response = await http
+        .post(
+          _urlDispositivos,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $jwt',
+          },
+          body: jsonEncode({
+            'token': tokenFcm,
+            'plataforma': kIsWeb ? 'WEB' : 'ANDROID',
+          }),
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 204 && response.statusCode != 200) {
+      throw StateError(
+        'O servidor recusou o registro FCM (HTTP ${response.statusCode}).',
+      );
     }
   }
 
@@ -108,7 +141,7 @@ class AuthService {
       final jwt = await obterToken();
       if (jwt == null || jwt.isEmpty) return;
 
-      final tokenFcm = await FirebaseMessaging.instance.getToken();
+      final tokenFcm = await _obterTokenFcm();
       if (tokenFcm == null || tokenFcm.isEmpty) return;
 
       final request = http.Request('DELETE', _urlDispositivos)
@@ -116,7 +149,10 @@ class AuthService {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $jwt',
         })
-        ..body = jsonEncode({'token': tokenFcm, 'plataforma': 'ANDROID'});
+        ..body = jsonEncode({
+          'token': tokenFcm,
+          'plataforma': kIsWeb ? 'WEB' : 'ANDROID',
+        });
 
       final client = http.Client();
       try {
@@ -418,42 +454,88 @@ class AuthService {
     }
   }
 
-  static Future<bool> cadastrar(String nome, String email, String senha) async {
+  static Future<Map<String, dynamic>> _requisicaoCadastro(
+    String endpoint,
+    Map<String, String> dados,
+  ) async {
     try {
       final response = await http
           .post(
-            Uri.parse('${ApiConfig.auth}/register'),
+            Uri.parse('${ApiConfig.auth}/$endpoint'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'nome': nome, 'email': email, 'senha': senha}),
+            body: jsonEncode(dados),
           )
           .timeout(const Duration(seconds: 15));
 
-      debugPrint('Cadastro status: ${response.statusCode}');
+      final sucesso = response.statusCode >= 200 && response.statusCode < 300;
+      String mensagem = sucesso
+          ? 'Operação realizada com sucesso.'
+          : 'Não foi possível concluir a solicitação.';
 
-      return response.statusCode == 200 || response.statusCode == 201;
+      try {
+        final resposta = jsonDecode(utf8.decode(response.bodyBytes));
+        if (resposta is Map) {
+          final mensagemServidor = resposta['mensagem'] ?? resposta['message'];
+          if (mensagemServidor is String &&
+              mensagemServidor.trim().isNotEmpty) {
+            mensagem = mensagemServidor.trim();
+          }
+        }
+      } catch (_) {}
+
+      debugPrint('Cadastro $endpoint status: ${response.statusCode}');
+
+      return {'sucesso': sucesso, 'mensagem': mensagem};
+    } on TimeoutException {
+      return {
+        'sucesso': false,
+        'mensagem': 'O servidor demorou para responder. Tente novamente.',
+      };
     } catch (e) {
-      debugPrint('Erro cadastro: $e');
-      return false;
+      debugPrint('Erro na operação de cadastro $endpoint: $e');
+      return {
+        'sucesso': false,
+        'mensagem': 'Não foi possível conectar ao servidor. Tente novamente.',
+      };
     }
   }
 
+  static Future<Map<String, dynamic>> cadastrarComResultado(
+    String nome,
+    String email,
+    String senha,
+  ) {
+    return _requisicaoCadastro('register', {
+      'nome': nome.trim(),
+      'email': email.trim().toLowerCase(),
+      'senha': senha,
+    });
+  }
+
+  static Future<bool> cadastrar(String nome, String email, String senha) async {
+    final resultado = await cadastrarComResultado(nome, email, senha);
+    return resultado['sucesso'] == true;
+  }
+
+  static Future<Map<String, dynamic>> confirmarCadastroComResultado(
+    String email,
+    String codigo,
+  ) {
+    return _requisicaoCadastro('confirmar-cadastro', {
+      'email': email.trim().toLowerCase(),
+      'codigo': codigo.trim(),
+    });
+  }
+
   static Future<bool> confirmarCadastro(String email, String codigo) async {
-    try {
-      final response = await http
-          .post(
-            Uri.parse('${ApiConfig.auth}/confirmar-cadastro'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'email': email.trim(), 'codigo': codigo.trim()}),
-          )
-          .timeout(const Duration(seconds: 15));
+    final resultado = await confirmarCadastroComResultado(email, codigo);
+    return resultado['sucesso'] == true;
+  }
 
-      debugPrint('Confirmação de cadastro status: ${response.statusCode}');
-
-      return response.statusCode == 200 || response.statusCode == 201;
-    } catch (e) {
-      debugPrint('Erro ao confirmar cadastro: $e');
-      return false;
-    }
+  static Future<Map<String, dynamic>> reenviarCodigoCadastro(String email) {
+    return _requisicaoCadastro('reenviar-codigo', {
+      'email': email.trim().toLowerCase(),
+    });
   }
 
   static Future<Map<String, dynamic>> _requisicaoRecuperacao(

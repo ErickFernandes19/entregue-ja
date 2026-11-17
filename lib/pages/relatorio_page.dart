@@ -37,6 +37,7 @@ class _RelatorioPageState extends State<RelatorioPage> {
     'EM_ROTA',
     'ENTREGUE',
     'NAO_ENTREGUE',
+    'CANCELADA',
   };
 
   bool incluirVeiculo = true;
@@ -113,6 +114,9 @@ class _RelatorioPageState extends State<RelatorioPage> {
       case 'NAO_ENTREGUE':
         return 'Não entregue';
 
+      case 'CANCELADA':
+        return 'Cancelada';
+
       case 'PENDENTE':
       default:
         return 'Pendente';
@@ -130,6 +134,9 @@ class _RelatorioPageState extends State<RelatorioPage> {
       case 'NAO_ENTREGUE':
         return AppColors.error;
 
+      case 'CANCELADA':
+        return Colors.grey;
+
       case 'PENDENTE':
       default:
         return AppColors.warning;
@@ -138,10 +145,6 @@ class _RelatorioPageState extends State<RelatorioPage> {
 
   List<EntregaModel> entregasFiltradas(List<EntregaModel> todas) {
     return todas.where((entrega) {
-      if (entrega.status == 'CANCELADA') {
-        return false;
-      }
-
       return statusSelecionados.contains(entrega.status);
     }).toList();
   }
@@ -156,6 +159,8 @@ class _RelatorioPageState extends State<RelatorioPage> {
     final naoEntregues = entregas
         .where((e) => e.status == 'NAO_ENTREGUE')
         .toList();
+
+    final canceladas = entregas.where((e) => e.status == 'CANCELADA').toList();
 
     final receitaTotal = entregues.fold<double>(
       0,
@@ -176,6 +181,7 @@ class _RelatorioPageState extends State<RelatorioPage> {
       'pendentes': pendentes.length,
       'emRota': emRota.length,
       'naoEntregues': naoEntregues.length,
+      'canceladas': canceladas.length,
       'receita': receitaTotal,
       'distancia': distanciaKm,
       'litros': litrosUsados,
@@ -272,6 +278,8 @@ class _RelatorioPageState extends State<RelatorioPage> {
                       status: 'NAO_ENTREGUE',
                       texto: 'Não entregues',
                     ),
+
+                    statusCheckbox(status: 'CANCELADA', texto: 'Canceladas'),
 
                     const Divider(),
 
@@ -424,6 +432,8 @@ class _RelatorioPageState extends State<RelatorioPage> {
               linhaPdf('Entregues', dados['entregues'].toString()),
 
               linhaPdf('Não entregues', dados['naoEntregues'].toString()),
+
+              linhaPdf('Canceladas', dados['canceladas'].toString()),
 
               pw.SizedBox(height: 16),
             ],
@@ -590,6 +600,11 @@ class _RelatorioPageState extends State<RelatorioPage> {
           TextCellValue('Não entregues'),
           IntCellValue(dados['naoEntregues']),
         ]);
+
+        resumo.appendRow([
+          TextCellValue('Canceladas'),
+          IntCellValue(dados['canceladas']),
+        ]);
       }
 
       if (incluirFinanceiro) {
@@ -660,9 +675,12 @@ class _RelatorioPageState extends State<RelatorioPage> {
 
       await arquivo.writeAsBytes(bytes, flush: true);
 
-      await Share.shareXFiles([
-        XFile(arquivo.path),
-      ], text: 'Relatório de entregas - Entregue Já');
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(arquivo.path)],
+          text: 'Relatório de entregas - Entregue Já',
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
 
@@ -693,11 +711,11 @@ class _RelatorioPageState extends State<RelatorioPage> {
       decoration: BoxDecoration(
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: cor.withOpacity(0.18)),
+        border: Border.all(color: cor.withValues(alpha: 0.18)),
       ),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: cor.withOpacity(0.14),
+          backgroundColor: cor.withValues(alpha: 0.14),
           child: Icon(icon, color: cor),
         ),
         title: Text(titulo),
@@ -709,6 +727,51 @@ class _RelatorioPageState extends State<RelatorioPage> {
     );
   }
 
+  Widget cardHistorico(EntregaModel entrega) {
+    final cor = corStatus(entrega.status);
+    final theme = Theme.of(context);
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ExpansionTile(
+        leading: CircleAvatar(
+          backgroundColor: cor.withValues(alpha: 0.14),
+          child: Icon(Icons.inventory_2_outlined, color: cor),
+        ),
+        title: Text(
+          entrega.cliente.isEmpty ? 'Cliente não informado' : entrega.cliente,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          '${textoStatus(entrega.status)} • Entrega #${entrega.id?.toString() ?? '-'}',
+          style: TextStyle(color: cor),
+        ),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        expandedCrossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Divider(),
+          Text('Endereço: ${entrega.endereco}'),
+          if (entrega.complemento.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text('Complemento: ${entrega.complemento}'),
+          ],
+          const SizedBox(height: 6),
+          Text('Valor: R\$ ${entrega.valor.toStringAsFixed(2)}'),
+          if (entrega.observacao.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text('Observação: ${entrega.observacao}'),
+          ],
+          const SizedBox(height: 6),
+          Text(
+            'Status: ${textoStatus(entrega.status)}',
+            style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final todas = Provider.of<EntregasProvider>(context).entregas;
@@ -716,6 +779,10 @@ class _RelatorioPageState extends State<RelatorioPage> {
     final entregas = entregasFiltradas(todas);
 
     final dados = calcularDados(entregas);
+
+    final historico = entregas
+        .where((entrega) => entrega.estaFinalizada)
+        .toList();
 
     return Scaffold(
       appBar: AppBar(
@@ -825,6 +892,13 @@ class _RelatorioPageState extends State<RelatorioPage> {
                     valor: '${dados['naoEntregues']}',
                     iconColor: AppColors.error,
                   ),
+
+                  cardRelatorio(
+                    icon: Icons.cancel_outlined,
+                    titulo: 'Canceladas',
+                    valor: '${dados['canceladas']}',
+                    iconColor: Colors.grey,
+                  ),
                 ],
 
                 if (incluirFinanceiro) ...[
@@ -874,6 +948,35 @@ class _RelatorioPageState extends State<RelatorioPage> {
                         : AppColors.error,
                   ),
                 ],
+
+                const SizedBox(height: 26),
+
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Histórico de entregas',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    Text('${historico.length} finalizada(s)'),
+                  ],
+                ),
+
+                const SizedBox(height: 12),
+
+                if (historico.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 18),
+                    child: Text(
+                      'Nenhuma entrega finalizada com os filtros selecionados.',
+                    ),
+                  )
+                else
+                  ...historico.map(cardHistorico),
 
                 const SizedBox(height: 26),
 

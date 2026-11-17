@@ -13,6 +13,7 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.HashMap;
 import java.util.Map;
 
 @Service
@@ -59,8 +60,8 @@ public class RoutesService {
         }
 
         if (body == null ||
-                !body.containsKey("origin") ||
-                !body.containsKey("destination")) {
+                body.get("origin") == null ||
+                body.get("destination") == null) {
 
             System.err.println("Solicitação de rota sem origem ou destino.");
 
@@ -71,13 +72,21 @@ public class RoutesService {
                             """);
         }
 
+        Map<String, Object> parametros = new HashMap<>(body);
+
+        parametros.put("travelMode", "DRIVE");
+        parametros.put("routingPreference", "TRAFFIC_AWARE");
+        parametros.put("computeAlternativeRoutes", false);
+        parametros.put("languageCode", "pt-BR");
+        parametros.put("units", "METRIC");
+
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("X-Goog-Api-Key", apiKey);
         headers.set("X-Goog-FieldMask", FIELD_MASK);
 
         HttpEntity<Map<String, Object>> request =
-                new HttpEntity<>(body, headers);
+                new HttpEntity<>(parametros, headers);
 
         try {
             System.out.println("Consultando Google Routes API...");

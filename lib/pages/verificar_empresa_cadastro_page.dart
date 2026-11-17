@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -19,9 +21,12 @@ class _VerificarEmpresaCadastroPageState
     extends State<VerificarEmpresaCadastroPage> {
   final codigoController = TextEditingController();
   bool carregando = false;
+  bool reenviando = false;
+  int segundosParaReenvio = 0;
+  Timer? temporizadorReenvio;
 
   void voltarAoCadastro() {
-    if (carregando) return;
+    if (carregando || reenviando) return;
 
     if (context.canPop()) {
       context.pop();
@@ -30,52 +35,86 @@ class _VerificarEmpresaCadastroPageState
     }
   }
 
-  Future<void> confirmar() async {
-    if (carregando) return;
+  void mostrarMensagem(String mensagem) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(mensagem)));
+  }
 
+  void iniciarContagemReenvio() {
+    temporizadorReenvio?.cancel();
+    setState(() => segundosParaReenvio = 60);
+    temporizadorReenvio = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (segundosParaReenvio <= 1) {
+        timer.cancel();
+        setState(() => segundosParaReenvio = 0);
+      } else {
+        setState(() => segundosParaReenvio--);
+      }
+    });
+  }
+
+  Future<void> reenviarCodigo() async {
+    if (carregando || reenviando || segundosParaReenvio > 0) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() => reenviando = true);
+
+    final resultado = await EmpresaService.reenviarCodigoCadastro(widget.email);
+    if (!mounted) return;
+
+    setState(() => reenviando = false);
+    final sucesso = resultado['sucesso'] == true;
+    final mensagem =
+        resultado['mensagem']?.toString() ??
+        (sucesso
+            ? 'Novo código enviado para seu e-mail.'
+            : 'Não foi possível reenviar o código.');
+    mostrarMensagem(mensagem);
+
+    if (sucesso) {
+      codigoController.clear();
+      iniciarContagemReenvio();
+    }
+  }
+
+  Future<void> confirmar() async {
+    if (carregando || reenviando) return;
     FocusManager.instance.primaryFocus?.unfocus();
 
     final codigo = codigoController.text.trim();
-
     if (!RegExp(r'^\d{6}$').hasMatch(codigo)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Digite o código de 6 dígitos')),
-      );
+      mostrarMensagem('Digite o código de 6 dígitos');
       return;
     }
 
     setState(() => carregando = true);
-
-    final sucesso = await EmpresaService.confirmarCadastro(
+    final resultado = await EmpresaService.confirmarCadastroComResultado(
       widget.email,
       codigo,
     );
-
     if (!mounted) return;
-
     setState(() => carregando = false);
 
-    if (sucesso) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Cadastro da empresa confirmado com sucesso!'),
-        ),
-      );
+    final sucesso = resultado['sucesso'] == true;
+    final mensagem =
+        resultado['mensagem']?.toString() ??
+        (sucesso
+            ? 'Cadastro da empresa confirmado com sucesso!'
+            : 'Não foi possível confirmar o código.');
+    mostrarMensagem(mensagem);
 
+    if (sucesso) {
       context.go('/empresa/login');
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Não foi possível confirmar o código. Verifique se está correto e dentro do prazo.',
-          ),
-        ),
-      );
     }
   }
 
   @override
   void dispose() {
+    temporizadorReenvio?.cancel();
     codigoController.dispose();
     super.dispose();
   }
@@ -178,7 +217,7 @@ class _VerificarEmpresaCadastroPageState
                             TextField(
                               controller: codigoController,
                               autofocus: true,
-                              enabled: !carregando,
+                              enabled: !carregando && !reenviando,
                               keyboardType: TextInputType.number,
                               textInputAction: TextInputAction.done,
                               textAlign: TextAlign.center,
@@ -211,7 +250,9 @@ class _VerificarEmpresaCadastroPageState
                             SizedBox(
                               height: 54,
                               child: ElevatedButton(
-                                onPressed: carregando ? null : confirmar,
+                                onPressed: carregando || reenviando
+                                    ? null
+                                    : confirmar,
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: AppColors.primary,
                                   foregroundColor: Colors.white,
@@ -238,8 +279,35 @@ class _VerificarEmpresaCadastroPageState
                               ),
                             ),
                             const SizedBox(height: 12),
+                            TextButton.icon(
+                              onPressed:
+                                  carregando ||
+                                      reenviando ||
+                                      segundosParaReenvio > 0
+                                  ? null
+                                  : reenviarCodigo,
+                              icon: reenviando
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.refresh),
+                              label: Text(
+                                reenviando
+                                    ? 'Reenviando código...'
+                                    : segundosParaReenvio > 0
+                                    ? 'Reenviar código em ${segundosParaReenvio}s'
+                                    : 'Reenviar código',
+                              ),
+                            ),
+                            const SizedBox(height: 4),
                             TextButton(
-                              onPressed: carregando ? null : voltarAoCadastro,
+                              onPressed: carregando || reenviando
+                                  ? null
+                                  : voltarAoCadastro,
                               child: const Text('Voltar ao cadastro'),
                             ),
                           ],
@@ -257,7 +325,9 @@ class _VerificarEmpresaCadastroPageState
                   shape: const CircleBorder(),
                   child: IconButton(
                     tooltip: 'Voltar ao cadastro',
-                    onPressed: carregando ? null : voltarAoCadastro,
+                    onPressed: carregando || reenviando
+                        ? null
+                        : voltarAoCadastro,
                     icon: const Icon(Icons.arrow_back, color: Colors.white),
                   ),
                 ),

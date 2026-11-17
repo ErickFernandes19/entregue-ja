@@ -61,6 +61,8 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   int duracaoRotaMinutos = 0;
 
   DateTime? _ultimaAtualizacaoRota;
+  DateTime? _ultimaConsultaEta;
+  static const Duration _intervaloAtualizacaoEta = Duration(minutes: 5);
   DateTime? _ultimaAtualizacaoCamera;
   static const Duration _intervaloMinimoCamera = Duration(milliseconds: 800);
   double _distanciaInicialRotaMetros = 0;
@@ -88,6 +90,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   String manobraNavegacao = '';
   double distanciaProximaManobraMetros = 0;
   List<Map<String, dynamic>> passosNavegacao = [];
+  int _indicePassoAtual = 0;
   String? _ultimaManobraAnunciada;
   int _ultimoAvisoDistancia = -1;
   Timer? _timerSincronizacao;
@@ -455,6 +458,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
     _ultimoEnvioLocalizacao = null;
     _leiturasForaDaRota = 0;
     _ultimaAtualizacaoRota = null;
+    _ultimaConsultaEta = DateTime.now();
     _ultimaManobraAnunciada = null;
     _ultimoAvisoDistancia = -1;
     _timerSincronizacao?.cancel();
@@ -505,6 +509,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
             atualizarInstrucaoNavegacao();
             if (position.accuracy <= 35 && !_calculandoRota) {
               atualizarDistanciasRestantes(novaPosicao);
+              _verificarAtualizacaoEta();
             }
 
             verificarChegadaAoDestino(position, novaPosicao);
@@ -561,6 +566,22 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
             debugPrint('Erro no GPS em tempo real: $erro');
           },
         );
+  }
+
+  void _verificarAtualizacaoEta() {
+    if (!mounted ||
+        !rotaIniciada ||
+        _calculandoRota ||
+        _pontosRotaCompleta.length < 2) {
+      return;
+    }
+    final agora = DateTime.now();
+    final ultima = _ultimaConsultaEta;
+    if (ultima == null || agora.difference(ultima) < _intervaloAtualizacaoEta) {
+      return;
+    }
+    _ultimaConsultaEta = agora;
+    unawaited(carregarRota(ajustarCamera: false, compararDestinos: false));
   }
 
   Future<void> _enviarLocalizacaoDasEntregas(
@@ -698,6 +719,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
           duracaoProximaEntregaMinutos = 0;
           instrucaoNavegacao = '';
           passosNavegacao = [];
+          _indicePassoAtual = 0;
           polylines.clear();
           _pontosRotaCompleta = [];
         });
@@ -897,7 +919,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
     if (!mounted || !rotaIniciada || passosNavegacao.isEmpty) return;
     int indiceMaisProximo = -1;
     double menorDistancia = double.infinity;
-    for (int i = 0; i < passosNavegacao.length; i++) {
+    for (int i = _indicePassoAtual; i < passosNavegacao.length; i++) {
       final step = passosNavegacao[i];
       final polyline = step['polyline']?.toString() ?? '';
       final pontos = polyline.isNotEmpty
@@ -909,12 +931,23 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
         if (inicio != null) pontos.add(inicio);
         if (fim != null) pontos.add(fim);
       }
-      for (final ponto in pontos) {
+      for (var j = 0; j < pontos.length - 1; j++) {
+        final distancia = distanciaPontoSegmento(
+          posicaoAtual,
+          pontos[j],
+          pontos[j + 1],
+        );
+        if (distancia < menorDistancia) {
+          menorDistancia = distancia;
+          indiceMaisProximo = i;
+        }
+      }
+      if (pontos.length == 1) {
         final distancia = Geolocator.distanceBetween(
           posicaoAtual.latitude,
           posicaoAtual.longitude,
-          ponto.latitude,
-          ponto.longitude,
+          pontos.first.latitude,
+          pontos.first.longitude,
         );
         if (distancia < menorDistancia) {
           menorDistancia = distancia;
@@ -922,7 +955,8 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
         }
       }
     }
-    if (indiceMaisProximo < 0 || menorDistancia > 150) return;
+    if (indiceMaisProximo < 0 || menorDistancia > 60) return;
+    _indicePassoAtual = indiceMaisProximo;
     final passo = passosNavegacao[indiceMaisProximo];
     final fim = coordenadaDeLocalizacao(passo['endLocation']);
     final distancia = fim == null
@@ -1082,6 +1116,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
           polylines.clear();
           _pontosRotaCompleta = [];
           _progressoMaximoRotaMetros = 0;
+          _ultimaConsultaEta = null;
           distanciaRotaKm = 0;
           duracaoRotaMinutos = 0;
           proximaEntrega = null;
@@ -1090,6 +1125,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
           duracaoProximaEntregaMinutos = 0;
           instrucaoNavegacao = '';
           passosNavegacao = [];
+          _indicePassoAtual = 0;
         });
 
         return;
@@ -1281,6 +1317,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
                     60)
                 .ceil();
         passosNavegacao = novosPassos;
+        _indicePassoAtual = 0;
         if (novosPassos.isEmpty) {
           instrucaoNavegacao = '';
         }
@@ -1295,6 +1332,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
               : rotaConfirmada['duration']?.toString() ?? '0s',
         );
         _progressoMaximoRotaMetros = 0;
+        _ultimaConsultaEta = DateTime.now();
         _pontosRotaCompleta = List<LatLng>.from(coordenadasRota);
         _ultimaManobraAnunciada = null;
         _ultimoAvisoDistancia = -1;
@@ -1400,20 +1438,13 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
     final proporcaoRestante = (1 - _progressoMaximoRotaMetros / progresso.total)
         .clamp(0.0, 1.0);
 
-    double proporcaoPrimeiraEntrega = proporcaoRestante;
-    if (coordenadaProximaEntrega != null) {
-      final pontoEntrega = _progressoNaPolyline(
-        coordenadaProximaEntrega!,
-        pontos,
-      );
-      if (pontoEntrega != null && pontoEntrega.percorrido > 1) {
-        proporcaoPrimeiraEntrega =
-            (1 - _progressoMaximoRotaMetros / pontoEntrega.percorrido).clamp(
-              0.0,
-              1.0,
-            );
-      }
-    }
+    final distanciaPrimeiraEntrega = _distanciaInicialPrimeiraEntregaMetros;
+    final proporcaoPrimeiraEntrega = distanciaPrimeiraEntrega > 0
+        ? (1 - _progressoMaximoRotaMetros / distanciaPrimeiraEntrega).clamp(
+            0.0,
+            1.0,
+          )
+        : proporcaoRestante;
 
     setState(() {
       polylines = {

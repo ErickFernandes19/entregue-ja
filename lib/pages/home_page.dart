@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -25,6 +26,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   int _requisicaoFoto = 0;
   bool verificandoVinculo = false;
   bool dialogoVinculoAberto = false;
+  Timer? _timerAtualizacao;
+  bool _atualizandoEntregas = false;
 
   @override
   void initState() {
@@ -33,12 +36,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     carregarNome();
     carregarFoto();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       verificarVinculoPendente();
+      atualizarEntregas();
+    });
+    _timerAtualizacao = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) atualizarEntregas();
     });
   }
 
   @override
   void dispose() {
+    _timerAtualizacao?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -48,6 +57,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       verificarVinculoPendente();
       carregarFoto();
+      atualizarEntregas();
+    }
+  }
+
+  Future<void> atualizarEntregas() async {
+    if (!mounted || _atualizandoEntregas) return;
+    final provider = context.read<EntregasProvider>();
+    if (provider.carregando) return;
+
+    _atualizandoEntregas = true;
+    try {
+      await provider.carregarEntregasDoBackend();
+    } catch (e) {
+      debugPrint('Erro ao atualizar o painel do entregador: $e');
+    } finally {
+      _atualizandoEntregas = false;
     }
   }
 
@@ -248,8 +273,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  void abrirPagina(String rota) {
-    context.push(rota);
+  Future<void> abrirPagina(String rota) async {
+    await context.push(rota);
+    if (mounted) await atualizarEntregas();
   }
 
   Future<void> abrirPerfil() async {
@@ -258,6 +284,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (!mounted) return;
     await carregarFoto();
     await carregarNome();
+    await atualizarEntregas();
   }
 
   String saudacao() {
@@ -522,85 +549,89 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         children: [
           header(),
           Expanded(
-            child: ListView(
-              padding: const EdgeInsets.all(18),
-              children: [
-                Row(
-                  children: [
-                    cardResumo(
-                      icon: Icons.inventory_2,
-                      valor: totalEntregas.toString(),
-                      titulo: 'Entregas',
-                      color: AppColors.primary,
-                    ),
-                    const SizedBox(width: 12),
-                    cardResumo(
-                      icon: Icons.local_shipping,
-                      valor: emRota.toString(),
-                      titulo: 'Em rota',
-                      color: AppColors.warning,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    cardResumo(
-                      icon: Icons.check_circle,
-                      valor: entregues.toString(),
-                      titulo: 'Entregues',
-                      color: AppColors.success,
-                    ),
-                    const SizedBox(width: 12),
-                    cardResumo(
-                      icon: Icons.attach_money,
-                      valor: 'R\$ ${ganhos.toStringAsFixed(2)}',
-                      titulo: 'Ganhos',
-                      color: Colors.deepPurple,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 22),
-                Text(
-                  'Ações rápidas',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: theme.colorScheme.onSurface,
+            child: RefreshIndicator(
+              onRefresh: atualizarEntregas,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.all(18),
+                children: [
+                  Row(
+                    children: [
+                      cardResumo(
+                        icon: Icons.inventory_2,
+                        valor: totalEntregas.toString(),
+                        titulo: 'Entregas',
+                        color: AppColors.primary,
+                      ),
+                      const SizedBox(width: 12),
+                      cardResumo(
+                        icon: Icons.local_shipping,
+                        valor: emRota.toString(),
+                        titulo: 'Em rota',
+                        color: AppColors.warning,
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    acaoRapida(
-                      icon: Icons.map,
-                      titulo: 'Mapa',
-                      color: AppColors.primary,
-                      onTap: () {
-                        abrirPagina('/entregador/mapa');
-                      },
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      cardResumo(
+                        icon: Icons.check_circle,
+                        valor: entregues.toString(),
+                        titulo: 'Entregues',
+                        color: AppColors.success,
+                      ),
+                      const SizedBox(width: 12),
+                      cardResumo(
+                        icon: Icons.attach_money,
+                        valor: 'R\$ ${ganhos.toStringAsFixed(2)}',
+                        titulo: 'Ganhos',
+                        color: Colors.deepPurple,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 22),
+                  Text(
+                    'Ações rápidas',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.onSurface,
                     ),
-                    const SizedBox(width: 12),
-                    acaoRapida(
-                      icon: Icons.inventory_2,
-                      titulo: 'Entregas',
-                      color: AppColors.success,
-                      onTap: () {
-                        abrirPagina('/entregador/entregas');
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                acaoRapidaGrande(
-                  icon: Icons.article,
-                  titulo: 'Relatórios',
-                  color: Colors.deepPurple,
-                  onTap: () {
-                    abrirPagina('/entregador/relatorios');
-                  },
-                ),
-              ],
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      acaoRapida(
+                        icon: Icons.map,
+                        titulo: 'Mapa',
+                        color: AppColors.primary,
+                        onTap: () {
+                          abrirPagina('/entregador/mapa');
+                        },
+                      ),
+                      const SizedBox(width: 12),
+                      acaoRapida(
+                        icon: Icons.inventory_2,
+                        titulo: 'Entregas',
+                        color: AppColors.success,
+                        onTap: () {
+                          abrirPagina('/entregador/entregas');
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  acaoRapidaGrande(
+                    icon: Icons.article,
+                    titulo: 'Relatórios',
+                    color: Colors.deepPurple,
+                    onTap: () {
+                      abrirPagina('/entregador/relatorios');
+                    },
+                  ),
+                ],
+              ),
             ),
           ),
         ],
