@@ -1,16 +1,21 @@
 package com.entregueja.backend.controller;
 
+import com.entregueja.backend.entity.Assinatura;
 import com.entregueja.backend.entity.Empresa;
 import com.entregueja.backend.entity.Usuario;
 import com.entregueja.backend.repository.EmpresaRepository;
 import com.entregueja.backend.repository.UsuarioRepository;
+import com.entregueja.backend.service.AssinaturaService;
 import com.entregueja.backend.service.CadastroPendenteService;
 import com.entregueja.backend.service.RecuperacaoSenhaService;
 import com.entregueja.backend.service.JwtService;
 import com.entregueja.backend.service.R2StorageService;
 import com.entregueja.backend.service.NotificacaoService;
 import com.entregueja.backend.service.FirebasePushService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -39,6 +44,8 @@ public class EmpresaController {
     private final FirebasePushService firebasePushService;
     private final CadastroPendenteService cadastroPendenteService;
     private final RecuperacaoSenhaService recuperacaoSenhaService;
+    private final AssinaturaService assinaturaService;
+    private final EntityManager entityManager;
 
     public EmpresaController(
             EmpresaRepository empresaRepository,
@@ -49,7 +56,9 @@ public class EmpresaController {
             NotificacaoService notificacaoService,
             FirebasePushService firebasePushService,
             CadastroPendenteService cadastroPendenteService,
-            RecuperacaoSenhaService recuperacaoSenhaService
+            RecuperacaoSenhaService recuperacaoSenhaService,
+            AssinaturaService assinaturaService,
+            EntityManager entityManager
     ) {
         this.empresaRepository = empresaRepository;
         this.usuarioRepository = usuarioRepository;
@@ -60,6 +69,8 @@ public class EmpresaController {
         this.firebasePushService = firebasePushService;
         this.cadastroPendenteService = cadastroPendenteService;
         this.recuperacaoSenhaService = recuperacaoSenhaService;
+        this.assinaturaService = assinaturaService;
+        this.entityManager = entityManager;
     }
 
     private void notificarEntregador(
@@ -265,6 +276,7 @@ public class EmpresaController {
         );
     }
 
+    @Transactional
     @PostMapping("/confirmar-cadastro")
     public ResponseEntity<?> confirmarCadastro(
             @RequestBody Map<String, String> body
@@ -313,7 +325,8 @@ public class EmpresaController {
         empresa.setCodigoRecuperacao(null);
         empresa.setCodigoRecuperacaoExpira(null);
 
-        empresaRepository.save(empresa);
+        Empresa empresaSalva = empresaRepository.saveAndFlush(empresa);
+        assinaturaService.obterOuCriarGratuita(Assinatura.TipoConta.EMPRESA, empresaSalva.getId());
 
         return ResponseEntity.ok(
                 Map.of("mensagem", "Empresa cadastrada com sucesso")
@@ -597,13 +610,13 @@ public class EmpresaController {
         );
     }
 
+    @Transactional
     @PutMapping("/{empresaEmail}/entregadores/{entregadorEmail}/solicitar")
     public ResponseEntity<?> solicitarVinculoEntregador(
             @PathVariable String empresaEmail,
             @PathVariable String entregadorEmail
     ) {
-        var empresaOptional =
-                empresaRepository.findByEmail(empresaEmail);
+        var empresaOptional = empresaRepository.findByEmail(empresaEmail);
 
         if (empresaOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
@@ -615,36 +628,64 @@ public class EmpresaController {
             return ResponseEntity.status(403).build();
         }
 
-        var usuarioOptional =
-                usuarioRepository.findByEmail(entregadorEmail);
+        empresa = entityManager.find(Empresa.class, empresa.getId(), LockModeType.PESSIMISTIC_WRITE);
+
+        if (empresa == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        var usuarioOptional = usuarioRepository.findByEmail(entregadorEmail);
 
         if (usuarioOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
 
         Usuario usuario = usuarioOptional.get();
+        entityManager.refresh(usuario, LockModeType.PESSIMISTIC_WRITE);
 
         if (usuario.getEmpresa() != null) {
             return ResponseEntity.badRequest().body(
-                    Map.of(
-                            "mensagem",
-                            "Entregador já possui empresa vinculada"
-                    )
+                    Map.of("mensagem", "Entregador já possui empresa vinculada")
             );
         }
 
         if (usuario.getEmpresaPendente() != null) {
             return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Entregador já possui uma solicitação pendente")
+            );
+        }
+
+        var assinaturaOptional = assinaturaService.buscarAtiva(Assinatura.TipoConta.EMPRESA, empresa.getId());
+
+        if (assinaturaOptional.isEmpty()) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "A empresa não possui uma assinatura ativa")
+            );
+        }
+
+        int limite = switch (assinaturaOptional.get().getPlano()) {
+            case GRATUITO -> 1;
+            case ESSENCIAL -> 3;
+            case PROFISSIONAL -> 10;
+        };
+
+        long vinculados = usuarioRepository.countByEmpresa(empresa);
+        long pendentes = usuarioRepository.findByEmpresaPendente(empresa).size();
+        long ocupadas = vinculados + pendentes;
+
+        if (ocupadas >= limite) {
+            return ResponseEntity.status(409).body(
                     Map.of(
-                            "mensagem",
-                            "Entregador já possui uma solicitação pendente"
+                            "mensagem", "A empresa atingiu o limite de vagas do plano atual, incluindo solicitações pendentes",
+                            "limite", limite,
+                            "vinculados", vinculados,
+                            "pendentes", pendentes
                     )
             );
         }
 
         usuario.setEmpresaPendente(empresa);
-
-        usuarioRepository.save(usuario);
+        usuarioRepository.saveAndFlush(usuario);
 
         String titulo = "Solicitação de vínculo";
         String mensagem = "A empresa " + empresa.getNome() + " solicitou seu vínculo.";
@@ -654,10 +695,7 @@ public class EmpresaController {
         );
 
         return ResponseEntity.ok(
-                Map.of(
-                        "mensagem",
-                        "Solicitação enviada ao entregador"
-                )
+                Map.of("mensagem", "Solicitação enviada ao entregador")
         );
     }
 

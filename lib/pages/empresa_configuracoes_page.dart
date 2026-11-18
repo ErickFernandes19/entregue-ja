@@ -262,6 +262,30 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
           const SizedBox(height: 14),
 
           Text(
+            'Assinatura',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: theme.colorScheme.onSurface,
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          opcao(
+            context: context,
+            icon: Icons.workspace_premium,
+            titulo: 'Meu Plano',
+            subtitulo: 'Conhecer planos e limites disponíveis',
+            color: AppColors.primary,
+            onTap: () {
+              context.push('/empresa/planos');
+            },
+          ),
+
+          const SizedBox(height: 14),
+
+          Text(
             'Entregas',
             style: TextStyle(
               fontSize: 18,

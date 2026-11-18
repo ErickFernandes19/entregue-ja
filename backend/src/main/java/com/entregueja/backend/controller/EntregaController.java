@@ -1,6 +1,9 @@
 package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.Entrega;
+import com.entregueja.backend.entity.Assinatura;
+import com.entregueja.backend.entity.Empresa;
+import com.entregueja.backend.entity.Usuario;
 import com.entregueja.backend.entity.TentativaEntrega;
 import com.entregueja.backend.repository.TentativaEntregaRepository;
 import com.entregueja.backend.repository.EmpresaRepository;
@@ -9,6 +12,9 @@ import com.entregueja.backend.repository.UsuarioRepository;
 import com.entregueja.backend.service.R2StorageService;
 import com.entregueja.backend.service.NotificacaoService;
 import com.entregueja.backend.service.FirebasePushService;
+import com.entregueja.backend.service.AssinaturaService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 
 import org.springframework.http.MediaType;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +27,7 @@ import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.Locale;
 import java.util.List;
@@ -50,6 +57,8 @@ public class EntregaController {
     private final R2StorageService r2StorageService;
     private final NotificacaoService notificacaoService;
     private final FirebasePushService firebasePushService;
+    private final AssinaturaService assinaturaService;
+    private final EntityManager entityManager;
 
     public EntregaController(
             EntregaRepository entregaRepository,
@@ -58,7 +67,9 @@ public class EntregaController {
             UsuarioRepository usuarioRepository,
             R2StorageService r2StorageService,
             NotificacaoService notificacaoService,
-            FirebasePushService firebasePushService
+            FirebasePushService firebasePushService,
+            AssinaturaService assinaturaService,
+            EntityManager entityManager
     ) {
         this.entregaRepository = entregaRepository;
         this.tentativaEntregaRepository = tentativaEntregaRepository;
@@ -67,6 +78,53 @@ public class EntregaController {
         this.r2StorageService = r2StorageService;
         this.notificacaoService = notificacaoService;
         this.firebasePushService = firebasePushService;
+        this.assinaturaService = assinaturaService;
+        this.entityManager = entityManager;
+    }
+
+    private ResponseEntity<?> validarLimiteDiario(Assinatura.TipoConta tipoConta, Long contaId) {
+        Object conta = tipoConta == Assinatura.TipoConta.EMPRESA
+                ? entityManager.find(Empresa.class, contaId, LockModeType.PESSIMISTIC_WRITE)
+                : entityManager.find(Usuario.class, contaId, LockModeType.PESSIMISTIC_WRITE);
+
+        if (conta == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Assinatura assinatura = assinaturaService.buscarAtiva(tipoConta, contaId).orElse(null);
+        if (assinatura == null) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Não existe assinatura ativa para esta conta")
+            );
+        }
+
+        int limite = switch (assinatura.getPlano()) {
+            case GRATUITO -> 20;
+            case ESSENCIAL -> 50;
+            case PROFISSIONAL -> tipoConta == Assinatura.TipoConta.EMPRESA ? 200 : Integer.MAX_VALUE;
+        };
+
+        if (limite == Integer.MAX_VALUE) {
+            return null;
+        }
+
+        LocalDate hoje = LocalDate.now(ZoneId.of("America/Sao_Paulo"));
+        LocalDateTime inicio = hoje.atStartOfDay();
+        LocalDateTime fim = hoje.plusDays(1).atStartOfDay();
+
+        long quantidade = tipoConta == Assinatura.TipoConta.EMPRESA
+                ? entregaRepository.contarEntregasEmpresaNoPeriodo((Empresa) conta, inicio, fim)
+                : entregaRepository.contarEntregasAutonomasNoPeriodo((Usuario) conta, inicio, fim);
+
+        if (quantidade >= limite) {
+            return ResponseEntity.status(409).body(Map.of(
+                    "mensagem", "Limite diário de entregas atingido para o plano " + assinatura.getPlano(),
+                    "limiteDiario", limite,
+                    "entregasHoje", quantidade
+            ));
+        }
+
+        return null;
     }
 
     private void notificarNovaEntrega(Entrega entrega) {
@@ -896,6 +954,7 @@ public class EntregaController {
         }
     }
 
+    @Transactional
     @PostMapping("/empresa/{email}")
     public ResponseEntity<?> cadastrarEntregaSemEntregador(
             @PathVariable String email,
@@ -911,6 +970,11 @@ public class EntregaController {
 
         if (!empresaAutorizada(empresa.getId())) {
             return ResponseEntity.status(403).build();
+        }
+
+        ResponseEntity<?> limite = validarLimiteDiario(Assinatura.TipoConta.EMPRESA, empresa.getId());
+        if (limite != null) {
+            return limite;
         }
 
         if (dados.getCliente() == null
@@ -1003,6 +1067,7 @@ public class EntregaController {
         return ResponseEntity.ok(entregaSalva);
     }
 
+    @Transactional
     @PostMapping(
             "/empresa/{email}/entregador/{entregadorEmail}"
     )
@@ -1022,6 +1087,11 @@ public class EntregaController {
 
         if (!empresaAutorizada(empresa.getId())) {
             return ResponseEntity.status(403).build();
+        }
+
+        ResponseEntity<?> limite = validarLimiteDiario(Assinatura.TipoConta.EMPRESA, empresa.getId());
+        if (limite != null) {
+            return limite;
         }
 
         var entregadorOptional =
@@ -1067,6 +1137,7 @@ public class EntregaController {
         return ResponseEntity.ok(entregaSalva);
     }
 
+    @Transactional
     @PostMapping("/entregador")
     public ResponseEntity<?> cadastrarEntregaEntregador(
             @RequestBody Entrega dados
@@ -1083,6 +1154,17 @@ public class EntregaController {
 
         if (entregadorOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
+        }
+
+        if (entregadorOptional.get().getEmpresa() != null) {
+            return ResponseEntity.status(403).body(
+                    Map.of("mensagem", "Entregadores vinculados a empresas devem cadastrar entregas pela empresa")
+            );
+        }
+
+        ResponseEntity<?> limite = validarLimiteDiario(Assinatura.TipoConta.ENTREGADOR, entregadorId);
+        if (limite != null) {
+            return limite;
         }
 
         if (dados.getCliente() == null

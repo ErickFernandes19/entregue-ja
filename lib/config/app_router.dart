@@ -9,13 +9,19 @@ import '../pages/detalhes_entrega_page.dart';
 import '../pages/editar_entrega_page.dart';
 import '../pages/editar_empresa_perfil_page.dart';
 import '../pages/editar_perfil_page.dart';
+import '../pages/empresa_assinatura_gerenciamento_page.dart';
 import '../pages/empresa_configuracoes_page.dart';
 import '../pages/empresa_entregas_page.dart';
 import '../pages/empresa_home_page.dart';
 import '../pages/empresa_login_page.dart';
 import '../pages/empresa_notificacoes_page.dart';
 import '../pages/empresa_perfil_page.dart';
+import '../pages/empresa_pagamento_page.dart';
+import '../pages/empresa_pagamento_resultado_page.dart';
+import '../pages/empresa_planos_page.dart';
 import '../pages/empresa_register_page.dart';
+import '../pages/entregador_assinatura_gerenciamento_page.dart';
+import '../pages/entregador_planos_page.dart';
 import '../pages/entregas_page.dart';
 import '../pages/finalizar_entrega_page.dart';
 import '../pages/home_page.dart';
@@ -73,7 +79,9 @@ class AppRouter {
           caminho == '/entregador/mapa' ||
           caminho == '/entregador/entregas' ||
           caminho.startsWith('/entregador/entregas/') ||
-          caminho == '/entregador/relatorios';
+          caminho == '/entregador/relatorios' ||
+          caminho == '/entregador/planos' ||
+          caminho == '/entregador/assinatura/gerenciamento';
 
       if (rotaProtegidaEntregador && !entregadorLogado) {
         return '/entregador/login';
@@ -87,6 +95,10 @@ class AppRouter {
           caminho.startsWith('/empresa/entregas/') ||
           caminho == '/empresa/vincular-entregador' ||
           caminho == '/empresa/configuracoes' ||
+          caminho == '/empresa/planos' ||
+          caminho == '/empresa/assinatura/gerenciamento' ||
+          caminho == '/empresa/pagamento' ||
+          caminho == '/empresa/pagamento/resultado' ||
           caminho == '/empresa/perfil' ||
           caminho.startsWith('/empresa/perfil/') ||
           caminho == '/empresa/entregadores' ||
@@ -249,6 +261,15 @@ class AppRouter {
         builder: (context, state) => const RelatorioPage(),
       ),
       GoRoute(
+        path: '/entregador/planos',
+        builder: (context, state) => const EntregadorPlanosPage(),
+      ),
+      GoRoute(
+        path: '/entregador/assinatura/gerenciamento',
+        builder: (context, state) =>
+            const EntregadorAssinaturaGerenciamentoPage(),
+      ),
+      GoRoute(
         path: '/empresa/inicio',
         builder: (context, state) => const EmpresaHomePage(),
       ),
@@ -291,6 +312,49 @@ class AppRouter {
       GoRoute(
         path: '/empresa/configuracoes',
         builder: (context, state) => const EmpresaConfiguracoesPage(),
+      ),
+      GoRoute(
+        path: '/empresa/planos',
+        builder: (context, state) => const EmpresaPlanosPage(),
+      ),
+      GoRoute(
+        path: '/empresa/assinatura/gerenciamento',
+        builder: (context, state) => const EmpresaAssinaturaGerenciamentoPage(),
+      ),
+      GoRoute(
+        path: '/empresa/pagamento',
+        builder: (context, state) {
+          final dados = state.extra;
+          if (dados is! Map<String, dynamic> ||
+              dados['plano'] is! String ||
+              dados['precoMensal'] is! String) {
+            return const EmpresaPlanosPage();
+          }
+          return EmpresaPagamentoPage(
+            plano: dados['plano'] as String,
+            precoMensal: dados['precoMensal'] as String,
+          );
+        },
+      ),
+      GoRoute(
+        path: '/empresa/pagamento/resultado',
+        builder: (context, state) {
+          final dados = state.extra;
+          if (dados is! Map<String, dynamic> ||
+              dados['plano'] is! String ||
+              dados['valor'] is! String ||
+              dados['status'] is! StatusPagamento) {
+            return const EmpresaPlanosPage();
+          }
+          return EmpresaPagamentoResultadoPage(
+            status: dados['status'] as StatusPagamento,
+            plano: dados['plano'] as String,
+            valor: dados['valor'] as String,
+            formaPagamento: dados['formaPagamento'] is String
+                ? dados['formaPagamento'] as String
+                : null,
+          );
+        },
       ),
       GoRoute(
         path: '/empresa/perfil',

@@ -3,6 +3,7 @@ package com.entregueja.backend.entity;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 @Entity
 @Table(name = "entregas")
@@ -26,6 +27,9 @@ public class Entrega {
 
     @Column(length = 1000)
     private String justificativa;
+
+    @Column(name = "data_criacao", updatable = false)
+    private LocalDateTime dataCriacao;
 
     private LocalDateTime dataFinalizacao;
     private Double latitudeComprovante;
@@ -57,6 +61,13 @@ public class Entrega {
         this.status = status;
     }
 
+    @PrePersist
+    public void definirDataCriacao() {
+        if (dataCriacao == null) {
+            dataCriacao = LocalDateTime.now(ZoneId.of("America/Sao_Paulo"));
+        }
+    }
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
 
@@ -86,6 +97,8 @@ public class Entrega {
 
     public String getJustificativa() { return justificativa; }
     public void setJustificativa(String justificativa) { this.justificativa = justificativa; }
+
+    public LocalDateTime getDataCriacao() { return dataCriacao; }
 
     public LocalDateTime getDataFinalizacao() { return dataFinalizacao; }
     public void setDataFinalizacao(LocalDateTime dataFinalizacao) { this.dataFinalizacao = dataFinalizacao; }

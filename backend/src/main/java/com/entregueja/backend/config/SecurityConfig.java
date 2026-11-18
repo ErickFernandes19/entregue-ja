@@ -96,7 +96,7 @@ public class SecurityConfig {
                                 "/auth/redefinir-senha",
                                 "/empresas/redefinir-senha"
                         ).permitAll()
-                        .requestMatchers("/notificacoes/**")
+                        .requestMatchers("/notificacoes/**", "/assinaturas/**")
                         .hasAnyAuthority("EMPRESA", "ENTREGADOR")
                         .requestMatchers("/auth/**").hasAuthority("ENTREGADOR")
                         .requestMatchers("/empresas/**").hasAuthority("EMPRESA")

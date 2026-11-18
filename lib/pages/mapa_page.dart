@@ -36,8 +36,9 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   BitmapDescriptor? _iconeMoto;
   double _direcaoMoto = 0;
   bool _direcaoDefinida = false;
-  LatLng? _ultimaPosicaoDirecao;
   static const double _velocidadeMinimaDirecao = 1.5;
+  static const double _distanciaMinimaDirecaoMetros = 10;
+  LatLng? _ultimaPosicaoConfiavelDirecao;
   final NavegacaoVozService _navegacaoVoz = NavegacaoVozService();
 
   StreamSubscription<Position>? _positionSubscription;
@@ -293,25 +294,22 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
 
   void _atualizarDirecao(Position gps, LatLng novaPosicao) {
     if (!gps.accuracy.isFinite || gps.accuracy > 35) return;
-    double? novaDirecao;
-    if (gps.speed.isFinite &&
-        gps.speed >= _velocidadeMinimaDirecao &&
-        gps.heading.isFinite &&
-        gps.heading >= 0 &&
-        gps.heading < 360) {
-      novaDirecao = gps.heading;
-    } else if (gps.speed.isFinite &&
-        gps.speed >= _velocidadeMinimaDirecao &&
-        _ultimaPosicaoDirecao != null) {
-      final anterior = _ultimaPosicaoDirecao!;
-      final distancia = Geolocator.distanceBetween(
+
+    final anterior = _ultimaPosicaoConfiavelDirecao;
+    double? direcaoDeslocamento;
+    double distancia = 0;
+
+    if (anterior != null) {
+      distancia = Geolocator.distanceBetween(
         anterior.latitude,
         anterior.longitude,
         novaPosicao.latitude,
         novaPosicao.longitude,
       );
-      if (distancia >= 8) {
-        novaDirecao = Geolocator.bearingBetween(
+
+      if (distancia >= _distanciaMinimaDirecaoMetros &&
+          distancia >= gps.accuracy * 0.7) {
+        direcaoDeslocamento = Geolocator.bearingBetween(
           anterior.latitude,
           anterior.longitude,
           novaPosicao.latitude,
@@ -319,17 +317,36 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
         );
       }
     }
-    _ultimaPosicaoDirecao = novaPosicao;
+
+    if (anterior == null || distancia >= _distanciaMinimaDirecaoMetros) {
+      _ultimaPosicaoConfiavelDirecao = novaPosicao;
+    }
+
+    if (!gps.speed.isFinite || gps.speed < _velocidadeMinimaDirecao) {
+      return;
+    }
+
+    double? novaDirecao;
+    if (gps.heading.isFinite && gps.heading >= 0 && gps.heading < 360) {
+      novaDirecao = gps.heading;
+    } else {
+      novaDirecao = direcaoDeslocamento;
+    }
+
     if (novaDirecao == null) return;
+
     final destino = _normalizarDirecao(novaDirecao);
     if (!_direcaoDefinida) {
       _direcaoMoto = destino;
       _direcaoDefinida = true;
       return;
     }
+
     final diferenca = (destino - _direcaoMoto + 540) % 360 - 180;
-    if (diferenca.abs() < 4) return;
-    _direcaoMoto = _normalizarDirecao(_direcaoMoto + diferenca * 0.4);
+    if (diferenca.abs() < 3) return;
+    _direcaoMoto = _normalizarDirecao(
+      _direcaoMoto + diferenca * (diferenca.abs() > 50 ? 0.6 : 0.35),
+    );
   }
 
   Marker _marcadorEntregador(LatLng posicao) => Marker(
@@ -2427,6 +2444,9 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
                     target: posicaoAtual,
                     zoom: rotaIniciada ? 17 : 15,
                     tilt: rotaIniciada ? 45 : 0,
+                    bearing: rotaIniciada && _direcaoDefinida
+                        ? _direcaoMoto
+                        : 0,
                   ),
                 ),
               );

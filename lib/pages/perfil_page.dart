@@ -466,6 +466,14 @@ class _PerfilPageState extends State<PerfilPage> {
             onTap: enviandoFoto ? null : abrirOpcoesFoto,
           ),
 
+          cardInfo(
+            icon: Icons.workspace_premium_outlined,
+            titulo: 'Planos e Assinaturas',
+            valor: 'Conheça os planos disponíveis para entregadores',
+            color: AppColors.primary,
+            onTap: () => context.push('/entregador/planos'),
+          ),
+
           const SizedBox(height: 8),
 
           SizedBox(

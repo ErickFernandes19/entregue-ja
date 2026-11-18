@@ -1,6 +1,8 @@
 package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.Usuario;
+import com.entregueja.backend.entity.Empresa;
+import com.entregueja.backend.entity.Assinatura;
 import com.entregueja.backend.repository.EmpresaRepository;
 import com.entregueja.backend.repository.UsuarioRepository;
 import com.entregueja.backend.service.EmailService;
@@ -8,8 +10,12 @@ import com.entregueja.backend.service.CadastroPendenteService;
 import com.entregueja.backend.service.JwtService;
 import com.entregueja.backend.service.NotificacaoService;
 import com.entregueja.backend.service.FirebasePushService;
+import com.entregueja.backend.service.AssinaturaService;
 
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -38,6 +44,8 @@ public class AuthController {
     private final JwtService jwtService;
     private final NotificacaoService notificacaoService;
     private final FirebasePushService firebasePushService;
+    private final AssinaturaService assinaturaService;
+    private final EntityManager entityManager;
 
     public AuthController(
             UsuarioRepository usuarioRepository,
@@ -47,7 +55,9 @@ public class AuthController {
             CadastroPendenteService cadastroPendenteService,
             JwtService jwtService,
             NotificacaoService notificacaoService,
-            FirebasePushService firebasePushService
+            FirebasePushService firebasePushService,
+            AssinaturaService assinaturaService,
+            EntityManager entityManager
     ) {
         this.usuarioRepository = usuarioRepository;
         this.empresaRepository = empresaRepository;
@@ -57,6 +67,8 @@ public class AuthController {
         this.jwtService = jwtService;
         this.notificacaoService = notificacaoService;
         this.firebasePushService = firebasePushService;
+        this.assinaturaService = assinaturaService;
+        this.entityManager = entityManager;
     }
 
     private Long obterIdAutenticado() {
@@ -531,6 +543,7 @@ public class AuthController {
         );
     }
 
+    @Transactional
     @PostMapping("/confirmar-cadastro")
     public ResponseEntity<?> confirmarCadastro(
             @RequestBody Map<String, String> body
@@ -582,7 +595,8 @@ public class AuthController {
         usuario.setCodigoRecuperacao(null);
         usuario.setCodigoRecuperacaoExpira(null);
 
-        usuarioRepository.save(usuario);
+        Usuario usuarioSalvo = usuarioRepository.save(usuario);
+        assinaturaService.obterOuCriarGratuita(Assinatura.TipoConta.ENTREGADOR, usuarioSalvo.getId());
 
         return ResponseEntity.ok(
                 Map.of("mensagem", "Usuário cadastrado com sucesso")
@@ -743,6 +757,7 @@ public class AuthController {
         }
     }
 
+    @Transactional
     @PutMapping("/{email}/aceitar-vinculo")
     public ResponseEntity<?> aceitarVinculo(
             @PathVariable String email
@@ -765,22 +780,62 @@ public class AuthController {
             );
         }
 
+        Long empresaId = usuario.getEmpresaPendente().getId();
+        Empresa empresa = entityManager.find(Empresa.class, empresaId, LockModeType.PESSIMISTIC_WRITE);
+
+        if (empresa == null) {
+            return ResponseEntity.status(404).body(
+                    Map.of("mensagem", "Empresa não encontrada")
+            );
+        }
+
+        entityManager.refresh(usuario, LockModeType.PESSIMISTIC_WRITE);
+
         if (usuario.getEmpresa() != null) {
             return ResponseEntity.badRequest().body(
                     Map.of("mensagem", "Entregador já possui empresa vinculada")
             );
         }
 
-        Long empresaId = usuario.getEmpresaPendente().getId();
+        if (usuario.getEmpresaPendente() == null
+                || !empresaId.equals(usuario.getEmpresaPendente().getId())) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "A solicitação de vínculo não está mais disponível")
+            );
+        }
+
+        var assinaturaOptional = assinaturaService.buscarAtiva(Assinatura.TipoConta.EMPRESA, empresaId);
+
+        if (assinaturaOptional.isEmpty()) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "A empresa não possui uma assinatura ativa")
+            );
+        }
+
+        int limite = switch (assinaturaOptional.get().getPlano()) {
+            case GRATUITO -> 1;
+            case ESSENCIAL -> 3;
+            case PROFISSIONAL -> 10;
+        };
+
+        long total = usuarioRepository.countByEmpresa(empresa);
+
+        if (total >= limite) {
+            return ResponseEntity.status(409).body(
+                    Map.of(
+                            "mensagem", "A empresa atingiu o limite de entregadores do plano atual",
+                            "limite", limite,
+                            "total", total
+                    )
+            );
+        }
+
         String nomeEntregador = usuario.getNome();
-
-        usuario.setEmpresa(usuario.getEmpresaPendente());
+        usuario.setEmpresa(empresa);
         usuario.setEmpresaPendente(null);
-        usuario.setDataVinculo(
-                LocalDateTime.now(ZoneId.of("America/Sao_Paulo"))
-        );
+        usuario.setDataVinculo(LocalDateTime.now(ZoneId.of("America/Sao_Paulo")));
+        usuarioRepository.saveAndFlush(usuario);
 
-        usuarioRepository.save(usuario);
         notificarEmpresaVinculo(
                 empresaId,
                 "VINCULO_ACEITO",
@@ -788,9 +843,7 @@ public class AuthController {
                 "O entregador " + nomeEntregador + " aceitou a solicitação de vínculo."
         );
 
-        return ResponseEntity.ok(
-                Map.of("mensagem", "Vínculo aceito")
-        );
+        return ResponseEntity.ok(Map.of("mensagem", "Vínculo aceito"));
     }
 
     @PutMapping("/{email}/recusar-vinculo")
