@@ -27,7 +27,6 @@ class _RelatorioPageState extends State<RelatorioPage> {
   String veiculo = 'Moto';
   double consumoMedio = 0;
   double precoCombustivel = 0;
-  int capacidade = 0;
 
   bool carregando = true;
   bool gerandoArquivo = false;
@@ -40,7 +39,6 @@ class _RelatorioPageState extends State<RelatorioPage> {
     'CANCELADA',
   };
 
-  bool incluirVeiculo = true;
   bool incluirResumo = true;
   bool incluirFinanceiro = true;
   bool incluirDetalhes = true;
@@ -54,8 +52,6 @@ class _RelatorioPageState extends State<RelatorioPage> {
   Future<void> carregarConfiguracoes() async {
     final veiculoSalvo = await ConfiguracoesService.buscarVeiculo();
 
-    final capacidadeSalva = await ConfiguracoesService.buscarCapacidade();
-
     final consumo = await ConfiguracoesService.buscarConsumoMedio();
 
     final preco = await ConfiguracoesService.buscarPrecoCombustivel();
@@ -64,8 +60,6 @@ class _RelatorioPageState extends State<RelatorioPage> {
 
     setState(() {
       veiculo = veiculoSalvo ?? 'Moto';
-
-      capacidade = int.tryParse(capacidadeSalva ?? '') ?? 0;
 
       consumoMedio = double.tryParse((consumo ?? '').replaceAll(',', '.')) ?? 0;
 
@@ -292,14 +286,6 @@ class _RelatorioPageState extends State<RelatorioPage> {
                     ),
 
                     opcaoRelatorio(
-                      titulo: 'Veículo e capacidade',
-                      valor: incluirVeiculo,
-                      onChanged: (valor) {
-                        incluirVeiculo = valor;
-                      },
-                    ),
-
-                    opcaoRelatorio(
                       titulo: 'Resumo das entregas',
                       valor: incluirResumo,
                       onChanged: (valor) {
@@ -390,27 +376,6 @@ class _RelatorioPageState extends State<RelatorioPage> {
             ),
 
             pw.SizedBox(height: 20),
-
-            if (incluirVeiculo) ...[
-              pw.Text(
-                'Veículo',
-                style: pw.TextStyle(
-                  fontSize: 16,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-
-              pw.Divider(),
-
-              linhaPdf('Tipo', veiculo),
-
-              linhaPdf(
-                'Capacidade',
-                capacidade > 0 ? '$capacidade kg' : 'Não definida',
-              ),
-
-              pw.SizedBox(height: 16),
-            ],
 
             if (incluirResumo) ...[
               pw.Text(
@@ -558,15 +523,6 @@ class _RelatorioPageState extends State<RelatorioPage> {
       resumo.appendRow([TextCellValue('Relatório Entregue Já')]);
 
       resumo.appendRow([]);
-
-      if (incluirVeiculo) {
-        resumo.appendRow([TextCellValue('Veículo'), TextCellValue(veiculo)]);
-
-        resumo.appendRow([
-          TextCellValue('Capacidade de carga'),
-          TextCellValue(capacidade > 0 ? '$capacidade kg' : 'Não definida'),
-        ]);
-      }
 
       if (incluirResumo) {
         resumo.appendRow([]);
@@ -833,21 +789,6 @@ class _RelatorioPageState extends State<RelatorioPage> {
                 Text('${entregas.length} entrega(s) incluída(s)'),
 
                 const SizedBox(height: 22),
-
-                if (incluirVeiculo) ...[
-                  cardRelatorio(
-                    icon: Icons.directions_car,
-                    titulo: 'Veículo',
-                    valor: veiculo,
-                  ),
-
-                  cardRelatorio(
-                    icon: Icons.inventory,
-                    titulo: 'Capacidade',
-                    valor: capacidade > 0 ? '$capacidade kg' : 'Não definida',
-                    iconColor: Colors.orange,
-                  ),
-                ],
 
                 if (incluirResumo) ...[
                   const SizedBox(height: 8),

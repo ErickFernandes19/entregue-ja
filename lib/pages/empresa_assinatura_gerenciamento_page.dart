@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 
 import '../services/assinatura_service.dart';
 
@@ -310,15 +309,6 @@ class _EmpresaAssinaturaGerenciamentoPageState
                         'Vencimento: ${_data(_assinatura!['dataVencimento'])}',
                       ),
                     ],
-                    const SizedBox(height: 18),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        onPressed: () => context.push('/empresa/planos'),
-                        icon: const Icon(Icons.compare_arrows),
-                        label: const Text('Ver planos disponíveis'),
-                      ),
-                    ),
                   ],
                 ),
               ),

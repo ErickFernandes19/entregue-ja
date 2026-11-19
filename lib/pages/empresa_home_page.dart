@@ -119,7 +119,7 @@ class _EmpresaHomePageState extends State<EmpresaHomePage>
 
   Widget header() {
     return Container(
-      padding: const EdgeInsets.fromLTRB(18, 46, 18, 24),
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           colors: [AppColors.primary, AppColors.primaryLight],
@@ -305,141 +305,144 @@ class _EmpresaHomePageState extends State<EmpresaHomePage>
     final theme = Theme.of(context);
 
     return Scaffold(
-      body: Column(
-        children: [
-          header(),
-          Expanded(
-            child: RefreshIndicator(
-              onRefresh: carregarDados,
-              child: ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(18),
-                children: [
-                  if (carregando)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 40),
-                      child: Center(child: CircularProgressIndicator()),
-                    )
-                  else ...[
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            header(),
+            Expanded(
+              child: RefreshIndicator(
+                onRefresh: carregarDados,
+                child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.all(18),
+                  children: [
+                    if (carregando)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 40),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else ...[
+                      Row(
+                        children: [
+                          cardResumo(
+                            icon: Icons.inventory_2,
+                            valor: total,
+                            titulo: 'Total',
+                            color: AppColors.primary,
+                          ),
+                          const SizedBox(width: 12),
+                          cardResumo(
+                            icon: Icons.local_shipping,
+                            valor: emRota,
+                            titulo: 'Em rota',
+                            color: Colors.blue,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          cardResumo(
+                            icon: Icons.check_circle,
+                            valor: entregues,
+                            titulo: 'Entregues',
+                            color: AppColors.success,
+                          ),
+                          const SizedBox(width: 12),
+                          cardResumo(
+                            icon: Icons.pending,
+                            valor: pendentes,
+                            titulo: 'Pendentes',
+                            color: AppColors.warning,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          cardResumo(
+                            icon: Icons.report_problem_outlined,
+                            valor: naoEntregues,
+                            titulo: 'Não entregues',
+                            color: AppColors.error,
+                          ),
+                          const SizedBox(width: 12),
+                          const Spacer(),
+                        ],
+                      ),
+                    ],
+
+                    const SizedBox(height: 22),
+
+                    Text(
+                      'Ações rápidas',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: theme.colorScheme.onSurface,
+                      ),
+                    ),
+
+                    const SizedBox(height: 14),
+
                     Row(
                       children: [
-                        cardResumo(
-                          icon: Icons.inventory_2,
-                          valor: total,
-                          titulo: 'Total',
+                        acaoRapida(
+                          icon: Icons.add_box,
+                          titulo: 'Cadastrar\nEntrega',
                           color: AppColors.primary,
+                          onTap: () async {
+                            await context.push('/empresa/cadastrar-entrega');
+
+                            await carregarDados();
+                          },
                         ),
                         const SizedBox(width: 12),
-                        cardResumo(
-                          icon: Icons.local_shipping,
-                          valor: emRota,
-                          titulo: 'Em rota',
-                          color: Colors.blue,
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        cardResumo(
-                          icon: Icons.check_circle,
-                          valor: entregues,
-                          titulo: 'Entregues',
-                          color: AppColors.success,
-                        ),
-                        const SizedBox(width: 12),
-                        cardResumo(
-                          icon: Icons.pending,
-                          valor: pendentes,
-                          titulo: 'Pendentes',
+                        acaoRapida(
+                          icon: Icons.inventory,
+                          titulo: 'Minhas\nEntregas',
                           color: AppColors.warning,
+                          onTap: () async {
+                            await context.push('/empresa/entregas');
+
+                            await carregarDados();
+                          },
                         ),
                       ],
                     ),
+
                     const SizedBox(height: 12),
+
                     Row(
                       children: [
-                        cardResumo(
-                          icon: Icons.report_problem_outlined,
-                          valor: naoEntregues,
-                          titulo: 'Não entregues',
-                          color: AppColors.error,
+                        acaoRapida(
+                          icon: Icons.person_add,
+                          titulo: 'Vincular\nEntregador',
+                          color: AppColors.success,
+                          onTap: () async {
+                            await context.push('/empresa/vincular-entregador');
+
+                            await carregarDados();
+                          },
                         ),
                         const SizedBox(width: 12),
-                        const Spacer(),
+                        acaoRapida(
+                          icon: Icons.settings,
+                          titulo: 'Configurações',
+                          color: Colors.deepPurple,
+                          onTap: () {
+                            abrirPagina('/empresa/configuracoes');
+                          },
+                        ),
                       ],
                     ),
                   ],
-
-                  const SizedBox(height: 22),
-
-                  Text(
-                    'Ações rápidas',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: theme.colorScheme.onSurface,
-                    ),
-                  ),
-
-                  const SizedBox(height: 14),
-
-                  Row(
-                    children: [
-                      acaoRapida(
-                        icon: Icons.add_box,
-                        titulo: 'Cadastrar\nEntrega',
-                        color: AppColors.primary,
-                        onTap: () async {
-                          await context.push('/empresa/cadastrar-entrega');
-
-                          await carregarDados();
-                        },
-                      ),
-                      const SizedBox(width: 12),
-                      acaoRapida(
-                        icon: Icons.inventory,
-                        titulo: 'Minhas\nEntregas',
-                        color: AppColors.warning,
-                        onTap: () async {
-                          await context.push('/empresa/entregas');
-
-                          await carregarDados();
-                        },
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  Row(
-                    children: [
-                      acaoRapida(
-                        icon: Icons.person_add,
-                        titulo: 'Vincular\nEntregador',
-                        color: AppColors.success,
-                        onTap: () async {
-                          await context.push('/empresa/vincular-entregador');
-
-                          await carregarDados();
-                        },
-                      ),
-                      const SizedBox(width: 12),
-                      acaoRapida(
-                        icon: Icons.settings,
-                        titulo: 'Configurações',
-                        color: Colors.deepPurple,
-                        onTap: () {
-                          abrirPagina('/empresa/configuracoes');
-                        },
-                      ),
-                    ],
-                  ),
-                ],
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

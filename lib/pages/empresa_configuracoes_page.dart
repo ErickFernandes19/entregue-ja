@@ -228,17 +228,6 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
 
           opcao(
             context: context,
-            icon: Icons.business,
-            titulo: 'Dados da Empresa',
-            subtitulo: 'Nome, e-mail e informações cadastrais',
-            color: AppColors.primary,
-            onTap: () {
-              context.push('/empresa/perfil');
-            },
-          ),
-
-          opcao(
-            context: context,
             icon: Icons.groups,
             titulo: 'Meus Entregadores',
             subtitulo: 'Ver entregadores vinculados',
@@ -280,30 +269,6 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
             color: AppColors.primary,
             onTap: () {
               context.push('/empresa/planos');
-            },
-          ),
-
-          const SizedBox(height: 14),
-
-          Text(
-            'Entregas',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: theme.colorScheme.onSurface,
-            ),
-          ),
-
-          const SizedBox(height: 12),
-
-          opcao(
-            context: context,
-            icon: Icons.inventory,
-            titulo: 'Histórico de Entregas',
-            subtitulo: 'Ver entregas cadastradas e status',
-            color: Colors.deepPurple,
-            onTap: () {
-              context.push('/empresa/entregas');
             },
           ),
 

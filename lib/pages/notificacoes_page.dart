@@ -488,7 +488,11 @@ class _NotificacoesPageState extends State<NotificacoesPage> {
 
     if (valor == null) return '';
 
-    final data = DateTime.tryParse(valor.toString());
+    final texto = valor.toString().trim();
+    if (texto.isEmpty) return '';
+
+    final possuiFuso = RegExp(r'(?:[zZ]|[+-]\d{2}:?\d{2})$').hasMatch(texto);
+    final data = DateTime.tryParse(possuiFuso ? texto : '${texto}Z');
 
     if (data == null) return '';
 

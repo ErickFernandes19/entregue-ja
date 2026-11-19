@@ -17,6 +17,8 @@ import jakarta.persistence.LockModeType;
 
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.http.MediaType;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -26,6 +28,9 @@ import org.springframework.web.multipart.MultipartFile;
 
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -526,32 +531,106 @@ public class EmpresaController {
             return ResponseEntity.status(403).build();
         }
 
-        var entregadores =
-                usuarioRepository.findByEmpresa(empresa)
-                        .stream()
-                        .map(usuario -> Map.of(
-                                "id",
-                                usuario.getId(),
-                                "nome",
-                                usuario.getNome(),
-                                "email",
-                                usuario.getEmail(),
-                                "veiculo",
-                                usuario.getVeiculo() == null
-                                        ? ""
-                                        : usuario.getVeiculo(),
-                                "capacidadeCarga",
-                                usuario.getCapacidadeCarga() == null
-                                        ? ""
-                                        : usuario.getCapacidadeCarga(),
-                                "dataVinculo",
-                                usuario.getDataVinculo() == null
-                                        ? ""
-                                        : usuario.getDataVinculo()
-                        ))
-                        .toList();
+        var entregadores = usuarioRepository.findByEmpresa(empresa)
+                .stream()
+                .map(usuario -> Map.of(
+                        "id", usuario.getId(),
+                        "nome", usuario.getNome(),
+                        "email", usuario.getEmail(),
+                        "foto", usuario.getFoto() == null || usuario.getFoto().isBlank()
+                                ? ""
+                                : "/empresas/" + empresa.getId()
+                                  + "/entregadores/" + usuario.getId()
+                                  + "/foto/arquivo",
+                        "veiculo", usuario.getVeiculo() == null
+                                ? "" : usuario.getVeiculo(),
+                        "capacidadeCarga", usuario.getCapacidadeCarga() == null
+                                ? "" : usuario.getCapacidadeCarga(),
+                        "dataVinculo", usuario.getDataVinculo() == null
+                                ? "" : usuario.getDataVinculo()
+                ))
+                .toList();
 
         return ResponseEntity.ok(entregadores);
+    }
+
+    @GetMapping("/{empresaId:\\d+}/entregadores/{entregadorId:\\d+}/foto/arquivo")
+    public ResponseEntity<?> buscarFotoEntregador(
+            @PathVariable Long empresaId,
+            @PathVariable Long entregadorId
+    ) {
+        var empresaOptional = empresaRepository.findById(empresaId);
+
+        if (empresaOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Empresa empresa = empresaOptional.get();
+
+        if (!empresaAutorizada(empresa)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        var usuarioOptional = usuarioRepository.findById(entregadorId);
+
+        if (usuarioOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Usuario usuario = usuarioOptional.get();
+
+        if (usuario.getEmpresa() == null
+                || !usuario.getEmpresa().getId().equals(empresa.getId())) {
+            return ResponseEntity.status(403).build();
+        }
+
+        String referencia = usuario.getFoto();
+        String prefixo = "/uploads/usuarios/";
+
+        if (referencia == null || !referencia.startsWith(prefixo)) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String nomeArquivo = referencia.substring(prefixo.length());
+
+        if (nomeArquivo.isBlank()
+                || nomeArquivo.contains("/")
+                || nomeArquivo.contains("\\")
+                || nomeArquivo.equals(".")
+                || nomeArquivo.equals("..")) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        Path diretorio = Paths.get("uploads", "usuarios")
+                .toAbsolutePath()
+                .normalize();
+        Path caminho = diretorio.resolve(nomeArquivo).normalize();
+
+        if (!caminho.startsWith(diretorio)
+                || !Files.isRegularFile(caminho)
+                || !Files.isReadable(caminho)) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String nome = nomeArquivo.toLowerCase(Locale.ROOT);
+        MediaType tipo;
+
+        if (nome.endsWith(".png")) {
+            tipo = MediaType.IMAGE_PNG;
+        } else if (nome.endsWith(".webp")) {
+            tipo = MediaType.parseMediaType("image/webp");
+        } else if (nome.endsWith(".jpg") || nome.endsWith(".jpeg")) {
+            tipo = MediaType.IMAGE_JPEG;
+        } else {
+            return ResponseEntity.badRequest().build();
+        }
+
+        Resource imagem = new FileSystemResource(caminho);
+
+        return ResponseEntity.ok()
+                .contentType(tipo)
+                .header("Cache-Control", "private, no-store")
+                .body(imagem);
     }
 
     @GetMapping("/{email}/entregadores-pendentes")

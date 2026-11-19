@@ -287,18 +287,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     await atualizarEntregas();
   }
 
-  String saudacao() {
-    final hora = DateTime.now().hour;
-
-    if (hora < 12) return 'Bom dia';
-    if (hora < 18) return 'Boa tarde';
-
-    return 'Boa noite';
+  String nomeParaSaudacao() {
+    var valor = nome.trim();
+    valor = valor
+        .replaceFirst(
+          RegExp(r'^(?:olá|ola)\s*[,!:-]?\s*', caseSensitive: false),
+          '',
+        )
+        .trim();
+    return valor.isEmpty ? 'Usuário' : valor;
   }
 
   Widget header() {
     return Container(
-      padding: const EdgeInsets.fromLTRB(18, 46, 18, 24),
+      padding: const EdgeInsets.fromLTRB(18, 20, 18, 24),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           colors: [AppColors.primary, AppColors.primaryLight],
@@ -324,8 +326,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '${saudacao()}, $nome 👋',
-                  maxLines: 1,
+                  'Olá, ${nomeParaSaudacao()} 👋',
+                  maxLines: 2,
+                  softWrap: true,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: Colors.white,
@@ -547,7 +550,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return Scaffold(
       body: Column(
         children: [
-          header(),
+          SafeArea(bottom: false, child: header()),
           Expanded(
             child: RefreshIndicator(
               onRefresh: atualizarEntregas,

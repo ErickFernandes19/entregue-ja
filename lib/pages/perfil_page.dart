@@ -458,22 +458,6 @@ class _PerfilPageState extends State<PerfilPage> {
             color: Colors.deepPurple,
           ),
 
-          cardInfo(
-            icon: Icons.photo_camera,
-            titulo: 'Foto de perfil',
-            valor: 'Toque para adicionar ou alterar foto',
-            color: AppColors.success,
-            onTap: enviandoFoto ? null : abrirOpcoesFoto,
-          ),
-
-          cardInfo(
-            icon: Icons.workspace_premium_outlined,
-            titulo: 'Planos e Assinaturas',
-            valor: 'Conheça os planos disponíveis para entregadores',
-            color: AppColors.primary,
-            onTap: () => context.push('/entregador/planos'),
-          ),
-
           const SizedBox(height: 8),
 
           SizedBox(

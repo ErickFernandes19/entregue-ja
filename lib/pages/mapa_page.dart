@@ -31,6 +31,7 @@ class MapaPage extends StatefulWidget {
 
 class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   GoogleMapController? mapController;
+  CameraPosition? _ultimaCameraMapa;
   bool _acompanharLocalizacao = true;
   bool _cameraAutomaticaEmAndamento = false;
   BitmapDescriptor? _iconeMoto;
@@ -1876,8 +1877,8 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
     if (rotaIniciada) {
       return Positioned(
         top: alturaBarraStatus + 12,
-        left: 70,
-        right: 16,
+        left: 18,
+        right: 18,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
@@ -2338,11 +2339,10 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   }
 
   Widget botaoSom() {
-    if (!rotaIniciada) return const SizedBox.shrink();
     final theme = Theme.of(context);
     return Positioned(
       right: 18,
-      bottom: 154,
+      bottom: rotaIniciada ? 154 : 176,
       child: FloatingActionButton(
         heroTag: 'som_navegacao',
         mini: true,
@@ -2361,36 +2361,59 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
     );
   }
 
+  Widget botaoBussola() {
+    final theme = Theme.of(context);
+    return Positioned(
+      right: 18,
+      bottom: rotaIniciada ? 212 : 234,
+      child: FloatingActionButton(
+        heroTag: 'bussola_mapa',
+        mini: true,
+        backgroundColor: theme.cardColor,
+        foregroundColor: AppColors.primary,
+        tooltip: 'Orientar mapa para o norte',
+        onPressed: () async {
+          final controller = mapController;
+          final camera = _ultimaCameraMapa;
+          if (controller == null || camera == null) return;
+          if (rotaIniciada && _acompanharLocalizacao) {
+            setState(() => _acompanharLocalizacao = false);
+          }
+          await controller.animateCamera(
+            CameraUpdate.newCameraPosition(
+              CameraPosition(
+                target: camera.target,
+                zoom: camera.zoom,
+                tilt: camera.tilt,
+                bearing: 0,
+              ),
+            ),
+          );
+        },
+        child: const Icon(Icons.explore_outlined),
+      ),
+    );
+  }
+
   Widget botaoVoltar() {
     final theme = Theme.of(context);
 
-    return SafeArea(
-      child: Align(
-        alignment: Alignment.topLeft,
-
-        child: Padding(
-          padding: EdgeInsets.only(left: 16, top: rotaIniciada ? 12 : 120),
-
-          child: FloatingActionButton(
-            heroTag: 'voltar',
-
-            mini: true,
-
-            backgroundColor: theme.cardColor,
-
-            foregroundColor: AppColors.primary,
-
-            onPressed: () {
-              if (context.canPop()) {
-                context.pop();
-              } else {
-                context.go('/entregador/inicio');
-              }
-            },
-
-            child: const Icon(Icons.arrow_back),
-          ),
-        ),
+    return Positioned(
+      left: 18,
+      bottom: rotaIniciada ? 96 : 118,
+      child: FloatingActionButton(
+        heroTag: 'voltar',
+        mini: true,
+        backgroundColor: theme.cardColor,
+        foregroundColor: AppColors.primary,
+        onPressed: () {
+          if (context.canPop()) {
+            context.pop();
+          } else {
+            context.go('/entregador/inicio');
+          }
+        },
+        child: const Icon(Icons.arrow_back),
       ),
     );
   }
@@ -2408,6 +2431,8 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
 
               zoom: 14,
             ),
+
+            onCameraMove: (camera) => _ultimaCameraMapa = camera,
 
             onCameraMoveStarted: () {
               if (rotaIniciada &&
@@ -2427,7 +2452,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
 
             zoomControlsEnabled: false,
 
-            compassEnabled: true,
+            compassEnabled: false,
 
             trafficEnabled: true,
 
@@ -2467,6 +2492,8 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
           botaoCentralizar(),
 
           botaoSom(),
+
+          botaoBussola(),
 
           botaoVoltar(),
         ],

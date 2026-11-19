@@ -431,6 +431,16 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
                 ),
 
                 opcaoMenu(
+                  icon: Icons.workspace_premium_outlined,
+                  titulo: 'Planos e Assinaturas',
+                  subtitulo: 'Conheça os planos disponíveis para entregadores',
+                  color: AppColors.primary,
+                  onTap: () {
+                    context.push('/entregador/planos');
+                  },
+                ),
+
+                opcaoMenu(
                   icon: Icons.support_agent,
                   titulo: 'Suporte',
                   subtitulo: 'Ajuda e atendimento',

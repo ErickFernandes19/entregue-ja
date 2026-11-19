@@ -458,14 +458,6 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
                   ),
 
                   cardInfo(
-                    icon: Icons.photo_camera,
-                    titulo: 'Logo da empresa',
-                    valor: 'Toque para adicionar ou alterar logo',
-                    color: AppColors.success,
-                    onTap: abrirOpcoesFoto,
-                  ),
-
-                  cardInfo(
                     icon: Icons.groups,
                     titulo: 'Entregadores vinculados',
                     valor: '${entregadores.length} entregador(es)',

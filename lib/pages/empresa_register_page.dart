@@ -71,6 +71,17 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text(
+            'Sua senha deve conter:',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+        ),
         requisitoSenha('Pelo menos 8 caracteres', senha.length >= 8),
         requisitoSenha('Uma letra maiúscula', RegExp(r'[A-Z]').hasMatch(senha)),
         requisitoSenha('Uma letra minúscula', RegExp(r'[a-z]').hasMatch(senha)),

@@ -67,7 +67,11 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
   }
 
   void voltarParaSelecao() {
-    context.go('/selecionar');
+    FocusManager.instance.primaryFocus?.unfocus();
+
+    if (!mounted) return;
+
+    GoRouter.of(context).go('/selecionar');
   }
 
   Widget campo({

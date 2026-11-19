@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 
 import '../services/assinatura_service.dart';
 
@@ -198,15 +197,6 @@ class _EntregadorAssinaturaGerenciamentoPageState
                         'Vencimento: ${_data(_assinatura!['dataVencimento'])}',
                       ),
                     ],
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        onPressed: () => context.push('/entregador/planos'),
-                        icon: const Icon(Icons.workspace_premium_outlined),
-                        label: const Text('Ver planos disponíveis'),
-                      ),
-                    ),
                   ],
                 ),
               ),

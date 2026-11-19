@@ -1,5 +1,6 @@
-import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
@@ -16,10 +17,10 @@ class OcrPage extends StatefulWidget {
 
 class _OcrPageState extends State<OcrPage> {
   final ImagePicker picker = ImagePicker();
-  final TextRecognizer textRecognizer = TextRecognizer();
+  TextRecognizer? textRecognizer;
   final TextEditingController textoController = TextEditingController();
 
-  File? imagem;
+  Uint8List? imagem;
   bool processando = false;
   bool destinatarioIdentificado = false;
 
@@ -47,6 +48,35 @@ class _OcrPageState extends State<OcrPage> {
     ).hasMatch(texto);
   }
 
+  bool linhaDeEndereco(String linha) {
+    final texto = normalizar(linha);
+    return RegExp(
+      r'\b(?:RUA|R\.|AVENIDA|AV\.|AV\b|TRAVESSA|TV\.|ALAMEDA|ESTRADA|RODOVIA|PRACA|LOTEAMENTO|CONDOMINIO|VIELA|LARGO|QUADRA|Q\.|RURAL)\b',
+    ).hasMatch(texto);
+  }
+
+  bool linhaDeCep(String linha) {
+    return RegExp(r'\b\d{5}[-\s]?\d{3}\b').hasMatch(linha);
+  }
+
+  bool linhaIrrelevante(String linha) {
+    final texto = normalizar(linha);
+    return marcadorOutraSecao(linha) ||
+        RegExp(
+          r'^(?:CPF|CNPJ|RG|TELEFONE|TEL\.?|CELULAR|CONTATO|EMAIL|E-MAIL|SKU|COD\.?|CODIGO|REFERENCIA|REF\.?|QTD\.?|QUANTIDADE|DATA|EMISSAO|PAGAMENTO|PIX|TOTAL|PRODUTO|ITEM|ETIQUETA|CEP DE ORIGEM)\b',
+        ).hasMatch(texto) ||
+        RegExp(r'^\d{11,}$').hasMatch(texto.replaceAll(RegExp(r'\s+'), ''));
+  }
+
+  bool linhaComplementar(String linha) {
+    final texto = normalizar(linha);
+    return linhaDeCep(linha) ||
+        RegExp(
+          r'^(?:NUMERO|N\.?|Nº|N°|COMPLEMENTO|COMPL\.?|APTO|APARTAMENTO|BLOCO|CASA|BAIRRO|CIDADE|MUNICIPIO|ESTADO|UF|JARDIM|JD\.?|CENTRO|VILA|PARQUE|RESIDENCIAL|DISTRITO)\b',
+        ).hasMatch(texto) ||
+        RegExp(r'\b[A-Z]{2}\s*[-/]?\s*\d{5}[-\s]?\d{3}\b').hasMatch(texto);
+  }
+
   String? extrairDestinatario(String textoCompleto) {
     final linhas = textoCompleto
         .split(RegExp(r'\r?\n'))
@@ -54,11 +84,13 @@ class _OcrPageState extends State<OcrPage> {
         .where((linha) => linha.isNotEmpty)
         .toList();
 
+    if (linhas.isEmpty) return null;
+
+    final secoes = <List<String>>[];
     for (var i = 0; i < linhas.length; i++) {
       if (!marcadorDestinatario(linhas[i])) continue;
-
-      final resultado = <String>[];
-      final primeiraLinha = linhas[i]
+      final secao = <String>[];
+      final primeira = linhas[i]
           .replaceFirst(
             RegExp(
               r'^\s*(?:dados\s+(?:do\s+)?destinat[aá]ri[oa]|dados\s+de\s+entrega|destinat[aá]ri[oa]|dest\.?|entregar\s+para|entrega\s+para|recebedor|consignat[aá]rio)\s*[:\-–]?\s*',
@@ -67,29 +99,75 @@ class _OcrPageState extends State<OcrPage> {
             '',
           )
           .trim();
-
-      if (primeiraLinha.isNotEmpty) {
-        resultado.add(primeiraLinha);
-      }
-
-      for (var j = i + 1; j < linhas.length && resultado.length < 7; j++) {
-        final linha = linhas[j];
-        if (marcadorOutraSecao(linha) || marcadorDestinatario(linha)) {
+      if (primeira.isNotEmpty) secao.add(primeira);
+      for (var j = i + 1; j < linhas.length && secao.length < 12; j++) {
+        if (marcadorOutraSecao(linhas[j]) || marcadorDestinatario(linhas[j])) {
           break;
         }
-        resultado.add(linha);
+        secao.add(linhas[j]);
       }
-
-      if (resultado.isNotEmpty) {
-        return resultado.join('\n');
-      }
+      secoes.add(secao);
     }
 
+    if (secoes.isEmpty) secoes.add(linhas);
+
+    for (final secao in secoes) {
+      final enderecoIndex = secao.indexWhere(
+        (linha) => linhaDeEndereco(linha) && !linhaIrrelevante(linha),
+      );
+      if (enderecoIndex < 0) continue;
+
+      final resultado = <String>[];
+      if (enderecoIndex > 0) {
+        final anterior = secao[enderecoIndex - 1];
+        if (!linhaIrrelevante(anterior) &&
+            !linhaDeEndereco(anterior) &&
+            !linhaDeCep(anterior) &&
+            anterior.length >= 3 &&
+            !RegExp(r'^\d+$').hasMatch(anterior)) {
+          resultado.add(anterior);
+        }
+      }
+      resultado.add(secao[enderecoIndex]);
+      for (
+        var i = enderecoIndex + 1;
+        i < secao.length && resultado.length < 7;
+        i++
+      ) {
+        final linha = secao[i];
+        if (linhaIrrelevante(linha) || linhaDeEndereco(linha)) break;
+        if (linhaComplementar(linha) ||
+            RegExp(r'^\d{1,6}\s*(?:[,\-/]|$)').hasMatch(linha) ||
+            (resultado.length > 1 &&
+                RegExp(
+                  r'^[\p{L}\s]+\s*[-/]\s*[A-Za-z]{2}$',
+                  unicode: true,
+                ).hasMatch(linha))) {
+          resultado.add(linha);
+        } else {
+          break;
+        }
+      }
+      return resultado.join('\n');
+    }
     return null;
   }
 
   Future<void> tirarFotoELerTexto() async {
     if (processando) return;
+
+    if (kIsWeb ||
+        (defaultTargetPlatform != TargetPlatform.android &&
+            defaultTargetPlatform != TargetPlatform.iOS)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'A leitura automática de etiquetas está disponível apenas no aplicativo Android ou iOS. Preencha os dados manualmente nesta versão.',
+          ),
+        ),
+      );
+      return;
+    }
 
     setState(() => processando = true);
 
@@ -97,7 +175,9 @@ class _OcrPageState extends State<OcrPage> {
       final foto = await picker.pickImage(source: ImageSource.camera);
       if (foto == null) return;
 
-      final recognizedText = await textRecognizer.processImage(
+      final bytes = await foto.readAsBytes();
+      textRecognizer ??= TextRecognizer();
+      final recognizedText = await textRecognizer!.processImage(
         InputImage.fromFilePath(foto.path),
       );
       final destinatario = extrairDestinatario(recognizedText.text);
@@ -105,7 +185,7 @@ class _OcrPageState extends State<OcrPage> {
       if (!mounted) return;
 
       setState(() {
-        imagem = File(foto.path);
+        imagem = bytes;
         destinatarioIdentificado = destinatario != null;
         textoController.text = destinatario ?? '';
       });
@@ -147,7 +227,7 @@ class _OcrPageState extends State<OcrPage> {
   @override
   void dispose() {
     textoController.dispose();
-    textRecognizer.close();
+    textRecognizer?.close();
     super.dispose();
   }
 
@@ -200,7 +280,7 @@ class _OcrPageState extends State<OcrPage> {
           if (imagem != null) ...[
             ClipRRect(
               borderRadius: BorderRadius.circular(20),
-              child: Image.file(
+              child: Image.memory(
                 imagem!,
                 height: 220,
                 width: double.infinity,

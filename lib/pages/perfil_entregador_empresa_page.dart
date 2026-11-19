@@ -1,13 +1,89 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 
+import '../config/api_config.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 
-class PerfilEntregadorEmpresaPage extends StatelessWidget {
+class PerfilEntregadorEmpresaPage extends StatefulWidget {
   final Map<String, dynamic> entregador;
 
   const PerfilEntregadorEmpresaPage({super.key, required this.entregador});
+
+  @override
+  State<PerfilEntregadorEmpresaPage> createState() =>
+      _PerfilEntregadorEmpresaPageState();
+}
+
+class _PerfilEntregadorEmpresaPageState
+    extends State<PerfilEntregadorEmpresaPage> {
+  Uint8List? fotoBytes;
+  bool carregandoFoto = false;
+
+  @override
+  void initState() {
+    super.initState();
+    carregarFoto();
+  }
+
+  @override
+  void didUpdateWidget(covariant PerfilEntregadorEmpresaPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.entregador['foto'] != widget.entregador['foto']) {
+      carregarFoto();
+    }
+  }
+
+  Future<void> carregarFoto() async {
+    final referencia = widget.entregador['foto']?.toString().trim() ?? '';
+
+    setState(() {
+      fotoBytes = null;
+      carregandoFoto = referencia.isNotEmpty;
+    });
+
+    if (referencia.isEmpty) {
+      return;
+    }
+
+    try {
+      final url =
+          referencia.startsWith('http://') || referencia.startsWith('https://')
+          ? referencia
+          : ApiConfig.urlArquivo(referencia);
+
+      final headers = await EmpresaService.headersImagem();
+
+      final resposta = await http
+          .get(Uri.parse(url), headers: headers)
+          .timeout(const Duration(seconds: 20));
+
+      if (!mounted) return;
+
+      if (resposta.statusCode == 200 && resposta.bodyBytes.isNotEmpty) {
+        setState(() {
+          fotoBytes = resposta.bodyBytes;
+          carregandoFoto = false;
+        });
+      } else {
+        setState(() {
+          fotoBytes = null;
+          carregandoFoto = false;
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() {
+        fotoBytes = null;
+        carregandoFoto = false;
+      });
+    }
+  }
 
   Future<void> desvincularEntregador(BuildContext context) async {
     final confirmar = await showDialog<bool>(
@@ -17,7 +93,7 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
           title: const Text('Desvincular entregador'),
           content: Text(
             'Deseja realmente desvincular '
-            '${entregador["nome"] ?? "este entregador"} '
+            '${widget.entregador["nome"] ?? "este entregador"} '
             'da empresa?',
           ),
           actions: [
@@ -47,7 +123,7 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
     }
 
     final sucesso = await EmpresaService.desvincularEntregador(
-      entregador["email"],
+      widget.entregador["email"],
     );
 
     if (!context.mounted) return;
@@ -74,17 +150,14 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
       final date = DateTime.parse(data);
 
       final dia = date.day.toString().padLeft(2, '0');
-
       final mes = date.month.toString().padLeft(2, '0');
-
       final ano = date.year.toString();
 
       final hora = date.hour.toString().padLeft(2, '0');
-
       final minuto = date.minute.toString().padLeft(2, '0');
 
       return '$dia/$mes/$ano às $hora:$minuto';
-    } catch (e) {
+    } catch (_) {
       return data;
     }
   }
@@ -125,19 +198,78 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
     );
   }
 
+  Widget construirFoto(ThemeData theme) {
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+            colors: [AppColors.primary, AppColors.primaryLight],
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(
+                theme.brightness == Brightness.dark ? 0.28 : 0.14,
+              ),
+              blurRadius: 16,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: CircleAvatar(
+          radius: 60,
+          backgroundColor: theme.cardColor,
+          child: ClipOval(
+            child: SizedBox(
+              width: 120,
+              height: 120,
+              child: carregandoFoto
+                  ? const Center(
+                      child: CircularProgressIndicator(
+                        color: AppColors.primary,
+                      ),
+                    )
+                  : fotoBytes != null
+                  ? Image.memory(
+                      fotoBytes!,
+                      width: 120,
+                      height: 120,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return const Icon(
+                          Icons.person,
+                          color: AppColors.primary,
+                          size: 60,
+                        );
+                      },
+                    )
+                  : const Icon(
+                      Icons.person,
+                      color: AppColors.primary,
+                      size: 60,
+                    ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    final nome = entregador["nome"]?.toString() ?? "Entregador";
+    final nome = widget.entregador["nome"]?.toString() ?? "Entregador";
 
-    final email = entregador["email"]?.toString() ?? "";
+    final email = widget.entregador["email"]?.toString() ?? "";
 
-    final veiculo = entregador["veiculo"]?.toString().trim() ?? "";
+    final veiculo = widget.entregador["veiculo"]?.toString().trim() ?? "";
 
-    final capacidade = entregador["capacidadeCarga"]?.toString().trim() ?? "";
+    final capacidade =
+        widget.entregador["capacidadeCarga"]?.toString().trim() ?? "";
 
-    final dataVinculo = entregador["dataVinculo"]?.toString();
+    final dataVinculo = widget.entregador["dataVinculo"]?.toString();
 
     return Scaffold(
       appBar: AppBar(
@@ -158,35 +290,7 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          Center(
-            child: Container(
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: const LinearGradient(
-                  colors: [AppColors.primary, AppColors.primaryLight],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(
-                      theme.brightness == Brightness.dark ? 0.28 : 0.14,
-                    ),
-                    blurRadius: 16,
-                    offset: const Offset(0, 6),
-                  ),
-                ],
-              ),
-              child: CircleAvatar(
-                radius: 60,
-                backgroundColor: theme.cardColor,
-                child: const Icon(
-                  Icons.person,
-                  color: AppColors.primary,
-                  size: 60,
-                ),
-              ),
-            ),
-          ),
+          construirFoto(theme),
           const SizedBox(height: 20),
           Center(
             child: Text(
@@ -250,9 +354,10 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
                 foregroundColor: Colors.white,
               ),
               onPressed: () {
-                final email = entregador['email']?.toString() ?? '';
+                final email = widget.entregador['email']?.toString() ?? '';
 
-                final nome = entregador['nome']?.toString() ?? 'Entregador';
+                final nome =
+                    widget.entregador['nome']?.toString() ?? 'Entregador';
 
                 if (email.isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -260,7 +365,6 @@ class PerfilEntregadorEmpresaPage extends StatelessWidget {
                       content: Text('E-mail do entregador não disponível'),
                     ),
                   );
-
                   return;
                 }
 
