@@ -230,4 +230,155 @@ class PagamentoAssinaturaServiceTest {
         pagamento.setMercadoPagoAssinaturaId("sub123");
         return pagamento;
     }
+
+
+    @Test
+    void pixAprovadoSolicitaAtivacaoDoPlano() {
+        PagamentoAssinatura pagamento = prepararPagamentoPix("approved", "39.90");
+
+        Map<String, Object> resultado = service.consultarCobrancaPix(10L, 99L);
+
+        assertEquals("APROVADO", resultado.get("status"));
+        assertEquals(PagamentoAssinatura.Status.APROVADO, pagamento.getStatus());
+        assertNotNull(pagamento.getDataAprovacao());
+        verify(assinaturaService, times(1)).ativarPlanoPagoPorPix(10L, 99L);
+    }
+
+    @Test
+    void pixPendenteNaoSolicitaAtivacao() {
+        PagamentoAssinatura pagamento = prepararPagamentoPix("pending", "39.90");
+
+        Map<String, Object> resultado = service.consultarCobrancaPix(10L, 99L);
+
+        assertEquals("PENDENTE", resultado.get("status"));
+        assertEquals(PagamentoAssinatura.Status.PENDENTE, pagamento.getStatus());
+        verify(assinaturaService, never()).ativarPlanoPagoPorPix(anyLong(), anyLong());
+    }
+
+    @Test
+    void pixJaAtivadoNaoSolicitaNovaAtivacao() {
+        PagamentoAssinatura pagamento = prepararPagamentoPix("approved", "39.90");
+        pagamento.setStatus(PagamentoAssinatura.Status.APROVADO);
+        pagamento.setDataAprovacao(LocalDateTime.now());
+        pagamento.setDataVencimento(LocalDateTime.now().plusDays(30));
+
+        Map<String, Object> primeira = service.consultarCobrancaPix(10L, 99L);
+        Map<String, Object> segunda = service.consultarCobrancaPix(10L, 99L);
+
+        assertEquals("APROVADO", primeira.get("status"));
+        assertEquals(true, segunda.get("planoAtivado"));
+        verify(assinaturaService, never()).ativarPlanoPagoPorPix(anyLong(), anyLong());
+    }
+
+    @Test
+    void pixComValorIncorretoNaoAtivaPlano() {
+        prepararPagamentoPix("approved", "79.90");
+
+        assertThrows(IllegalStateException.class,
+                () -> service.consultarCobrancaPix(10L, 99L));
+
+        verifyNoInteractions(assinaturaService);
+    }
+
+    @Test
+    void pixComReferenciaIncorretaNaoAtivaPlano() {
+        prepararPagamentoPix("approved", "39.90");
+
+        when(mercadoPagoService.consultarPagamento("12345"))
+                .thenReturn(json("""
+                        {
+                          "id": "12345",
+                          "external_reference": "entregueja-pagamento-999",
+                          "transaction_amount": 39.90,
+                          "currency_id": "BRL",
+                          "payment_method_id": "pix",
+                          "status": "approved"
+                        }
+                        """));
+
+        assertThrows(IllegalStateException.class,
+                () -> service.consultarCobrancaPix(10L, 99L));
+
+        verifyNoInteractions(assinaturaService);
+    }
+
+    @Test
+    void pixComIdentificadorIncorretoNaoAtivaPlano() {
+        prepararPagamentoPix("approved", "39.90");
+
+        when(mercadoPagoService.consultarPagamento("12345"))
+                .thenReturn(json("""
+                        {
+                          "id": "98765",
+                          "external_reference": "entregueja-pagamento-99",
+                          "transaction_amount": 39.90,
+                          "currency_id": "BRL",
+                          "payment_method_id": "pix",
+                          "status": "approved"
+                        }
+                        """));
+
+        assertThrows(IllegalStateException.class,
+                () -> service.consultarCobrancaPix(10L, 99L));
+
+        verifyNoInteractions(assinaturaService);
+    }
+
+    @Test
+    void falhaNaAtivacaoPixNaoMarcaPlanoComoAtivado() {
+        PagamentoAssinatura pagamento = prepararPagamentoPix("approved", "39.90");
+
+        doThrow(new IllegalStateException("Falha simulada"))
+                .when(assinaturaService).ativarPlanoPagoPorPix(10L, 99L);
+
+        assertThrows(IllegalStateException.class,
+                () -> service.consultarCobrancaPix(10L, 99L));
+
+        assertNull(pagamento.getDataVencimento());
+    }
+
+    private PagamentoAssinatura prepararPagamentoPix(
+            String statusExterno,
+            String valorExterno) {
+
+        Empresa empresa = new Empresa();
+        empresa.setId(10L);
+        empresa.setEmail("empresa@exemplo.com");
+
+        PagamentoAssinatura pagamento = new PagamentoAssinatura();
+        pagamento.setId(99L);
+        pagamento.setEmpresaId(10L);
+        pagamento.setPlano(Assinatura.Plano.ESSENCIAL);
+        pagamento.setFormaPagamento(PagamentoAssinatura.FormaPagamento.PIX);
+        pagamento.setStatus(PagamentoAssinatura.Status.PENDENTE);
+        pagamento.setValor(new BigDecimal("39.90"));
+        pagamento.setMercadoPagoPagamentoId("12345");
+
+        lenient().when(entityManager.find(Empresa.class, 10L))
+                .thenReturn(empresa);
+
+        lenient().when(entityManager.find(
+                        Empresa.class,
+                        10L,
+                        jakarta.persistence.LockModeType.PESSIMISTIC_WRITE))
+                .thenReturn(empresa);
+
+        lenient().when(pagamentoRepository.buscarPorIdComBloqueio(99L))
+                .thenReturn(Optional.of(pagamento));
+
+        lenient().when(mercadoPagoService.consultarPagamento("12345"))
+                .thenReturn(json("""
+                        {
+                          "id": "12345",
+                          "external_reference": "entregueja-pagamento-99",
+                          "transaction_amount": %s,
+                          "currency_id": "BRL",
+                          "payment_method_id": "pix",
+                          "status": "%s"
+                        }
+                        """.formatted(valorExterno, statusExterno)));
+
+        return pagamento;
+    }
+
 }
