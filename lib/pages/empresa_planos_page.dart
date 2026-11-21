@@ -44,7 +44,7 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
 
       setState(() {
         _planoAtual = ativa
-            ? assinatura?['plano']?.toString().toUpperCase()
+            ? assinatura!['plano']?.toString().toUpperCase()
             : null;
         _testeAtivo = testeAtivo;
         _testeUtilizado = historico.any(
@@ -89,7 +89,9 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
   }
 
   Future<void> _iniciarTeste() async {
-    if (_carregando || _ativandoTeste || _testeUtilizado ||
+    if (_carregando ||
+        _ativandoTeste ||
+        _testeUtilizado ||
         _planoAtual != 'GRATUITO') {
       return;
     }
@@ -131,15 +133,17 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
       );
     } on AssinaturaException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.mensagem)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(e.mensagem)));
       await _carregarAssinatura();
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Não foi possível confirmar a ativação. Consulte sua assinatura.'),
+          content: Text(
+            'Não foi possível confirmar a ativação. Consulte sua assinatura.',
+          ),
         ),
       );
       await _carregarAssinatura();
@@ -158,7 +162,9 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
         centerTitle: true,
         actions: [
           IconButton(
-            onPressed: _carregando || _ativandoTeste ? null : _carregarAssinatura,
+            onPressed: _carregando || _ativandoTeste
+                ? null
+                : _carregarAssinatura,
             tooltip: 'Atualizar assinatura',
             icon: const Icon(Icons.refresh),
           ),
@@ -306,8 +312,11 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
                     SizedBox(
                       width: double.infinity,
                       child: OutlinedButton.icon(
-                        onPressed: _carregando || _erro != null ||
-                                _ativandoTeste || _testeUtilizado ||
+                        onPressed:
+                            _carregando ||
+                                _erro != null ||
+                                _ativandoTeste ||
+                                _testeUtilizado ||
                                 _planoAtual != 'GRATUITO'
                             ? null
                             : _iniciarTeste,
@@ -315,21 +324,25 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
-                            : Icon(_testeAtivo
-                                ? Icons.check_circle_outline
-                                : Icons.workspace_premium_outlined),
+                            : Icon(
+                                _testeAtivo
+                                    ? Icons.check_circle_outline
+                                    : Icons.workspace_premium_outlined,
+                              ),
                         label: Text(
                           _ativandoTeste
                               ? 'Ativando teste...'
                               : _testeAtivo
-                                  ? 'Teste em andamento'
-                                  : _testeUtilizado
-                                      ? 'Teste já utilizado'
-                                      : _planoAtual != 'GRATUITO'
-                                          ? 'Disponível no plano Gratuito'
-                                          : 'Experimentar 14 dias grátis',
+                              ? 'Teste em andamento'
+                              : _testeUtilizado
+                              ? 'Teste já utilizado'
+                              : _planoAtual != 'GRATUITO'
+                              ? 'Disponível no plano Gratuito'
+                              : 'Experimentar 14 dias grátis',
                         ),
                       ),
                     ),
