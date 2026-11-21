@@ -1,3 +1,4 @@
+
 package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.PagamentoAssinatura;
@@ -61,12 +62,15 @@ public class MercadoPagoWebhookController {
 
         String idUrl = parametros.get("data.id");
         String idCorpo = texto(corpo == null ? null : corpo.path("data"), "id");
-        if (idUrl != null && !idUrl.isBlank() && idCorpo != null && !idUrl.equalsIgnoreCase(idCorpo)) {
+
+        if (idUrl != null && !idUrl.isBlank()
+                && idCorpo != null && !idUrl.equalsIgnoreCase(idCorpo)) {
             LOGGER.warn("Webhook com identificadores divergentes");
             return ResponseEntity.badRequest().build();
         }
 
         String dataId = idUrl != null && !idUrl.isBlank() ? idUrl : idCorpo;
+
         if (!assinaturaValida(assinatura, requestId, dataId)) {
             LOGGER.warn("Webhook com assinatura inválida");
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
@@ -74,13 +78,15 @@ public class MercadoPagoWebhookController {
 
         String tipoUrl = parametros.get("type");
         String tipoCorpo = texto(corpo, "type");
-        if (tipoUrl != null && !tipoUrl.isBlank() && tipoCorpo != null
-                && !tipoUrl.equalsIgnoreCase(tipoCorpo)) {
+
+        if (tipoUrl != null && !tipoUrl.isBlank()
+                && tipoCorpo != null && !tipoUrl.equalsIgnoreCase(tipoCorpo)) {
             LOGGER.warn("Webhook com tipos de evento divergentes");
             return ResponseEntity.badRequest().build();
         }
 
         String tipo = tipoUrl != null && !tipoUrl.isBlank() ? tipoUrl : tipoCorpo;
+
         if (!"payment".equalsIgnoreCase(tipo)) {
             return ResponseEntity.ok().build();
         }
@@ -90,15 +96,31 @@ public class MercadoPagoWebhookController {
         }
 
         try {
-            PagamentoAssinatura pagamento = pagamentoRepository.findByMercadoPagoPagamentoId(dataId).orElse(null);
-            if (pagamento != null && pagamento.getFormaPagamento() == PagamentoAssinatura.FormaPagamento.PIX) {
-                pagamentoService.consultarCobrancaPix(pagamento.getEmpresaId(), pagamento.getId());
+            PagamentoAssinatura pagamento = pagamentoRepository
+                    .findByMercadoPagoPagamentoId(dataId)
+                    .orElse(null);
+
+            if (pagamento == null) {
+                LOGGER.info("Pagamento não encontrado no banco local, id={}", dataId);
+                return ResponseEntity.ok().build();
+            }
+
+            if (pagamento.getFormaPagamento() == PagamentoAssinatura.FormaPagamento.PIX) {
+                pagamentoService.consultarCobrancaPix(
+                        pagamento.getEmpresaId(),
+                        pagamento.getId()
+                );
             } else {
                 pagamentoService.processarPagamentoRecorrente(dataId);
             }
+
             return ResponseEntity.ok().build();
         } catch (RuntimeException e) {
-            LOGGER.error("Falha ao processar webhook de pagamento do Mercado Pago, id={}", dataId, e);
+            LOGGER.error(
+                    "Falha ao processar webhook de pagamento do Mercado Pago, id={}",
+                    dataId,
+                    e
+            );
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
@@ -110,6 +132,7 @@ public class MercadoPagoWebhookController {
         }
 
         Map<String, String> partes = new HashMap<>();
+
         for (String item : assinatura.split(",")) {
             String[] par = item.trim().split("=", 2);
             if (par.length == 2) {
@@ -119,6 +142,7 @@ public class MercadoPagoWebhookController {
 
         String timestamp = partes.get("ts");
         String hashRecebido = partes.get("v1");
+
         if (timestamp == null || !timestamp.matches("[0-9]{1,20}")
                 || hashRecebido == null || !hashRecebido.matches("(?i)[0-9a-f]{64}")) {
             return false;
@@ -127,6 +151,7 @@ public class MercadoPagoWebhookController {
         try {
             long segundos = Long.parseLong(timestamp);
             long agora = Instant.now().getEpochSecond();
+
             if (segundos < agora - JANELA_ASSINATURA_SEGUNDOS
                     || segundos > agora + JANELA_ASSINATURA_SEGUNDOS) {
                 return false;
@@ -135,10 +160,19 @@ public class MercadoPagoWebhookController {
             String manifesto = "id:" + dataId.toLowerCase(Locale.ROOT)
                     + ";request-id:" + requestId
                     + ";ts:" + timestamp + ";";
+
             Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(webhookSecret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            byte[] calculado = mac.doFinal(manifesto.getBytes(StandardCharsets.UTF_8));
+            mac.init(new SecretKeySpec(
+                    webhookSecret.getBytes(StandardCharsets.UTF_8),
+                    "HmacSHA256"
+            ));
+
+            byte[] calculado = mac.doFinal(
+                    manifesto.getBytes(StandardCharsets.UTF_8)
+            );
+
             byte[] recebido = HexFormat.of().parseHex(hashRecebido);
+
             return MessageDigest.isEqual(calculado, recebido);
         } catch (Exception e) {
             return false;
@@ -146,9 +180,16 @@ public class MercadoPagoWebhookController {
     }
 
     private String texto(JsonNode objeto, String campo) {
-        if (objeto == null) return null;
+        if (objeto == null) {
+            return null;
+        }
+
         JsonNode valor = objeto.path(campo);
-        if (valor.isMissingNode() || valor.isNull() || valor.isContainerNode()) return null;
+
+        if (valor.isMissingNode() || valor.isNull() || valor.isContainerNode()) {
+            return null;
+        }
+
         String resultado = valor.asText();
         return resultado.isBlank() ? null : resultado;
     }
