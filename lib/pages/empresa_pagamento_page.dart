@@ -404,13 +404,13 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                   clipBehavior: Clip.antiAlias,
                   child: RadioGroup<_FormaPagamento>(
                     groupValue: _forma,
-                    onChanged: temPagamento
-                        ? null
-                        : (value) {
-                            if (value != null) {
-                              setState(() => _forma = value);
-                            }
-                          },
+                    onChanged: (value) {
+                      if (temPagamento || value == null) return;
+
+                      setState(() {
+                        _forma = value;
+                      });
+                    },
                     child: Column(
                       children: [
                         const RadioListTile<_FormaPagamento>(
