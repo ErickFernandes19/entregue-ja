@@ -182,22 +182,11 @@ class ApiService {
   }
 
   static Future<bool> atualizarStatusEntrega(int id) async {
-    try {
-      final headers = await _headersAutenticados();
-      final response = await http
-          .put(Uri.parse('${ApiConfig.entregas}/$id/status'), headers: headers)
-          .timeout(_tempoLimite);
-      if (response.statusCode == 200) return true;
-      _registrarErro(
-        'Erro ao atualizar status',
-        response.statusCode,
-        response.body,
-      );
-      return false;
-    } catch (e) {
-      debugPrint('Erro ao atualizar status: $e');
-      return false;
-    }
+    debugPrint(
+      'A alteração de status da entrega #$id deve utilizar o fluxo '
+      'de finalização com fotografia e localização GPS.',
+    );
+    return false;
   }
 
   static Future<bool> enviarLocalizacaoEntregador({

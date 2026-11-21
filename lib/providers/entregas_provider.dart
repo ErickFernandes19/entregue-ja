@@ -154,13 +154,10 @@ class EntregasProvider extends ChangeNotifier {
   Future<void> alternarStatusEntrega(int index) async {
     if (index < 0 || index >= entregas.length) return;
 
-    final entrega = entregas[index];
-    if (entrega.id == null) return;
-
-    final sucesso = await ApiService.atualizarStatusEntrega(entrega.id!);
-    if (!sucesso) return;
-
-    await _atualizarDepoisDeAlteracao();
+    throw StateError(
+      'A finalização da entrega deve ser realizada pela tela '
+      'de finalização, com fotografia e localização GPS.',
+    );
   }
 
   Future<void> _atualizarDepoisDeAlteracao() async {

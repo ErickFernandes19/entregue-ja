@@ -1,3 +1,4 @@
+
 package com.entregueja.backend.repository;
 
 import com.entregueja.backend.entity.Entrega;
@@ -31,14 +32,27 @@ public interface EntregaRepository extends JpaRepository<Entrega, Long> {
 
     long countByEmpresaAndStatusNot(Empresa empresa, String status);
 
-    @Query("SELECT COUNT(e) FROM Entrega e WHERE e.empresa = :empresa AND e.dataCriacao >= :inicio AND e.dataCriacao < :fim")
+    @Query("""
+            SELECT COUNT(e)
+            FROM Entrega e
+            WHERE e.empresa = :empresa
+              AND e.dataCriacao >= :inicio
+              AND e.dataCriacao < :fim
+            """)
     long contarEntregasEmpresaNoPeriodo(
             @Param("empresa") Empresa empresa,
             @Param("inicio") LocalDateTime inicio,
             @Param("fim") LocalDateTime fim
     );
 
-    @Query("SELECT COUNT(e) FROM Entrega e WHERE e.entregador = :entregador AND e.empresa IS NULL AND e.dataCriacao >= :inicio AND e.dataCriacao < :fim")
+    @Query("""
+            SELECT COUNT(e)
+            FROM Entrega e
+            WHERE e.entregador = :entregador
+              AND e.empresa IS NULL
+              AND e.dataCriacao >= :inicio
+              AND e.dataCriacao < :fim
+            """)
     long contarEntregasAutonomasNoPeriodo(
             @Param("entregador") Usuario entregador,
             @Param("inicio") LocalDateTime inicio,
@@ -47,5 +61,7 @@ public interface EntregaRepository extends JpaRepository<Entrega, Long> {
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT e FROM Entrega e WHERE e.id = :id")
-    Optional<Entrega> buscarPorIdComBloqueio(@Param("id") Long id);
+    Optional<Entrega> buscarPorIdComBloqueio(
+            @Param("id") Long id
+    );
 }

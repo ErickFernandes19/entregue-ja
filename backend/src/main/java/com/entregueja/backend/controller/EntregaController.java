@@ -82,7 +82,7 @@ public class EntregaController {
         this.entityManager = entityManager;
     }
 
-    private ResponseEntity<?> validarLimiteDiario(Assinatura.TipoConta tipoConta, Long contaId) {
+    private ResponseEntity<?> validarLimiteEntregas(Assinatura.TipoConta tipoConta, Long contaId) {
         Object conta = tipoConta == Assinatura.TipoConta.EMPRESA
                 ? entityManager.find(Empresa.class, contaId, LockModeType.PESSIMISTIC_WRITE)
                 : entityManager.find(Usuario.class, contaId, LockModeType.PESSIMISTIC_WRITE);
@@ -91,37 +91,50 @@ public class EntregaController {
             return ResponseEntity.notFound().build();
         }
 
-        Assinatura assinatura = assinaturaService.buscarAtiva(tipoConta, contaId).orElse(null);
-        if (assinatura == null) {
-            return ResponseEntity.status(409).body(
-                    Map.of("mensagem", "Não existe assinatura ativa para esta conta")
-            );
-        }
+        Assinatura assinatura = assinaturaService.obterOuCriarGratuita(tipoConta, contaId);
+        LocalDateTime agora = LocalDateTime.now(ZoneId.of("America/Sao_Paulo"));
 
-        int limite = switch (assinatura.getPlano()) {
-            case GRATUITO -> 20;
-            case ESSENCIAL -> 50;
-            case PROFISSIONAL -> tipoConta == Assinatura.TipoConta.EMPRESA ? 200 : Integer.MAX_VALUE;
+        boolean emTeste = tipoConta == Assinatura.TipoConta.EMPRESA
+                && assinatura.isTesteGratuito()
+                && assinatura.getStatus() == Assinatura.Status.ATIVA
+                && assinatura.getDataInicio() != null
+                && assinatura.getDataVencimento() != null
+                && !agora.isBefore(assinatura.getDataInicio())
+                && agora.isBefore(assinatura.getDataVencimento());
+
+        int limite = emTeste ? 500 : switch (assinatura.getPlano()) {
+            case GRATUITO -> 100;
+            case ESSENCIAL -> 1000;
+            case PROFISSIONAL -> 5000;
         };
 
-        if (limite == Integer.MAX_VALUE) {
-            return null;
-        }
+        LocalDateTime inicio;
+        LocalDateTime fim;
 
-        LocalDate hoje = LocalDate.now(ZoneId.of("America/Sao_Paulo"));
-        LocalDateTime inicio = hoje.atStartOfDay();
-        LocalDateTime fim = hoje.plusDays(1).atStartOfDay();
+        if (emTeste) {
+            inicio = assinatura.getDataInicio();
+            fim = assinatura.getDataVencimento();
+        } else {
+            LocalDate hoje = LocalDate.now(ZoneId.of("America/Sao_Paulo"));
+            inicio = hoje.withDayOfMonth(1).atStartOfDay();
+            fim = hoje.withDayOfMonth(1).plusMonths(1).atStartOfDay();
+        }
 
         long quantidade = tipoConta == Assinatura.TipoConta.EMPRESA
                 ? entregaRepository.contarEntregasEmpresaNoPeriodo((Empresa) conta, inicio, fim)
                 : entregaRepository.contarEntregasAutonomasNoPeriodo((Usuario) conta, inicio, fim);
 
         if (quantidade >= limite) {
-            return ResponseEntity.status(409).body(Map.of(
-                    "mensagem", "Limite diário de entregas atingido para o plano " + assinatura.getPlano(),
-                    "limiteDiario", limite,
-                    "entregasHoje", quantidade
-            ));
+            Map<String, Object> resposta = new LinkedHashMap<>();
+            resposta.put("mensagem", emTeste
+                    ? "Limite de 500 entregas do teste gratuito atingido"
+                    : "Limite mensal de entregas atingido para o plano " + assinatura.getPlano());
+            resposta.put("limiteEntregas", limite);
+            resposta.put("entregasUtilizadas", quantidade);
+            resposta.put("periodo", emTeste ? "TESTE_GRATUITO" : "MENSAL");
+            resposta.put("inicioPeriodo", inicio.toString());
+            resposta.put("fimPeriodoExclusivo", fim.toString());
+            return ResponseEntity.status(409).body(resposta);
         }
 
         return null;
@@ -972,7 +985,7 @@ public class EntregaController {
             return ResponseEntity.status(403).build();
         }
 
-        ResponseEntity<?> limite = validarLimiteDiario(Assinatura.TipoConta.EMPRESA, empresa.getId());
+        ResponseEntity<?> limite = validarLimiteEntregas(Assinatura.TipoConta.EMPRESA, empresa.getId());
         if (limite != null) {
             return limite;
         }
@@ -1004,12 +1017,13 @@ public class EntregaController {
         return ResponseEntity.status(201).body(entregaSalva);
     }
 
+    @Transactional
     @PutMapping("/{id}/atribuir-entregador")
     public ResponseEntity<?> atribuirEntregador(
             @PathVariable Long id,
             @RequestBody Map<String, String> dados
     ) {
-        var entregaOptional = entregaRepository.findById(id);
+        var entregaOptional = entregaRepository.buscarPorIdComBloqueio(id);
 
         if (entregaOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
@@ -1074,64 +1088,68 @@ public class EntregaController {
     public ResponseEntity<?> cadastrarEntregaEmpresa(
             @PathVariable String email,
             @PathVariable String entregadorEmail,
-            @RequestBody Entrega entrega
+            @RequestBody Entrega dados
     ) {
-        var empresaOptional =
-                empresaRepository.findByEmail(email);
+        var empresaOptional = empresaRepository.findByEmail(email);
 
         if (empresaOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
 
-        var empresa = empresaOptional.get();
+        Empresa empresa = empresaOptional.get();
 
         if (!empresaAutorizada(empresa.getId())) {
             return ResponseEntity.status(403).build();
         }
 
-        ResponseEntity<?> limite = validarLimiteDiario(Assinatura.TipoConta.EMPRESA, empresa.getId());
+        ResponseEntity<?> limite = validarLimiteEntregas(
+                Assinatura.TipoConta.EMPRESA,
+                empresa.getId()
+        );
+
         if (limite != null) {
             return limite;
         }
 
-        var entregadorOptional =
-                usuarioRepository.findByEmail(
-                        entregadorEmail
-                );
+        if (dados == null
+                || dados.getCliente() == null
+                || dados.getCliente().isBlank()
+                || dados.getEndereco() == null
+                || dados.getEndereco().isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe o cliente e o endereço")
+            );
+        }
+
+        var entregadorOptional = usuarioRepository.findByEmail(entregadorEmail);
 
         if (entregadorOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
 
-        var entregador = entregadorOptional.get();
+        Usuario entregador = entregadorOptional.get();
 
         if (entregador.getEmpresa() == null
-                || !empresa.getId().equals(
-                entregador.getEmpresa().getId()
-        )) {
+                || !empresa.getId().equals(entregador.getEmpresa().getId())) {
             return ResponseEntity.status(403).body(
-                    Map.of(
-                            "mensagem",
-                            "O entregador não está vinculado à sua empresa"
-                    )
+                    Map.of("mensagem", "O entregador não está vinculado à sua empresa")
             );
         }
 
-        entrega.setId(null);
+        Entrega entrega = new Entrega();
+        entrega.setCliente(dados.getCliente().trim());
+        entrega.setEndereco(dados.getEndereco().trim());
+        entrega.setComplemento(dados.getComplemento());
+        entrega.setValor(dados.getValor());
+        entrega.setObservacao(dados.getObservacao());
+        entrega.setLatitude(dados.getLatitude());
+        entrega.setLongitude(dados.getLongitude());
         entrega.setEmpresa(empresa);
         entrega.setEntregador(entregador);
         entrega.setStatus("PENDENTE");
         entrega.setEntregue(false);
 
-        entrega.setFotoComprovante(null);
-        entrega.setMotivoNaoEntrega(null);
-        entrega.setJustificativa(null);
-        entrega.setDataFinalizacao(null);
-        entrega.setLatitudeComprovante(null);
-        entrega.setLongitudeComprovante(null);
-
-        Entrega entregaSalva =
-                entregaRepository.save(entrega);
+        Entrega entregaSalva = entregaRepository.save(entrega);
         notificarNovaEntrega(entregaSalva);
 
         return ResponseEntity.ok(entregaSalva);
@@ -1162,7 +1180,7 @@ public class EntregaController {
             );
         }
 
-        ResponseEntity<?> limite = validarLimiteDiario(Assinatura.TipoConta.ENTREGADOR, entregadorId);
+        ResponseEntity<?> limite = validarLimiteEntregas(Assinatura.TipoConta.ENTREGADOR, entregadorId);
         if (limite != null) {
             return limite;
         }
@@ -1312,32 +1330,27 @@ public class EntregaController {
     public ResponseEntity<?> atualizarStatus(
             @PathVariable Long id
     ) {
-        var entregaOptional =
-                entregaRepository.findById(id);
+        var entregaOptional = entregaRepository.findById(id);
 
         if (entregaOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
 
-        var entrega = entregaOptional.get();
+        Entrega entrega = entregaOptional.get();
 
         if (!podeAtualizarStatus(entrega)) {
             return ResponseEntity.status(403).build();
         }
 
         if (entregaFinalizadaOuCancelada(entrega)) {
-            return ResponseEntity.badRequest().build();
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Esta entrega já foi finalizada ou cancelada")
+            );
         }
 
-        entrega.setEntregue(true);
-        entrega.setStatus("ENTREGUE");
-        limparLocalizacaoEntregador(entrega);
-        entrega.setDataFinalizacao(LocalDateTime.now(ZoneId.of("America/Sao_Paulo")));
-
-        entregaRepository.save(entrega);
-        notificarEntregaConcluida(entrega);
-
-        return ResponseEntity.ok().build();
+        return ResponseEntity.status(409).body(
+                Map.of("mensagem", "Para concluir a entrega, envie uma foto e as coordenadas GPS pelo endpoint /entregas/" + id + "/concluir")
+        );
     }
 
     @PutMapping("/{id}/em-rota")
@@ -1389,7 +1402,7 @@ public class EntregaController {
             ) String observacao
     ) {
         var entregaOptional =
-                entregaRepository.findById(id);
+                entregaRepository.buscarPorIdComBloqueio(id);
 
         if (entregaOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
@@ -1501,7 +1514,7 @@ public class EntregaController {
             @RequestParam("longitude") Double longitude
     ) {
         var entregaOptional =
-                entregaRepository.findById(id);
+                entregaRepository.buscarPorIdComBloqueio(id);
 
         if (entregaOptional.isEmpty()) {
             return ResponseEntity.notFound().build();

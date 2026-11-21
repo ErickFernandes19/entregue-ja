@@ -1,10 +1,17 @@
+
 package com.entregueja.backend.entity;
 
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "tentativas_entrega")
+@Table(
+        name = "tentativas_entrega",
+        uniqueConstraints = @UniqueConstraint(
+                name = "uk_tentativa_entrega_numero",
+                columnNames = {"entrega_id", "numero_tentativa"}
+        )
+)
 public class TentativaEntrega {
 
     @Id

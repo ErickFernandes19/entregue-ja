@@ -14,6 +14,10 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
   bool _carregando = true;
   String? _erro;
   String? _planoAtual;
+  bool _testeAtivo = false;
+  bool _testeUtilizado = false;
+  bool _ativandoTeste = false;
+  DateTime? _fimTeste;
 
   @override
   void initState() {
@@ -29,11 +33,24 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
 
     try {
       final assinatura = await AssinaturaService.buscarAtual();
+      final historico = await AssinaturaService.buscarHistorico();
       if (!mounted) return;
+
+      final ativa = assinatura?['status']?.toString().toUpperCase() == 'ATIVA';
+      final testeAtivo = ativa && assinatura?['testeGratuito'] == true;
+      final fimTeste = DateTime.tryParse(
+        assinatura?['dataVencimento']?.toString() ?? '',
+      );
+
       setState(() {
-        _planoAtual = assinatura != null && assinatura['status'] == 'ATIVA'
-            ? assinatura['plano']?.toString().toUpperCase()
+        _planoAtual = ativa
+            ? assinatura?['plano']?.toString().toUpperCase()
             : null;
+        _testeAtivo = testeAtivo;
+        _testeUtilizado = historico.any(
+          (item) => item['testeGratuito'] == true,
+        );
+        _fimTeste = testeAtivo ? fimTeste : null;
         _carregando = false;
       });
     } on AssinaturaException catch (e) {
@@ -56,6 +73,81 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
     if (mounted) await _carregarAssinatura();
   }
 
+  Future<void> _abrirPagamento(String nome, String preco) async {
+    await context.push(
+      '/empresa/pagamento',
+      extra: <String, dynamic>{'plano': nome, 'precoMensal': preco},
+    );
+
+    if (mounted) await _carregarAssinatura();
+  }
+
+  String _formatarData(DateTime data) {
+    final dia = data.day.toString().padLeft(2, '0');
+    final mes = data.month.toString().padLeft(2, '0');
+    return '$dia/$mes/${data.year}';
+  }
+
+  Future<void> _iniciarTeste() async {
+    if (_carregando || _ativandoTeste || _testeUtilizado ||
+        _planoAtual != 'GRATUITO') {
+      return;
+    }
+
+    final confirmado = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Ativar teste gratuito?'),
+        content: const Text(
+          'Você terá acesso ao Essencial por 14 dias, sem cobrança. '
+          'O teste pode ser utilizado apenas uma vez por empresa. '
+          'Ao terminar, sua empresa retornará ao plano Gratuito '
+          'se não houver contratação de um plano pago.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Ativar 14 dias'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmado != true || !mounted) return;
+
+    setState(() => _ativandoTeste = true);
+
+    try {
+      await AssinaturaService.iniciarTesteEssencial();
+      if (!mounted) return;
+      await _carregarAssinatura();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Teste Essencial ativado com sucesso!')),
+      );
+    } on AssinaturaException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.mensagem)),
+      );
+      await _carregarAssinatura();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Não foi possível confirmar a ativação. Consulte sua assinatura.'),
+        ),
+      );
+      await _carregarAssinatura();
+    } finally {
+      if (mounted) setState(() => _ativandoTeste = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -66,7 +158,7 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
         centerTitle: true,
         actions: [
           IconButton(
-            onPressed: _carregando ? null : _carregarAssinatura,
+            onPressed: _carregando || _ativandoTeste ? null : _carregarAssinatura,
             tooltip: 'Atualizar assinatura',
             icon: const Icon(Icons.refresh),
           ),
@@ -86,7 +178,7 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Compare os limites disponíveis e escolha a opção ideal para suas entregas.',
+              'Escolha a capacidade mensal ideal para sua operação. Os entregadores vinculados utilizam os recursos incluídos no plano da empresa.',
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -95,7 +187,7 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
             SizedBox(
               width: double.infinity,
               child: FilledButton.tonalIcon(
-                onPressed: _abrirGerenciamento,
+                onPressed: _ativandoTeste ? null : _abrirGerenciamento,
                 icon: const Icon(Icons.manage_accounts_outlined),
                 label: const Text('Gerenciar assinatura'),
               ),
@@ -138,29 +230,112 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
               nome: 'Gratuito',
               preco: 'R\$ 0,00',
               entregadores: 1,
-              entregasPorDia: 20,
+              entregasPorMes: 100,
               gratuito: true,
               planoAtual: _planoAtual == 'GRATUITO',
-              verificando: _carregando || _erro != null,
+              verificando: _carregando || _ativandoTeste || _erro != null,
             ),
             const SizedBox(height: 14),
             _CartaoPlano(
               nome: 'Essencial',
               preco: 'R\$ 39,90',
               entregadores: 3,
-              entregasPorDia: 50,
+              entregasPorMes: 1000,
               destaque: true,
               planoAtual: _planoAtual == 'ESSENCIAL',
-              verificando: _carregando || _erro != null,
+              emTeste: _testeAtivo,
+              verificando: _carregando || _ativandoTeste || _erro != null,
+              onEscolher: () => _abrirPagamento('Essencial', 'R\$ 39,90'),
             ),
             const SizedBox(height: 14),
             _CartaoPlano(
               nome: 'Profissional',
               preco: 'R\$ 79,90',
               entregadores: 10,
-              entregasPorDia: 200,
+              entregasPorMes: 5000,
               planoAtual: _planoAtual == 'PROFISSIONAL',
-              verificando: _carregando || _erro != null,
+              verificando: _carregando || _ativandoTeste || _erro != null,
+              onEscolher: () => _abrirPagamento('Profissional', 'R\$ 79,90'),
+            ),
+            const SizedBox(height: 18),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.workspace_premium_outlined,
+                          color: theme.colorScheme.primary,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Experimente o Essencial por 14 dias',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Teste gratuito e opcional, disponível uma única vez por empresa.',
+                    ),
+                    const SizedBox(height: 14),
+                    const _Beneficio(texto: 'Até 3 entregadores vinculados'),
+                    const SizedBox(height: 10),
+                    const _Beneficio(texto: 'Até 500 entregas durante o teste'),
+                    const SizedBox(height: 10),
+                    const _Beneficio(texto: 'Acesso aos recursos do Essencial'),
+                    const SizedBox(height: 10),
+                    const _Beneficio(texto: 'Sem cobrança durante os 14 dias'),
+                    const SizedBox(height: 14),
+                    Text(
+                      'Ao final do teste, caso não contrate um plano, a empresa retorna ao Gratuito.',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                    if (_testeAtivo && _fimTeste != null) ...[
+                      const SizedBox(height: 12),
+                      Text('Término previsto: ${_formatarData(_fimTeste!)}'),
+                    ],
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _carregando || _erro != null ||
+                                _ativandoTeste || _testeUtilizado ||
+                                _planoAtual != 'GRATUITO'
+                            ? null
+                            : _iniciarTeste,
+                        icon: _ativandoTeste
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : Icon(_testeAtivo
+                                ? Icons.check_circle_outline
+                                : Icons.workspace_premium_outlined),
+                        label: Text(
+                          _ativandoTeste
+                              ? 'Ativando teste...'
+                              : _testeAtivo
+                                  ? 'Teste em andamento'
+                                  : _testeUtilizado
+                                      ? 'Teste já utilizado'
+                                      : _planoAtual != 'GRATUITO'
+                                          ? 'Disponível no plano Gratuito'
+                                          : 'Experimentar 14 dias grátis',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 18),
             Card(
@@ -173,7 +348,7 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
                     const SizedBox(width: 12),
                     const Expanded(
                       child: Text(
-                        'A contratação dos planos pagos estará disponível em breve. Os preços e limites apresentados são provisórios.',
+                        'Os preços e limites são provisórios. A ativação do teste já está disponível, mas o bloqueio automático por franquia e a integração de pagamentos ainda estão em desenvolvimento.',
                       ),
                     ),
                   ],
@@ -191,22 +366,33 @@ class _CartaoPlano extends StatelessWidget {
   final String nome;
   final String preco;
   final int entregadores;
-  final int entregasPorDia;
+  final int entregasPorMes;
   final bool gratuito;
   final bool destaque;
   final bool planoAtual;
+  final bool emTeste;
   final bool verificando;
+  final VoidCallback? onEscolher;
 
   const _CartaoPlano({
     required this.nome,
     required this.preco,
     required this.entregadores,
-    required this.entregasPorDia,
+    required this.entregasPorMes,
     this.gratuito = false,
     this.destaque = false,
     this.planoAtual = false,
+    this.emTeste = false,
     this.verificando = false,
+    this.onEscolher,
   });
+
+  String get _entregasFormatadas {
+    return entregasPorMes.toString().replaceAllMapped(
+      RegExp(r'(\d)(?=(\d{3})+(?!\d))'),
+      (match) => '${match[1]}.',
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -242,7 +428,7 @@ class _CartaoPlano extends StatelessWidget {
                 if (planoAtual)
                   Chip(
                     avatar: const Icon(Icons.check_circle_outline, size: 18),
-                    label: const Text('Atual'),
+                    label: Text(emTeste ? 'Em teste' : 'Atual'),
                     backgroundColor: colors.primaryContainer,
                   )
                 else if (destaque)
@@ -277,20 +463,20 @@ class _CartaoPlano extends StatelessWidget {
                   : '$entregadores entregadores vinculados',
             ),
             const SizedBox(height: 12),
-            _Beneficio(texto: '$entregasPorDia entregas por dia'),
+            _Beneficio(texto: '$_entregasFormatadas entregas por mês'),
+            const SizedBox(height: 12),
+            const _Beneficio(texto: 'Gestão e acompanhamento de entregas'),
+            const SizedBox(height: 12),
+            const _Beneficio(texto: 'Mapas e navegação'),
+            const SizedBox(height: 12),
+            const _Beneficio(texto: 'Histórico de entregas'),
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
                 onPressed: verificando || planoAtual || gratuito
                     ? null
-                    : () => context.push(
-                        '/empresa/pagamento',
-                        extra: <String, dynamic>{
-                          'plano': nome,
-                          'precoMensal': preco,
-                        },
-                      ),
+                    : onEscolher,
                 icon: Icon(
                   planoAtual || gratuito
                       ? Icons.check_circle_outline
@@ -298,7 +484,7 @@ class _CartaoPlano extends StatelessWidget {
                 ),
                 label: Text(
                   planoAtual
-                      ? 'Seu plano atual'
+                      ? (emTeste ? 'Teste ativo' : 'Seu plano atual')
                       : gratuito
                       ? 'Plano gratuito'
                       : 'Escolher plano',

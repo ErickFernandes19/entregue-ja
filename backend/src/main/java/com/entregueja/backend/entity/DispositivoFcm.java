@@ -11,14 +11,18 @@ import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.util.HexFormat;
 
 @Entity
 @Table(
         name = "dispositivos_fcm",
         uniqueConstraints = @UniqueConstraint(
-                name = "uk_dispositivo_fcm_token",
-                columnNames = "token"
+                name = "uk_dispositivo_fcm_token_hash",
+                columnNames = "token_hash"
         ),
         indexes = @Index(
                 name = "idx_dispositivo_fcm_conta",
@@ -39,6 +43,9 @@ public class DispositivoFcm {
 
     @Column(name = "token", nullable = false, length = 2048)
     private String token;
+
+    @Column(name = "token_hash", nullable = false, length = 64)
+    private String tokenHash;
 
     @Column(name = "plataforma", nullable = false, length = 20)
     private String plataforma = "ANDROID";
@@ -64,11 +71,26 @@ public class DispositivoFcm {
         LocalDateTime agora = LocalDateTime.now();
         criadoEm = agora;
         atualizadoEm = agora;
+        atualizarTokenHash();
     }
 
     @PreUpdate
     public void antesDeAtualizar() {
         atualizadoEm = LocalDateTime.now();
+        atualizarTokenHash();
+    }
+
+    private void atualizarTokenHash() {
+        if (token == null) {
+            throw new IllegalStateException("Token FCM não pode ser nulo.");
+        }
+        try {
+            byte[] resumo = MessageDigest.getInstance("SHA-256")
+                    .digest(token.getBytes(StandardCharsets.UTF_8));
+            tokenHash = HexFormat.of().formatHex(resumo);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 indisponível.", e);
+        }
     }
 
     public Long getId() {
@@ -101,6 +123,14 @@ public class DispositivoFcm {
 
     public void setToken(String token) {
         this.token = token;
+    }
+
+    public String getTokenHash() {
+        return tokenHash;
+    }
+
+    public void setTokenHash(String tokenHash) {
+        this.tokenHash = tokenHash;
     }
 
     public String getPlataforma() {

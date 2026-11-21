@@ -1,3 +1,4 @@
+
 package com.entregueja.backend.repository;
 
 import com.entregueja.backend.entity.Assinatura;
@@ -23,5 +24,23 @@ public interface AssinaturaRepository extends JpaRepository<Assinatura, Long> {
             Assinatura.TipoConta tipoConta,
             Long contaId,
             Assinatura.Status status
+    );
+
+    boolean existsByTipoContaAndContaIdAndTesteGratuitoTrue(
+            Assinatura.TipoConta tipoConta,
+            Long contaId
+    );
+
+    Optional<Assinatura> findFirstByTipoContaAndContaIdAndTesteGratuitoTrueOrderByIdDesc(
+            Assinatura.TipoConta tipoConta,
+            Long contaId
+    );
+
+    Optional<Assinatura> findByMercadoPagoAssinaturaId(
+            String mercadoPagoAssinaturaId
+    );
+
+    boolean existsByMercadoPagoAssinaturaId(
+            String mercadoPagoAssinaturaId
     );
 }

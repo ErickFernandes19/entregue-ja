@@ -10,10 +10,18 @@ public interface DispositivoFcmRepository extends JpaRepository<DispositivoFcm, 
 
     Optional<DispositivoFcm> findByToken(String token);
 
+    Optional<DispositivoFcm> findByTokenHash(String tokenHash);
+
     List<DispositivoFcm> findByTipoContaAndContaId(String tipoConta, Long contaId);
 
     long deleteByTokenAndTipoContaAndContaId(
             String token,
+            String tipoConta,
+            Long contaId
+    );
+
+    long deleteByTokenHashAndTipoContaAndContaId(
+            String tokenHash,
             String tipoConta,
             Long contaId
     );

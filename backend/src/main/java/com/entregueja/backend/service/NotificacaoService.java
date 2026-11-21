@@ -1,4 +1,3 @@
-
 package com.entregueja.backend.service;
 
 import com.entregueja.backend.entity.DispositivoFcm;
@@ -11,6 +10,10 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -46,6 +49,16 @@ public class NotificacaoService {
     private void validarContaId(Long contaId) {
         if (contaId == null || contaId <= 0) {
             throw new IllegalArgumentException("Conta inválida");
+        }
+    }
+
+    private String calcularTokenHash(String token) {
+        try {
+            byte[] resumo = MessageDigest.getInstance("SHA-256")
+                    .digest(token.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(resumo);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 indisponível.", e);
         }
     }
 
@@ -176,9 +189,10 @@ public class NotificacaoService {
         }
 
         String tokenNormalizado = token.trim();
+        String tokenHash = calcularTokenHash(tokenNormalizado);
 
         DispositivoFcm dispositivo = dispositivoFcmRepository
-                .findByToken(tokenNormalizado)
+                .findByTokenHash(tokenHash)
                 .orElseGet(DispositivoFcm::new);
 
         dispositivo.setTipoConta(destinatario);
@@ -202,8 +216,13 @@ public class NotificacaoService {
             return false;
         }
 
-        return dispositivoFcmRepository.deleteByTokenAndTipoContaAndContaId(
-                token.trim(),
+        String tokenNormalizado = token.trim();
+        if (tokenNormalizado.length() > 2048) {
+            return false;
+        }
+
+        return dispositivoFcmRepository.deleteByTokenHashAndTipoContaAndContaId(
+                calcularTokenHash(tokenNormalizado),
                 destinatario,
                 contaId
         ) > 0;

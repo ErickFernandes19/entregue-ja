@@ -2,9 +2,8 @@
 package com.entregueja.backend.config;
 
 import com.entregueja.backend.security.JwtAuthenticationFilter;
-
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletResponse;
-
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpHeaders;
@@ -32,7 +31,6 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-
         configuration.setAllowedOriginPatterns(List.of(
                 "http://localhost:*",
                 "http://127.0.0.1:*",
@@ -41,21 +39,14 @@ public class SecurityConfig {
                 "https://entregueja.netlify.app",
                 "https://jocular-cassata-48f61b.netlify.app"
         ));
-
-        configuration.setAllowedMethods(List.of(
-                "GET", "POST", "PUT", "DELETE", "OPTIONS"
-        ));
-
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of(
                 HttpHeaders.AUTHORIZATION,
                 HttpHeaders.CONTENT_TYPE,
-                HttpHeaders.ACCEPT
+                HttpHeaders.ACCEPT,
+                "X-Idempotency-Key"
         ));
-
-        configuration.setExposedHeaders(List.of(
-                HttpHeaders.CONTENT_TYPE
-        ));
-
+        configuration.setExposedHeaders(List.of(HttpHeaders.CONTENT_TYPE));
         configuration.setAllowCredentials(false);
         configuration.setMaxAge(3600L);
 
@@ -73,9 +64,11 @@ public class SecurityConfig {
                         .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )
                 .authorizeHttpRequests(auth -> auth
+                        .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/uploads/empresas/**").permitAll()
                         .requestMatchers("/uploads/entregas/**").denyAll()
+                        .requestMatchers(HttpMethod.POST, "/pagamentos/assinaturas/webhook").permitAll()
                         .requestMatchers(
                                 HttpMethod.POST,
                                 "/auth/login",
@@ -96,6 +89,7 @@ public class SecurityConfig {
                                 "/auth/redefinir-senha",
                                 "/empresas/redefinir-senha"
                         ).permitAll()
+                        .requestMatchers("/pagamentos/assinaturas/**").hasAuthority("EMPRESA")
                         .requestMatchers("/notificacoes/**", "/assinaturas/**")
                         .hasAnyAuthority("EMPRESA", "ENTREGADOR")
                         .requestMatchers("/auth/**").hasAuthority("ENTREGADOR")

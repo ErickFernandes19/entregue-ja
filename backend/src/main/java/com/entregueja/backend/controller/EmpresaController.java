@@ -734,15 +734,12 @@ public class EmpresaController {
             );
         }
 
-        var assinaturaOptional = assinaturaService.buscarAtiva(Assinatura.TipoConta.EMPRESA, empresa.getId());
+        Assinatura assinatura = assinaturaService.obterOuCriarGratuita(
+                Assinatura.TipoConta.EMPRESA,
+                empresa.getId()
+        );
 
-        if (assinaturaOptional.isEmpty()) {
-            return ResponseEntity.status(409).body(
-                    Map.of("mensagem", "A empresa não possui uma assinatura ativa")
-            );
-        }
-
-        int limite = switch (assinaturaOptional.get().getPlano()) {
+        int limite = switch (assinatura.getPlano()) {
             case GRATUITO -> 1;
             case ESSENCIAL -> 3;
             case PROFISSIONAL -> 10;

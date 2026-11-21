@@ -25,12 +25,12 @@ public class EmailService {
 
     public EmailService(
             ObjectMapper objectMapper,
-            @Value("${BREVO_API_KEY}") String apiKey,
-            @Value("${BREVO_SENDER_EMAIL}") String remetente
+            @Value("${BREVO_API_KEY:}") String apiKey,
+            @Value("${BREVO_SENDER_EMAIL:}") String remetente
     ) {
         this.objectMapper = objectMapper;
-        this.apiKey = apiKey;
-        this.remetente = remetente;
+        this.apiKey = apiKey == null ? "" : apiKey.trim();
+        this.remetente = remetente == null ? "" : remetente.trim();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -60,12 +60,18 @@ public class EmailService {
     }
 
     private void enviarEmail(String destinatario, String assunto, String texto) {
-        String corpo;
+        if (apiKey.isBlank() || remetente.isBlank()) {
+            throw new IllegalStateException("O serviço de e-mail não está configurado. Configure BREVO_API_KEY e BREVO_SENDER_EMAIL.");
+        }
+        if (destinatario == null || destinatario.isBlank()) {
+            throw new IllegalArgumentException("Destinatário de e-mail obrigatório.");
+        }
 
+        String corpo;
         try {
             corpo = objectMapper.writeValueAsString(Map.of(
                     "sender", Map.of("name", "Entregue Já", "email", remetente),
-                    "to", new Object[]{Map.of("email", destinatario)},
+                    "to", new Object[]{Map.of("email", destinatario.trim())},
                     "subject", assunto,
                     "textContent", texto
             ));
@@ -89,10 +95,7 @@ public class EmailService {
 
             if (resposta.statusCode() < 200 || resposta.statusCode() >= 300) {
                 throw new IllegalStateException(
-                        "Falha ao enviar e-mail pelo Brevo. Status HTTP: "
-                                + resposta.statusCode()
-                                + ". Resposta: "
-                                + resposta.body()
+                        "Falha ao enviar e-mail pelo Brevo. Status HTTP: " + resposta.statusCode() + "."
                 );
             }
         } catch (InterruptedException e) {

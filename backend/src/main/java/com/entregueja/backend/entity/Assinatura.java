@@ -49,6 +49,22 @@ public class Assinatura {
     @Column(name = "renovacao_automatica", nullable = false)
     private boolean renovacaoAutomatica = false;
 
+    @Column(name = "teste_gratuito", nullable = false)
+    private boolean testeGratuito = false;
+
+    @Column(name = "mercado_pago_assinatura_id", length = 100)
+    private String mercadoPagoAssinaturaId;
+
+    @Column(name = "mercado_pago_plano_id", length = 100)
+    private String mercadoPagoPlanoId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "plano_agendado", length = 20)
+    private Plano planoAgendado;
+
+    @Column(name = "data_troca_agendada")
+    private LocalDateTime dataTrocaAgendada;
+
     public Assinatura() {
     }
 
@@ -114,5 +130,45 @@ public class Assinatura {
 
     public void setRenovacaoAutomatica(boolean renovacaoAutomatica) {
         this.renovacaoAutomatica = renovacaoAutomatica;
+    }
+
+    public boolean isTesteGratuito() {
+        return testeGratuito;
+    }
+
+    public void setTesteGratuito(boolean testeGratuito) {
+        this.testeGratuito = testeGratuito;
+    }
+
+    public String getMercadoPagoAssinaturaId() {
+        return mercadoPagoAssinaturaId;
+    }
+
+    public void setMercadoPagoAssinaturaId(String mercadoPagoAssinaturaId) {
+        this.mercadoPagoAssinaturaId = mercadoPagoAssinaturaId;
+    }
+
+    public String getMercadoPagoPlanoId() {
+        return mercadoPagoPlanoId;
+    }
+
+    public void setMercadoPagoPlanoId(String mercadoPagoPlanoId) {
+        this.mercadoPagoPlanoId = mercadoPagoPlanoId;
+    }
+
+    public Plano getPlanoAgendado() {
+        return planoAgendado;
+    }
+
+    public void setPlanoAgendado(Plano planoAgendado) {
+        this.planoAgendado = planoAgendado;
+    }
+
+    public LocalDateTime getDataTrocaAgendada() {
+        return dataTrocaAgendada;
+    }
+
+    public void setDataTrocaAgendada(LocalDateTime dataTrocaAgendada) {
+        this.dataTrocaAgendada = dataTrocaAgendada;
     }
 }
