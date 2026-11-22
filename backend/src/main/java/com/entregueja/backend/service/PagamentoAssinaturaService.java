@@ -116,6 +116,11 @@ public class PagamentoAssinaturaService {
 
     @Transactional
     public Map<String, Object> processarPagamentoRecorrente(String mercadoPagoPagamentoId) {
+        return processarPagamentoRecorrente(mercadoPagoPagamentoId, null);
+    }
+
+    private Map<String, Object> processarPagamentoRecorrente(
+            String mercadoPagoPagamentoId, String assinaturaConfirmadaNaListagem) {
         if (mercadoPagoPagamentoId == null || !mercadoPagoPagamentoId.matches("[0-9]+")) {
             throw new IllegalArgumentException("Identificador do pagamento inválido.");
         }
@@ -128,6 +133,12 @@ public class PagamentoAssinaturaService {
         String assinaturaExterna = texto(externo, "preapproval_id");
         if (assinaturaExterna == null) {
             assinaturaExterna = texto(externo.path("metadata"), "preapproval_id");
+        }
+        if (assinaturaConfirmadaNaListagem != null) {
+            if (assinaturaExterna != null && !assinaturaConfirmadaNaListagem.equals(assinaturaExterna)) {
+                throw new IllegalStateException("A cobrança diverge da assinatura informada na listagem autorizada.");
+            }
+            assinaturaExterna = assinaturaConfirmadaNaListagem;
         }
         if (assinaturaExterna == null) {
             throw new IllegalStateException("Não foi possível comprovar a assinatura recorrente vinculada à cobrança.");
@@ -270,7 +281,7 @@ public class PagamentoAssinaturaService {
                     mensalidadesEncontradas++;
                     boolean existente = pagamentoRepository.findByMercadoPagoPagamentoId(pagamentoExterno)
                             .isPresent();
-                    processarPagamentoRecorrente(pagamentoExterno);
+                    processarPagamentoRecorrente(pagamentoExterno, assinaturaExterna);
                     if (existente) {
                         mensalidadesJaRegistradas++;
                     } else {
