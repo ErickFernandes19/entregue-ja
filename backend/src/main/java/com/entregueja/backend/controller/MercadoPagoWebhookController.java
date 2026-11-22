@@ -115,6 +115,12 @@ public class MercadoPagoWebhookController {
                     && "subscription_preapproval".equalsIgnoreCase(tipoCorpo)));
 
             if (!eventoAssinaturaEquivalente) {
+                if (recorrente
+                        && "subscription_authorized_payment".equalsIgnoreCase(tipoUrl)
+                        && "subscription_preapproval".equalsIgnoreCase(tipoCorpo)) {
+                    LOGGER.warn("Notificação de teste com tipos incompatíveis ignorada, tipoUrl={}, tipoCorpo={}", tipoUrl, tipoCorpo);
+                    return ResponseEntity.ok().build();
+                }
                 LOGGER.warn("Webhook com tipos de evento divergentes, tipoUrl={}, tipoCorpo={}", tipoUrl, tipoCorpo);
                 return ResponseEntity.badRequest().build();
             }
