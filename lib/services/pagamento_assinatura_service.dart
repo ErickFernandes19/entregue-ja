@@ -36,10 +36,11 @@ class PagamentoAssinaturaService {
     };
   }
 
-  static Map<String, dynamic> _processarResposta(http.Response response) {
+  static void _validarStatus(http.Response response) {
     switch (response.statusCode) {
       case 200:
-        break;
+      case 201:
+        return;
       case 400:
         throw const PagamentoAssinaturaException(
           'Os dados enviados para o pagamento são inválidos.',
@@ -57,12 +58,12 @@ class PagamentoAssinaturaService {
         );
       case 404:
         throw const PagamentoAssinaturaException(
-          'Pagamento não encontrado.',
+          'Pagamento ou assinatura não encontrado.',
           statusCode: 404,
         );
       case 409:
         throw const PagamentoAssinaturaException(
-          'Não foi possível concluir a operação devido a um conflito. Verifique o pagamento antes de tentar novamente.',
+          'Não foi possível concluir a operação devido a um conflito. Verifique sua assinatura antes de tentar novamente.',
           statusCode: 409,
         );
       case 502:
@@ -76,16 +77,22 @@ class PagamentoAssinaturaService {
           statusCode: response.statusCode,
         );
     }
+  }
 
-    dynamic dados;
+  static dynamic _decodificarResposta(http.Response response) {
+    _validarStatus(response);
 
     try {
-      dados = jsonDecode(utf8.decode(response.bodyBytes));
+      return jsonDecode(utf8.decode(response.bodyBytes));
     } on FormatException {
       throw const PagamentoAssinaturaException(
         'O servidor retornou dados inválidos.',
       );
     }
+  }
+
+  static Map<String, dynamic> _processarResposta(http.Response response) {
+    final dados = _decodificarResposta(response);
 
     if (dados is! Map<String, dynamic>) {
       throw const PagamentoAssinaturaException(
@@ -144,6 +151,119 @@ class PagamentoAssinaturaService {
     } on http.ClientException {
       throw const PagamentoAssinaturaException(
         'Não foi possível consultar o pagamento. Verifique sua conexão.',
+      );
+    }
+  }
+
+  static Future<Map<String, dynamic>> criarAssinaturaRecorrente({
+    required String plano,
+    required String chaveIdempotencia,
+  }) async {
+    final headers = await _headersAutenticados();
+    headers['X-Idempotency-Key'] = chaveIdempotencia;
+
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$_urlBase/recorrentes'),
+            headers: headers,
+            body: jsonEncode({'plano': plano.toUpperCase()}),
+          )
+          .timeout(const Duration(seconds: 30));
+
+      return _processarResposta(response);
+    } on TimeoutException {
+      throw const PagamentoAssinaturaException(
+        'A solicitação demorou para responder. A assinatura pode ter sido criada. Consulte suas assinaturas antes de tentar novamente.',
+      );
+    } on http.ClientException {
+      throw const PagamentoAssinaturaException(
+        'Falha de conexão. A assinatura pode ter sido criada. Consulte suas assinaturas antes de tentar novamente.',
+      );
+    }
+  }
+
+  static Future<Map<String, dynamic>> consultarAssinaturaRecorrente({
+    required int assinaturaId,
+  }) async {
+    final headers = await _headersAutenticados();
+
+    try {
+      final response = await http
+          .get(
+            Uri.parse('$_urlBase/recorrentes/$assinaturaId'),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 30));
+
+      return _processarResposta(response);
+    } on TimeoutException {
+      throw const PagamentoAssinaturaException(
+        'O servidor demorou para responder ao consultar a assinatura.',
+      );
+    } on http.ClientException {
+      throw const PagamentoAssinaturaException(
+        'Não foi possível consultar a assinatura. Verifique sua conexão.',
+      );
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>>
+  listarAssinaturasRecorrentes() async {
+    final headers = await _headersAutenticados();
+
+    try {
+      final response = await http
+          .get(Uri.parse('$_urlBase/recorrentes'), headers: headers)
+          .timeout(const Duration(seconds: 30));
+
+      final dados = _decodificarResposta(response);
+      if (dados is! List) {
+        throw const PagamentoAssinaturaException(
+          'Formato da lista de assinaturas inválido.',
+        );
+      }
+
+      return dados.map((item) {
+        if (item is! Map<String, dynamic>) {
+          throw const PagamentoAssinaturaException(
+            'O servidor retornou uma assinatura inválida.',
+          );
+        }
+        return item;
+      }).toList();
+    } on TimeoutException {
+      throw const PagamentoAssinaturaException(
+        'O servidor demorou para listar as assinaturas.',
+      );
+    } on http.ClientException {
+      throw const PagamentoAssinaturaException(
+        'Não foi possível listar as assinaturas. Verifique sua conexão.',
+      );
+    }
+  }
+
+  static Future<Map<String, dynamic>> cancelarAssinaturaRecorrente({
+    required int assinaturaId,
+  }) async {
+    final headers = await _headersAutenticados();
+
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$_urlBase/recorrentes/$assinaturaId/cancelar'),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 30));
+
+      return _processarResposta(response);
+    } on TimeoutException {
+      throw const PagamentoAssinaturaException(
+        'O cancelamento pode ter sido solicitado. Consulte a assinatura para confirmar o status.',
+      );
+    } on http.ClientException {
+      throw const PagamentoAssinaturaException(
+        'Falha de conexão. Consulte a assinatura para confirmar se o cancelamento ocorreu.',
       );
     }
   }

@@ -1,4 +1,3 @@
-
 package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.PagamentoAssinatura;
@@ -101,11 +100,9 @@ public class MercadoPagoWebhookController {
                     .orElse(null);
 
             if (pagamento == null) {
-                LOGGER.info("Pagamento não encontrado no banco local, id={}", dataId);
-                return ResponseEntity.ok().build();
-            }
-
-            if (pagamento.getFormaPagamento() == PagamentoAssinatura.FormaPagamento.PIX) {
+                LOGGER.info("Pagamento sem registro local; verificando mensalidade recorrente, id={}", dataId);
+                pagamentoService.processarPagamentoRecorrente(dataId);
+            } else if (pagamento.getFormaPagamento() == PagamentoAssinatura.FormaPagamento.PIX) {
                 pagamentoService.consultarCobrancaPix(
                         pagamento.getEmpresaId(),
                         pagamento.getId()

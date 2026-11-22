@@ -72,6 +72,8 @@ public class PagamentoAssinaturaService {
             throw new IllegalStateException("Esta cobrança não está mais pendente.");
         }
 
+        validarContratacaoPix(empresaId, plano);
+
         JsonNode resposta = mercadoPagoService.criarPagamentoPix(
                 valor,
                 "Assinatura Entregue Já - " + plano.name(),
@@ -292,6 +294,42 @@ public class PagamentoAssinaturaService {
         resultado.put("mensalidadesRegistradas", mensalidadesProcessadas);
         resultado.put("mensalidadesJaRegistradas", mensalidadesJaRegistradas);
         return resultado;
+    }
+
+    private void validarContratacaoPix(Long empresaId, Assinatura.Plano plano) {
+        Assinatura atual = entityManager.createQuery(
+                        "select a from Assinatura a where a.tipoConta = :tipo "
+                                + "and a.contaId = :contaId and a.status = :status order by a.id desc",
+                        Assinatura.class)
+                .setParameter("tipo", Assinatura.TipoConta.EMPRESA)
+                .setParameter("contaId", empresaId)
+                .setParameter("status", Assinatura.Status.ATIVA)
+                .setMaxResults(1)
+                .getResultStream()
+                .findFirst()
+                .orElse(null);
+
+        if (atual == null || atual.getDataVencimento() != null
+                && !atual.getDataVencimento().isAfter(LocalDateTime.now(FUSO))) {
+            return;
+        }
+
+        if (atual.getPlanoAgendado() != null) {
+            throw new IllegalStateException(
+                    "Existe uma troca de plano agendada. Aguarde o vencimento para contratar um novo plano.");
+        }
+
+        if (atual.isRenovacaoAutomatica()) {
+            throw new IllegalStateException(
+                    "Existe uma assinatura com renovação automática ativa. Cancele a renovação antes de pagar por Pix.");
+        }
+
+        if (!atual.isTesteGratuito()
+                && atual.getPlano() != Assinatura.Plano.GRATUITO
+                && atual.getPlano() != plano) {
+            throw new IllegalStateException(
+                    "A troca para outro plano só pode ser contratada após o vencimento atual.");
+        }
     }
 
     private void validarTrocaProgramada(AssinaturaRecorrente recorrente) {

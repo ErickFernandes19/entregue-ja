@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../services/pagamento_assinatura_service.dart';
 
@@ -35,6 +36,11 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
 
   int? _pagamentoId;
   bool _planoAtivado = false;
+  int? _assinaturaId;
+  String? _statusAssinatura;
+  String? _urlAutorizacao;
+  String? _chaveRecorrente;
+  bool _consultandoAssinatura = false;
 
   String _gerarUuid() {
     final random = Random.secure();
@@ -180,22 +186,158 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
     );
   }
 
-  void _mostrarCartaoIndisponivel() {
-    showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Cartão de crédito'),
-        content: const Text(
-          'A contratação por cartão ainda não está disponível nesta tela. '
-          'Nenhuma cobrança será realizada.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Entendi'),
+  void _atualizarAssinatura(Map<String, dynamic> dados) {
+    final id = dados['assinaturaId'];
+    if (id is! int || id <= 0) {
+      throw const PagamentoAssinaturaException(
+        'O servidor não retornou um identificador válido para a assinatura.',
+      );
+    }
+    final url = dados['urlAutorizacao']?.toString();
+    setState(() {
+      _assinaturaId = id;
+      _statusAssinatura =
+          dados['status']?.toString().toUpperCase() ?? 'PENDENTE';
+      _urlAutorizacao = url != null && url.isNotEmpty ? url : null;
+      _mensagemErro = null;
+    });
+  }
+
+  Future<void> _abrirAutorizacao() async {
+    final url = _urlAutorizacao;
+    final uri = url == null ? null : Uri.tryParse(url);
+    if (uri == null ||
+        uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        !(uri.host == 'mercadopago.com.br' ||
+            uri.host.endsWith('.mercadopago.com.br') ||
+            uri.host == 'mercadopago.com' ||
+            uri.host.endsWith('.mercadopago.com'))) {
+      setState(
+        () =>
+            _mensagemErro = 'A URL de autorização do Mercado Pago é inválida.',
+      );
+      return;
+    }
+    try {
+      final abriu = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!abriu && mounted) {
+        setState(
+          () => _mensagemErro = 'Não foi possível abrir o Mercado Pago.',
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => _mensagemErro = 'Não foi possível abrir o Mercado Pago.',
+        );
+      }
+    }
+  }
+
+  Future<void> _criarAssinaturaCartao() async {
+    if (_carregando || _consultandoAssinatura || _assinaturaId != null) return;
+    if (_planoApi != 'ESSENCIAL' && _planoApi != 'PROFISSIONAL') {
+      setState(() => _mensagemErro = 'Selecione um plano pago válido.');
+      return;
+    }
+    _chaveRecorrente ??= _gerarUuid();
+    setState(() {
+      _carregando = true;
+      _mensagemErro = null;
+    });
+    try {
+      final dados = await PagamentoAssinaturaService.criarAssinaturaRecorrente(
+        plano: _planoApi,
+        chaveIdempotencia: _chaveRecorrente!,
+      );
+      if (!mounted) return;
+      _atualizarAssinatura(dados);
+      if (_urlAutorizacao != null && _statusAssinatura == 'PENDENTE') {
+        await _abrirAutorizacao();
+      }
+    } catch (erro) {
+      if (mounted) setState(() => _mensagemErro = erro.toString());
+    } finally {
+      if (mounted) setState(() => _carregando = false);
+    }
+  }
+
+  Future<void> _consultarAssinaturaCartao() async {
+    final id = _assinaturaId;
+    if (id == null || _consultandoAssinatura || _carregando) return;
+    setState(() {
+      _consultandoAssinatura = true;
+      _mensagemErro = null;
+    });
+    try {
+      final dados =
+          await PagamentoAssinaturaService.consultarAssinaturaRecorrente(
+            assinaturaId: id,
+          );
+      if (mounted) _atualizarAssinatura(dados);
+    } catch (erro) {
+      if (mounted) setState(() => _mensagemErro = erro.toString());
+    } finally {
+      if (mounted) setState(() => _consultandoAssinatura = false);
+    }
+  }
+
+  Widget _construirCartao(ThemeData theme) {
+    final status = _statusAssinatura ?? 'PENDENTE';
+    final autorizada = status == 'AUTORIZADA';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Assinatura nº $_assinaturaId',
+                  style: theme.textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                Text('Status: $status'),
+                const SizedBox(height: 8),
+                Text(
+                  autorizada
+                      ? 'Cartão autorizado. A ativação do plano depende da confirmação da cobrança pelo servidor.'
+                      : status == 'PENDENTE'
+                      ? 'Autorize a assinatura no Mercado Pago. Depois, volte e consulte o status.'
+                      : 'Consulte o gerenciamento de assinaturas para verificar os próximos passos.',
+                ),
+              ],
+            ),
           ),
+        ),
+        const SizedBox(height: 12),
+        if (_urlAutorizacao != null && status == 'PENDENTE') ...[
+          FilledButton.icon(
+            onPressed: _carregando ? null : _abrirAutorizacao,
+            icon: const Icon(Icons.open_in_new),
+            label: const Text('Abrir autorização no Mercado Pago'),
+          ),
+          const SizedBox(height: 12),
         ],
-      ),
+        OutlinedButton.icon(
+          onPressed: _consultandoAssinatura ? null : _consultarAssinaturaCartao,
+          icon: _consultandoAssinatura
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.refresh),
+          label: Text(
+            _consultandoAssinatura
+                ? 'Consultando...'
+                : 'Consultar status da assinatura',
+          ),
+        ),
+      ],
     );
   }
 
@@ -348,7 +490,7 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     final isPix = _forma == _FormaPagamento.pix;
-    final temPagamento = _pagamentoId != null;
+    final temPagamento = _pagamentoId != null || _assinaturaId != null;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Pagamento da assinatura')),
@@ -405,7 +547,7 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                   child: RadioGroup<_FormaPagamento>(
                     groupValue: _forma,
                     onChanged: (value) {
-                      if (temPagamento || value == null) return;
+                      if (temPagamento || _carregando || value == null) return;
 
                       setState(() {
                         _forma = value;
@@ -451,7 +593,7 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                           isPix
                               ? 'O pagamento Pix será gerado pelo Mercado Pago. '
                                     'A confirmação será consultada diretamente no servidor.'
-                              : 'O pagamento por cartão ainda não está disponível nesta tela.',
+                              : 'A autorização do cartão será feita no Mercado Pago. A cobrança recorrente e a ativação do plano dependem da confirmação do servidor.',
                         ),
                       ),
                     ],
@@ -474,15 +616,17 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                   ),
                   const SizedBox(height: 16),
                 ],
-                if (isPix && temPagamento)
+                if (isPix && _pagamentoId != null)
                   _construirPix(theme)
+                else if (!isPix && _assinaturaId != null)
+                  _construirCartao(theme)
                 else
                   FilledButton.icon(
                     onPressed: _carregando
                         ? null
                         : isPix
                         ? _criarPix
-                        : _mostrarCartaoIndisponivel,
+                        : _criarAssinaturaCartao,
                     icon: _carregando
                         ? const SizedBox(
                             width: 18,
@@ -492,7 +636,7 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                         : Icon(isPix ? Icons.qr_code : Icons.lock_outline),
                     label: Text(
                       _carregando
-                          ? 'Gerando Pix...'
+                          ? (isPix ? 'Gerando Pix...' : 'Criando assinatura...')
                           : isPix
                           ? 'Continuar com Pix'
                           : 'Continuar com cartão',
