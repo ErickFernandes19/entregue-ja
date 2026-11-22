@@ -106,6 +106,22 @@ public class AssinaturaRecorrenteService {
     }
 
     @Transactional
+    public Map<String, Object> sincronizarNotificacao(String assinaturaExternaId) {
+        if (assinaturaExternaId == null || !assinaturaExternaId.matches("[A-Za-z0-9_-]{1,100}")) {
+            throw new IllegalArgumentException("Identificador externo da assinatura inválido.");
+        }
+
+        AssinaturaRecorrente registro = repository.findByMercadoPagoAssinaturaId(assinaturaExternaId)
+                .orElseThrow(() -> new IllegalStateException("Assinatura recorrente não encontrada."));
+
+        obterEmpresaComBloqueio(registro.getEmpresaId());
+        JsonNode externo = mercadoPagoService.consultarAssinaturaRecorrente(assinaturaExternaId);
+        validarIdentidade(externo, registro);
+        atualizarStatus(registro, externo);
+        return resposta(repository.saveAndFlush(registro));
+    }
+
+    @Transactional
     public Map<String, Object> consultar(Long empresaId, Long assinaturaId) {
         obterEmpresaComBloqueio(empresaId);
         AssinaturaRecorrente registro = obterRegistro(empresaId, assinaturaId);

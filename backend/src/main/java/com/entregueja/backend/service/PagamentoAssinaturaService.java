@@ -120,7 +120,7 @@ public class PagamentoAssinaturaService {
             throw new IllegalArgumentException("Identificador do pagamento inválido.");
         }
 
-        JsonNode externo = mercadoPagoService.consultarPagamento(mercadoPagoPagamentoId);
+        JsonNode externo = mercadoPagoService.consultarPagamentoRecorrente(mercadoPagoPagamentoId);
         if (!mercadoPagoPagamentoId.equals(texto(externo, "id"))) {
             throw new IllegalStateException("Identificador externo do pagamento inconsistente.");
         }

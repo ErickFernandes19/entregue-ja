@@ -25,12 +25,15 @@ public class MercadoPagoService {
     private final RestClient cliente;
     private final ObjectMapper objectMapper;
     private final String accessToken;
+    private final String subscriptionsAccessToken;
 
     public MercadoPagoService(
             @Value("${mercadopago.access-token:}") String accessToken,
+            @Value("${MERCADO_PAGO_SUBSCRIPTIONS_ACCESS_TOKEN:}") String subscriptionsAccessToken,
             ObjectMapper objectMapper
     ) {
         this.accessToken = accessToken == null ? "" : accessToken.trim();
+        this.subscriptionsAccessToken = subscriptionsAccessToken == null ? "" : subscriptionsAccessToken.trim();
         this.objectMapper = objectMapper;
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(10));
@@ -99,6 +102,24 @@ public class MercadoPagoService {
         }
     }
 
+    public JsonNode consultarPagamentoRecorrente(String pagamentoId) {
+        validarConfiguracaoAssinaturas();
+        if (pagamentoId == null || !pagamentoId.matches("[0-9]+")) {
+            throw new IllegalArgumentException("Identificador de pagamento inválido.");
+        }
+        try {
+            return interpretarResposta(cliente.get()
+                    .uri("/v1/payments/{id}", pagamentoId)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + subscriptionsAccessToken)
+                    .retrieve()
+                    .body(String.class));
+        } catch (RestClientResponseException e) {
+            throw erroHttp("consultar pagamento recorrente", e);
+        } catch (RestClientException e) {
+            throw erroComunicacao();
+        }
+    }
+
     public JsonNode criarAssinaturaRecorrente(
             String motivo,
             String emailPagador,
@@ -106,7 +127,7 @@ public class MercadoPagoService {
             BigDecimal valorMensal,
             String urlRetorno
     ) {
-        validarConfiguracao();
+        validarConfiguracaoAssinaturas();
         validarValor(valorMensal);
         validarTexto(motivo, "Motivo da assinatura obrigatório.");
         validarTexto(emailPagador, "E-mail do pagador obrigatório.");
@@ -130,7 +151,7 @@ public class MercadoPagoService {
         try {
             return interpretarResposta(cliente.post()
                     .uri("/preapproval")
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + subscriptionsAccessToken)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(corpo)
                     .retrieve()
@@ -143,12 +164,12 @@ public class MercadoPagoService {
     }
 
     public JsonNode consultarAssinaturaRecorrente(String assinaturaId) {
-        validarConfiguracao();
+        validarConfiguracaoAssinaturas();
         validarIdentificadorAssinatura(assinaturaId);
         try {
             return interpretarResposta(cliente.get()
                     .uri("/preapproval/{id}", assinaturaId)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + subscriptionsAccessToken)
                     .retrieve()
                     .body(String.class));
         } catch (RestClientResponseException e) {
@@ -159,7 +180,7 @@ public class MercadoPagoService {
     }
 
     public JsonNode listarPagamentosAutorizados(String assinaturaId, int limite, int deslocamento) {
-        validarConfiguracao();
+        validarConfiguracaoAssinaturas();
         validarIdentificadorAssinatura(assinaturaId);
         if (limite < 1 || limite > 100) {
             throw new IllegalArgumentException("O limite deve estar entre 1 e 100.");
@@ -174,7 +195,7 @@ public class MercadoPagoService {
                             .queryParam("limit", limite)
                             .queryParam("offset", deslocamento)
                             .build())
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + subscriptionsAccessToken)
                     .retrieve()
                     .body(String.class));
             if (!resposta.path("results").isArray()) {
@@ -193,7 +214,7 @@ public class MercadoPagoService {
     }
 
     public JsonNode atualizarValorAssinaturaRecorrente(String assinaturaId, BigDecimal novoValorMensal) {
-        validarConfiguracao();
+        validarConfiguracaoAssinaturas();
         validarIdentificadorAssinatura(assinaturaId);
         validarValor(novoValorMensal);
 
@@ -203,7 +224,7 @@ public class MercadoPagoService {
         try {
             return interpretarResposta(cliente.put()
                     .uri("/preapproval/{id}", assinaturaId)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + subscriptionsAccessToken)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(Map.of("auto_recurring", recorrencia))
                     .retrieve()
@@ -216,12 +237,12 @@ public class MercadoPagoService {
     }
 
     public JsonNode cancelarAssinaturaRecorrente(String assinaturaId) {
-        validarConfiguracao();
+        validarConfiguracaoAssinaturas();
         validarIdentificadorAssinatura(assinaturaId);
         try {
             return interpretarResposta(cliente.put()
                     .uri("/preapproval/{id}", assinaturaId)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + subscriptionsAccessToken)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(Map.of("status", "cancelled"))
                     .retrieve()
@@ -277,6 +298,12 @@ public class MercadoPagoService {
             return dados;
         } catch (JsonProcessingException e) {
             throw new MercadoPagoException("Não foi possível interpretar a resposta do Mercado Pago.", null);
+        }
+    }
+
+    private void validarConfiguracaoAssinaturas() {
+        if (subscriptionsAccessToken.isBlank()) {
+            throw new MercadoPagoException("As assinaturas do Mercado Pago ainda não estão configuradas no servidor.", null);
         }
     }
 
