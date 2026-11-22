@@ -432,7 +432,8 @@ public class AssinaturaRecorrenteService {
         } catch (RuntimeException e) {
             falhas++;
             erroRecuperacao = "Não foi possível concluir a recuperação de mensalidades recorrentes.";
-            log.warn("Falha ao recuperar mensalidades da empresa {}: {}", empresaId, e.getClass().getSimpleName());
+            log.warn("Falha ao recuperar mensalidades da empresa {}: {} - {}",
+                    empresaId, e.getClass().getSimpleName(), e.getMessage());
         }
 
         Map<String, Object> resultado = new LinkedHashMap<>();
