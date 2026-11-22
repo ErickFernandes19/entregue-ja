@@ -245,7 +245,7 @@ public class PagamentoAssinaturaService {
 
             assinaturasConsultadas++;
             int deslocamento = 0;
-            final int limite = 100;
+            final int limite = 50;
             final int maximoPaginas = 100;
 
             for (int pagina = 0; pagina < maximoPaginas; pagina++) {
