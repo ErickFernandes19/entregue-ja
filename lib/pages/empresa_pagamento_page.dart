@@ -41,6 +41,53 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
   String? _urlAutorizacao;
   String? _chaveRecorrente;
   bool _consultandoAssinatura = false;
+  bool _recuperandoAssinatura = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _recuperarAssinaturaExistente();
+  }
+
+  Future<void> _recuperarAssinaturaExistente() async {
+    if (_recuperandoAssinatura || _carregando) return;
+    setState(() {
+      _recuperandoAssinatura = true;
+      _mensagemErro = null;
+    });
+    try {
+      final assinaturas =
+          await PagamentoAssinaturaService.listarAssinaturasRecorrentes();
+      if (!mounted) return;
+      final ativas = assinaturas.where((assinatura) {
+        final status = assinatura['status']?.toString().toUpperCase();
+        return status == 'PENDENTE' ||
+            status == 'AUTORIZADA' ||
+            status == 'PAUSADA';
+      }).toList();
+      if (ativas.isNotEmpty) {
+        ativas.sort((a, b) {
+          final aId = int.tryParse(a['assinaturaId'].toString()) ?? 0;
+          final bId = int.tryParse(b['assinaturaId'].toString()) ?? 0;
+          return bId.compareTo(aId);
+        });
+        final assinatura = ativas.first;
+        setState(() {
+          _forma = _FormaPagamento.cartao;
+        });
+        _atualizarAssinatura(assinatura);
+      }
+    } catch (erro) {
+      if (mounted) {
+        setState(
+          () => _mensagemErro =
+              'Não foi possível verificar suas assinaturas: $erro',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _recuperandoAssinatura = false);
+    }
+  }
 
   String _gerarUuid() {
     final random = Random.secure();
@@ -236,7 +283,12 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
   }
 
   Future<void> _criarAssinaturaCartao() async {
-    if (_carregando || _consultandoAssinatura || _assinaturaId != null) return;
+    if (_carregando ||
+        _consultandoAssinatura ||
+        _recuperandoAssinatura ||
+        _assinaturaId != null) {
+      return;
+    }
     if (_planoApi != 'ESSENCIAL' && _planoApi != 'PROFISSIONAL') {
       setState(() => _mensagemErro = 'Selecione um plano pago válido.');
       return;
@@ -255,6 +307,17 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
       _atualizarAssinatura(dados);
       if (_urlAutorizacao != null && _statusAssinatura == 'PENDENTE') {
         await _abrirAutorizacao();
+      }
+    } on PagamentoAssinaturaException catch (erro) {
+      if (!mounted) return;
+      if (erro.statusCode == 409) {
+        setState(() => _carregando = false);
+        await _recuperarAssinaturaExistente();
+        if (mounted && _assinaturaId == null && _mensagemErro == null) {
+          setState(() => _mensagemErro = erro.toString());
+        }
+      } else {
+        setState(() => _mensagemErro = erro.toString());
       }
     } catch (erro) {
       if (mounted) setState(() => _mensagemErro = erro.toString());
@@ -491,6 +554,7 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
     final colors = theme.colorScheme;
     final isPix = _forma == _FormaPagamento.pix;
     final temPagamento = _pagamentoId != null || _assinaturaId != null;
+    final bloqueado = _carregando || _recuperandoAssinatura;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Pagamento da assinatura')),
@@ -547,10 +611,11 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                   child: RadioGroup<_FormaPagamento>(
                     groupValue: _forma,
                     onChanged: (value) {
-                      if (temPagamento || _carregando || value == null) return;
+                      if (temPagamento || bloqueado || value == null) return;
 
                       setState(() {
                         _forma = value;
+                        _mensagemErro = null;
                       });
                     },
                     child: Column(
@@ -616,13 +681,19 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                   ),
                   const SizedBox(height: 16),
                 ],
-                if (isPix && _pagamentoId != null)
+                if (_recuperandoAssinatura) ...[
+                  const Center(child: CircularProgressIndicator()),
+                  const SizedBox(height: 12),
+                  const Center(
+                    child: Text('Verificando assinaturas existentes...'),
+                  ),
+                ] else if (isPix && _pagamentoId != null)
                   _construirPix(theme)
                 else if (!isPix && _assinaturaId != null)
                   _construirCartao(theme)
                 else
                   FilledButton.icon(
-                    onPressed: _carregando
+                    onPressed: bloqueado
                         ? null
                         : isPix
                         ? _criarPix

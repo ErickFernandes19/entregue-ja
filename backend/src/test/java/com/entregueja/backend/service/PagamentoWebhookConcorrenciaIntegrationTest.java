@@ -144,7 +144,7 @@ class PagamentoWebhookConcorrenciaIntegrationTest {
                 }
                 """.formatted(assinaturaExterna, recorrenteId));
 
-        when(mercadoPagoService.consultarPagamento(anyString())).thenReturn(pagamento);
+        when(mercadoPagoService.consultarPagamentoRecorrente(anyString())).thenReturn(pagamento);
         when(mercadoPagoService.consultarAssinaturaRecorrente(anyString())).thenReturn(assinatura);
     }
 
@@ -207,7 +207,7 @@ class PagamentoWebhookConcorrenciaIntegrationTest {
                   "status": "approved"
                 }
                 """.formatted(pagamentoExterno, assinaturaExterna));
-        when(mercadoPagoService.consultarPagamento(anyString())).thenReturn(invalido);
+        when(mercadoPagoService.consultarPagamentoRecorrente(anyString())).thenReturn(invalido);
 
         assertThrows(IllegalStateException.class,
                 () -> pagamentoService.processarPagamentoRecorrente(pagamentoExterno));

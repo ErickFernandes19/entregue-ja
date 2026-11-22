@@ -179,6 +179,28 @@ public class MercadoPagoService {
         }
     }
 
+    public JsonNode consultarPagamentoAutorizado(String pagamentoAutorizadoId) {
+        validarConfiguracaoAssinaturas();
+        if (pagamentoAutorizadoId == null || !pagamentoAutorizadoId.matches("[0-9]+")) {
+            throw new IllegalArgumentException("Identificador da cobrança autorizada inválido.");
+        }
+        try {
+            JsonNode resposta = interpretarResposta(cliente.get()
+                    .uri("/authorized_payments/{id}", pagamentoAutorizadoId)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + subscriptionsAccessToken)
+                    .retrieve()
+                    .body(String.class));
+            if (!pagamentoAutorizadoId.equals(resposta.path("id").asText())) {
+                throw new MercadoPagoException("Identificador da cobrança autorizada inconsistente.", null);
+            }
+            return resposta;
+        } catch (RestClientResponseException e) {
+            throw erroHttp("consultar cobrança autorizada", e);
+        } catch (RestClientException e) {
+            throw erroComunicacao();
+        }
+    }
+
     public JsonNode listarPagamentosAutorizados(String assinaturaId, int limite, int deslocamento) {
         validarConfiguracaoAssinaturas();
         validarIdentificadorAssinatura(assinaturaId);

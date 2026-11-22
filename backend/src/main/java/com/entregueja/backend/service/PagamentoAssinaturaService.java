@@ -512,6 +512,7 @@ public class PagamentoAssinaturaService {
     }
 
     private String texto(JsonNode objeto, String campo) {
+        if (objeto == null || objeto.isNull() || objeto.isMissingNode()) return null;
         JsonNode valor = objeto.path(campo);
         if (valor.isMissingNode() || valor.isNull() || valor.isContainerNode()) return null;
         String texto = valor.asText();

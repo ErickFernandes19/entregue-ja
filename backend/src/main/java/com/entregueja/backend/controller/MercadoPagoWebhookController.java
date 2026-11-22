@@ -4,6 +4,7 @@ import com.entregueja.backend.entity.PagamentoAssinatura;
 import com.entregueja.backend.repository.PagamentoAssinaturaRepository;
 import com.entregueja.backend.service.PagamentoAssinaturaService;
 import com.entregueja.backend.service.AssinaturaRecorrenteService;
+import com.entregueja.backend.service.MercadoPagoService;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,19 +40,22 @@ public class MercadoPagoWebhookController {
     private final PagamentoAssinaturaRepository pagamentoRepository;
     private final PagamentoAssinaturaService pagamentoService;
     private final AssinaturaRecorrenteService assinaturaRecorrenteService;
+    private final MercadoPagoService mercadoPagoService;
 
     public MercadoPagoWebhookController(
             @Value("${mercadopago.webhook-secret:}") String webhookSecretPix,
             @Value("${MERCADOPAGO_SUBSCRIPTIONS_WEBHOOK_SECRET:}") String webhookSecretAssinaturas,
             PagamentoAssinaturaRepository pagamentoRepository,
             PagamentoAssinaturaService pagamentoService,
-            AssinaturaRecorrenteService assinaturaRecorrenteService
+            AssinaturaRecorrenteService assinaturaRecorrenteService,
+            MercadoPagoService mercadoPagoService
     ) {
         this.webhookSecretPix = webhookSecretPix == null ? "" : webhookSecretPix.trim();
         this.webhookSecretAssinaturas = webhookSecretAssinaturas == null ? "" : webhookSecretAssinaturas.trim();
         this.pagamentoRepository = pagamentoRepository;
         this.pagamentoService = pagamentoService;
         this.assinaturaRecorrenteService = assinaturaRecorrenteService;
+        this.mercadoPagoService = mercadoPagoService;
     }
 
     @PostMapping("/webhook")
@@ -135,15 +139,17 @@ public class MercadoPagoWebhookController {
             tipo = parametros.get("topic");
         }
 
+        boolean eventoPagamentoAutorizado = recorrente && "subscription_authorized_payment".equalsIgnoreCase(tipo);
         boolean eventoPagamento = "payment".equalsIgnoreCase(tipo);
         boolean eventoAssinatura = "subscription_preapproval".equalsIgnoreCase(tipo);
 
-        if (!eventoPagamento && !(recorrente && eventoAssinatura)) {
+        if (!eventoPagamento && !eventoPagamentoAutorizado && !(recorrente && eventoAssinatura)) {
             LOGGER.info("Evento do Mercado Pago ignorado, tipo={}, recorrente={}", tipo, recorrente);
             return ResponseEntity.ok().build();
         }
 
-        if (eventoPagamento && (dataId == null || !dataId.matches("[0-9]+"))) {
+        if ((eventoPagamento || eventoPagamentoAutorizado)
+                && (dataId == null || !dataId.matches("[0-9]+"))) {
             return ResponseEntity.badRequest().build();
         }
 
@@ -154,6 +160,17 @@ public class MercadoPagoWebhookController {
         try {
             if (eventoAssinatura) {
                 assinaturaRecorrenteService.sincronizarNotificacao(dataId);
+                return ResponseEntity.ok().build();
+            }
+
+            if (eventoPagamentoAutorizado) {
+                JsonNode autorizado = mercadoPagoService.consultarPagamentoAutorizado(dataId);
+                String pagamentoId = texto(autorizado.path("payment"), "id");
+                if (pagamentoId == null || !pagamentoId.matches("[0-9]+")) {
+                    LOGGER.error("Cobrança autorizada sem ID de pagamento válido, id={}", dataId);
+                    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+                }
+                pagamentoService.processarPagamentoRecorrente(pagamentoId);
                 return ResponseEntity.ok().build();
             }
 

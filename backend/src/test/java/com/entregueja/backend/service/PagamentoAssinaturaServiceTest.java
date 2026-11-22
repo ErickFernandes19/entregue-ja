@@ -65,7 +65,7 @@ class PagamentoAssinaturaServiceTest {
     }
 
     private void prepararConsulta(String status, String valorPagamento, String referenciaAssinatura) {
-        lenient().when(mercadoPagoService.consultarPagamento("12345")).thenReturn(json("""
+        lenient().when(mercadoPagoService.consultarPagamentoRecorrente("12345")).thenReturn(json("""
                 {"id":"12345","preapproval_id":"%s","transaction_amount":%s,
                 "currency_id":"BRL","payment_type_id":"credit_card","status":"%s"}
                 """.formatted(referenciaAssinatura, valorPagamento, status)));
@@ -95,7 +95,7 @@ class PagamentoAssinaturaServiceTest {
 
     @Test
     void rejeitaPagamentoSemVinculoComAssinatura() {
-        when(mercadoPagoService.consultarPagamento("12345")).thenReturn(json("""
+        when(mercadoPagoService.consultarPagamentoRecorrente("12345")).thenReturn(json("""
                 {"id":"12345","transaction_amount":39.90,"status":"approved"}
                 """));
         assertThrows(IllegalStateException.class, () -> service.processarPagamentoRecorrente("12345"));
