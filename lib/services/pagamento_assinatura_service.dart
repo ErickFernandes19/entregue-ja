@@ -158,7 +158,18 @@ class PagamentoAssinaturaService {
   static Future<Map<String, dynamic>> criarAssinaturaRecorrente({
     required String plano,
     required String chaveIdempotencia,
+    required String emailPagador,
   }) async {
+    final email = emailPagador.trim();
+
+    if (email.isEmpty ||
+        email.length > 254 ||
+        !RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email)) {
+      throw const PagamentoAssinaturaException(
+        'Informe um e-mail válido para o responsável pelo pagamento.',
+      );
+    }
+
     final headers = await _headersAutenticados();
     headers['X-Idempotency-Key'] = chaveIdempotencia;
 
@@ -167,7 +178,10 @@ class PagamentoAssinaturaService {
           .post(
             Uri.parse('$_urlBase/recorrentes'),
             headers: headers,
-            body: jsonEncode({'plano': plano.toUpperCase()}),
+            body: jsonEncode({
+              'plano': plano.toUpperCase(),
+              'emailPagador': email,
+            }),
           )
           .timeout(const Duration(seconds: 30));
 
@@ -218,6 +232,7 @@ class PagamentoAssinaturaService {
           .timeout(const Duration(seconds: 30));
 
       final dados = _decodificarResposta(response);
+
       if (dados is! List) {
         throw const PagamentoAssinaturaException(
           'Formato da lista de assinaturas inválido.',
@@ -230,6 +245,7 @@ class PagamentoAssinaturaService {
             'O servidor retornou uma assinatura inválida.',
           );
         }
+
         return item;
       }).toList();
     } on TimeoutException {

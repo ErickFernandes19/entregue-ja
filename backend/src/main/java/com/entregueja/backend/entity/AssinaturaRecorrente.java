@@ -38,6 +38,13 @@ public class AssinaturaRecorrente {
         ENCERRADA
     }
 
+    public enum EstadoCriacao {
+        PREPARADA,
+        ENVIANDO,
+        CONFIRMADA,
+        INCERTA
+    }
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -53,8 +60,15 @@ public class AssinaturaRecorrente {
     @Column(nullable = false, length = 20)
     private Status status = Status.PENDENTE;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "estado_criacao", length = 20)
+    private EstadoCriacao estadoCriacao = EstadoCriacao.PREPARADA;
+
     @Column(nullable = false, precision = 10, scale = 2)
     private BigDecimal valor;
+
+    @Column(name = "email_pagador", length = 254)
+    private String emailPagador;
 
     @Column(name = "mercado_pago_assinatura_id", length = 150)
     private String mercadoPagoAssinaturaId;
@@ -86,36 +100,107 @@ public class AssinaturaRecorrente {
         dataAtualizacao = LocalDateTime.now();
     }
 
-    public Long getId() { return id; }
-    public void setId(Long id) { this.id = id; }
+    public Long getId() {
+        return id;
+    }
 
-    public Long getEmpresaId() { return empresaId; }
-    public void setEmpresaId(Long empresaId) { this.empresaId = empresaId; }
+    public void setId(Long id) {
+        this.id = id;
+    }
 
-    public Assinatura.Plano getPlano() { return plano; }
-    public void setPlano(Assinatura.Plano plano) { this.plano = plano; }
+    public Long getEmpresaId() {
+        return empresaId;
+    }
 
-    public Status getStatus() { return status; }
-    public void setStatus(Status status) { this.status = status; }
+    public void setEmpresaId(Long empresaId) {
+        this.empresaId = empresaId;
+    }
 
-    public BigDecimal getValor() { return valor; }
-    public void setValor(BigDecimal valor) { this.valor = valor; }
+    public Assinatura.Plano getPlano() {
+        return plano;
+    }
 
-    public String getMercadoPagoAssinaturaId() { return mercadoPagoAssinaturaId; }
-    public void setMercadoPagoAssinaturaId(String mercadoPagoAssinaturaId) { this.mercadoPagoAssinaturaId = mercadoPagoAssinaturaId; }
+    public void setPlano(Assinatura.Plano plano) {
+        this.plano = plano;
+    }
 
-    public String getChaveIdempotencia() { return chaveIdempotencia; }
-    public void setChaveIdempotencia(String chaveIdempotencia) { this.chaveIdempotencia = chaveIdempotencia; }
+    public Status getStatus() {
+        return status;
+    }
 
-    public String getUrlAutorizacao() { return urlAutorizacao; }
-    public void setUrlAutorizacao(String urlAutorizacao) { this.urlAutorizacao = urlAutorizacao; }
+    public void setStatus(Status status) {
+        this.status = status;
+    }
 
-    public LocalDateTime getDataCriacao() { return dataCriacao; }
-    public void setDataCriacao(LocalDateTime dataCriacao) { this.dataCriacao = dataCriacao; }
+    public EstadoCriacao getEstadoCriacao() {
+        return estadoCriacao;
+    }
 
-    public LocalDateTime getDataAtualizacao() { return dataAtualizacao; }
-    public void setDataAtualizacao(LocalDateTime dataAtualizacao) { this.dataAtualizacao = dataAtualizacao; }
+    public void setEstadoCriacao(EstadoCriacao estadoCriacao) {
+        this.estadoCriacao = estadoCriacao;
+    }
 
-    public LocalDateTime getDataCancelamento() { return dataCancelamento; }
-    public void setDataCancelamento(LocalDateTime dataCancelamento) { this.dataCancelamento = dataCancelamento; }
+    public BigDecimal getValor() {
+        return valor;
+    }
+
+    public void setValor(BigDecimal valor) {
+        this.valor = valor;
+    }
+
+    public String getEmailPagador() {
+        return emailPagador;
+    }
+
+    public void setEmailPagador(String emailPagador) {
+        this.emailPagador = emailPagador;
+    }
+
+    public String getMercadoPagoAssinaturaId() {
+        return mercadoPagoAssinaturaId;
+    }
+
+    public void setMercadoPagoAssinaturaId(String mercadoPagoAssinaturaId) {
+        this.mercadoPagoAssinaturaId = mercadoPagoAssinaturaId;
+    }
+
+    public String getChaveIdempotencia() {
+        return chaveIdempotencia;
+    }
+
+    public void setChaveIdempotencia(String chaveIdempotencia) {
+        this.chaveIdempotencia = chaveIdempotencia;
+    }
+
+    public String getUrlAutorizacao() {
+        return urlAutorizacao;
+    }
+
+    public void setUrlAutorizacao(String urlAutorizacao) {
+        this.urlAutorizacao = urlAutorizacao;
+    }
+
+    public LocalDateTime getDataCriacao() {
+        return dataCriacao;
+    }
+
+    public void setDataCriacao(LocalDateTime dataCriacao) {
+        this.dataCriacao = dataCriacao;
+    }
+
+    public LocalDateTime getDataAtualizacao() {
+        return dataAtualizacao;
+    }
+
+    public void setDataAtualizacao(LocalDateTime dataAtualizacao) {
+        this.dataAtualizacao = dataAtualizacao;
+    }
+
+    public LocalDateTime getDataCancelamento() {
+        return dataCancelamento;
+    }
+
+    public void setDataCancelamento(LocalDateTime dataCancelamento) {
+        this.dataCancelamento = dataCancelamento;
+    }
 }

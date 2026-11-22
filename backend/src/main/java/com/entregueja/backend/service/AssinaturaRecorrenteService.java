@@ -9,7 +9,10 @@ import com.entregueja.backend.repository.PagamentoAssinaturaRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,12 +24,14 @@ import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.UUID;
 
 @Service
 public class AssinaturaRecorrenteService {
 
     private static final ZoneId FUSO = ZoneId.of("America/Sao_Paulo");
+    private static final Pattern EMAIL_PATTERN = Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
 
     private final AssinaturaRecorrenteRepository repository;
     private final MercadoPagoService mercadoPagoService;
@@ -34,14 +39,17 @@ public class AssinaturaRecorrenteService {
     private final PagamentoAssinaturaService pagamentoService;
     private final EntityManager entityManager;
     private final String urlRetorno;
+    private final TransactionTemplate transactionTemplate;
 
+    @Autowired
     public AssinaturaRecorrenteService(
             AssinaturaRecorrenteRepository repository,
             MercadoPagoService mercadoPagoService,
             PagamentoAssinaturaRepository pagamentoRepository,
             PagamentoAssinaturaService pagamentoService,
             EntityManager entityManager,
-            @Value("${mercadopago.subscription-return-url:}") String urlRetorno
+            @Value("${mercadopago.subscription-return-url:}") String urlRetorno,
+            PlatformTransactionManager transactionManager
     ) {
         this.repository = repository;
         this.mercadoPagoService = mercadoPagoService;
@@ -49,60 +57,142 @@ public class AssinaturaRecorrenteService {
         this.pagamentoService = pagamentoService;
         this.entityManager = entityManager;
         this.urlRetorno = urlRetorno == null ? "" : urlRetorno.trim();
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
-    @Transactional
-    public Map<String, Object> criar(Long empresaId, Assinatura.Plano plano, String chaveIdempotencia) {
-        Empresa empresa = obterEmpresaComBloqueio(empresaId);
+    AssinaturaRecorrenteService(
+            AssinaturaRecorrenteRepository repository,
+            MercadoPagoService mercadoPagoService,
+            PagamentoAssinaturaRepository pagamentoRepository,
+            PagamentoAssinaturaService pagamentoService,
+            EntityManager entityManager,
+            String urlRetorno
+    ) {
+        this.repository = repository;
+        this.mercadoPagoService = mercadoPagoService;
+        this.pagamentoRepository = pagamentoRepository;
+        this.pagamentoService = pagamentoService;
+        this.entityManager = entityManager;
+        this.urlRetorno = urlRetorno == null ? "" : urlRetorno.trim();
+        this.transactionTemplate = null;
+    }
+
+    private <T> T emTransacao(java.util.function.Supplier<T> operacao) {
+        if (transactionTemplate == null) return operacao.get();
+        return transactionTemplate.execute(status -> operacao.get());
+    }
+
+    public Map<String, Object> criar(Long empresaId, Assinatura.Plano plano, String chaveIdempotencia, String emailPagador) {
+        if (emailPagador == null || emailPagador.trim().length() > 254
+                || !EMAIL_PATTERN.matcher(emailPagador.trim()).matches()) {
+            throw new IllegalArgumentException("Informe um e-mail válido para o responsável pelo pagamento.");
+        }
+        String emailNormalizado = emailPagador.trim();
         BigDecimal valor = valorDoPlano(plano);
         validarChave(chaveIdempotencia);
 
-        AssinaturaRecorrente registro = repository.findByChaveIdempotencia(chaveIdempotencia).orElse(null);
-        if (registro != null) {
-            if (!empresaId.equals(registro.getEmpresaId()) || registro.getPlano() != plano
-                    || registro.getValor().compareTo(valor) != 0) {
-                throw new IllegalArgumentException("Chave de idempotência vinculada a outra solicitação.");
+        boolean[] criadoAgora = {false};
+        AssinaturaRecorrente registro = emTransacao(() -> {
+            obterEmpresaComBloqueio(empresaId);
+            AssinaturaRecorrente existente = repository.findByChaveIdempotencia(chaveIdempotencia).orElse(null);
+            if (existente != null) {
+                if (!empresaId.equals(existente.getEmpresaId()) || existente.getPlano() != plano
+                        || existente.getValor().compareTo(valor) != 0
+                        || existente.getEmailPagador() == null
+                        || !existente.getEmailPagador().equalsIgnoreCase(emailNormalizado)) {
+                    throw new IllegalArgumentException("Chave de idempotência vinculada a outra solicitação.");
+                }
+                return existente;
             }
+            boolean possuiAssinatura = repository.findFirstByEmpresaIdAndStatusInOrderByIdDesc(
+                    empresaId,
+                    List.of(AssinaturaRecorrente.Status.PENDENTE,
+                            AssinaturaRecorrente.Status.AUTORIZADA,
+                            AssinaturaRecorrente.Status.PAUSADA)
+            ).isPresent();
+            boolean tentativaIncerta = repository.findFirstByEmpresaIdAndEstadoCriacaoInOrderByIdDesc(
+                    empresaId,
+                    List.of(AssinaturaRecorrente.EstadoCriacao.PREPARADA,
+                            AssinaturaRecorrente.EstadoCriacao.ENVIANDO,
+                            AssinaturaRecorrente.EstadoCriacao.INCERTA)
+            ).isPresent();
+            if (possuiAssinatura || tentativaIncerta) {
+                throw new IllegalStateException("A empresa já possui uma assinatura recorrente ou tentativa não resolvida.");
+            }
+            if (urlRetorno.isBlank()) {
+                throw new IllegalStateException("URL de retorno das assinaturas não configurada.");
+            }
+            AssinaturaRecorrente novo = new AssinaturaRecorrente();
+            novo.setEmpresaId(empresaId);
+            novo.setPlano(plano);
+            novo.setValor(valor);
+            novo.setEmailPagador(emailNormalizado);
+            novo.setStatus(AssinaturaRecorrente.Status.PENDENTE);
+            novo.setEstadoCriacao(AssinaturaRecorrente.EstadoCriacao.PREPARADA);
+            novo.setChaveIdempotencia(chaveIdempotencia);
+            criadoAgora[0] = true;
+            return repository.saveAndFlush(novo);
+        });
+
+        if (!criadoAgora[0] || registro.getEstadoCriacao() != AssinaturaRecorrente.EstadoCriacao.PREPARADA
+                || registro.getMercadoPagoAssinaturaId() != null) {
             return resposta(registro);
         }
 
-        boolean possuiAssinatura = repository.findFirstByEmpresaIdAndStatusInOrderByIdDesc(
-                empresaId,
-                List.of(AssinaturaRecorrente.Status.PENDENTE,
-                        AssinaturaRecorrente.Status.AUTORIZADA,
-                        AssinaturaRecorrente.Status.PAUSADA)
-        ).isPresent();
-        if (possuiAssinatura) {
-            throw new IllegalStateException("A empresa já possui uma assinatura recorrente em andamento.");
-        }
-        if (urlRetorno.isBlank()) {
-            throw new IllegalStateException("URL de retorno das assinaturas não configurada.");
+        Long idRegistro = registro.getId();
+        boolean deveEnviar = emTransacao(() -> {
+            AssinaturaRecorrente atual = transactionTemplate == null
+                    ? registro
+                    : repository.buscarPorIdComBloqueio(idRegistro).orElseThrow(
+                    () -> new IllegalStateException("Tentativa de assinatura não encontrada."));
+            if (atual.getEstadoCriacao() != AssinaturaRecorrente.EstadoCriacao.PREPARADA) return false;
+            atual.setEstadoCriacao(AssinaturaRecorrente.EstadoCriacao.ENVIANDO);
+            repository.save(atual);
+            return true;
+        });
+        if (!deveEnviar) {
+            return resposta(emTransacao(() -> repository.findById(idRegistro).orElseThrow()));
         }
 
-        registro = new AssinaturaRecorrente();
-        registro.setEmpresaId(empresaId);
-        registro.setPlano(plano);
-        registro.setValor(valor);
-        registro.setStatus(AssinaturaRecorrente.Status.PENDENTE);
-        registro.setChaveIdempotencia(chaveIdempotencia);
-        registro = repository.saveAndFlush(registro);
-
-        JsonNode externo = mercadoPagoService.criarAssinaturaRecorrente(
-                "Entregue Já - " + plano.name(),
-                empresa.getEmail(),
-                "entregueja-recorrente-" + registro.getId(),
-                valor,
-                urlRetorno
-        );
-        validarIdentidade(externo, registro);
-        String idExterno = texto(externo, "id");
-        if (idExterno == null || !idExterno.matches("[A-Za-z0-9_-]{1,100}")) {
-            throw new IllegalStateException("Identificador de assinatura inválido no Mercado Pago.");
+        JsonNode externo;
+        try {
+            externo = mercadoPagoService.criarAssinaturaRecorrente(
+                    "Entregue Já - " + plano.name(), emailNormalizado,
+                    "entregueja-recorrente-" + idRegistro, valor, urlRetorno);
+            validarIdentidade(externo, registro);
+            String idExterno = texto(externo, "id");
+            if (idExterno == null || !idExterno.matches("[A-Za-z0-9_-]{1,100}")) {
+                throw new IllegalStateException("Identificador de assinatura inválido no Mercado Pago.");
+            }
+            return emTransacao(() -> {
+                AssinaturaRecorrente atual = transactionTemplate == null
+                        ? registro
+                        : repository.buscarPorIdComBloqueio(idRegistro).orElseThrow(
+                        () -> new IllegalStateException("Tentativa de assinatura não encontrada."));
+                validarIdentidade(externo, atual);
+                atual.setMercadoPagoAssinaturaId(idExterno);
+                atual.setUrlAutorizacao(texto(externo, "init_point"));
+                atualizarStatus(atual, externo);
+                atual.setEstadoCriacao(AssinaturaRecorrente.EstadoCriacao.CONFIRMADA);
+                return resposta(repository.save(atual));
+            });
+        } catch (RuntimeException erro) {
+            try {
+                emTransacao(() -> {
+                    AssinaturaRecorrente atual = transactionTemplate == null
+                            ? registro
+                            : repository.buscarPorIdComBloqueio(idRegistro).orElseThrow();
+                    if (atual.getEstadoCriacao() != AssinaturaRecorrente.EstadoCriacao.CONFIRMADA) {
+                        atual.setEstadoCriacao(AssinaturaRecorrente.EstadoCriacao.INCERTA);
+                        repository.save(atual);
+                    }
+                    return null;
+                });
+            } catch (RuntimeException falhaRegistro) {
+                erro.addSuppressed(falhaRegistro);
+            }
+            throw erro;
         }
-        registro.setMercadoPagoAssinaturaId(idExterno);
-        registro.setUrlAutorizacao(texto(externo, "init_point"));
-        atualizarStatus(registro, externo);
-        return resposta(repository.save(registro));
     }
 
     @Transactional
@@ -118,6 +208,7 @@ public class AssinaturaRecorrenteService {
         JsonNode externo = mercadoPagoService.consultarAssinaturaRecorrente(assinaturaExternaId);
         validarIdentidade(externo, registro);
         atualizarStatus(registro, externo);
+        registro.setEstadoCriacao(AssinaturaRecorrente.EstadoCriacao.CONFIRMADA);
         return resposta(repository.saveAndFlush(registro));
     }
 
@@ -131,6 +222,7 @@ public class AssinaturaRecorrenteService {
         JsonNode externo = mercadoPagoService.consultarAssinaturaRecorrente(registro.getMercadoPagoAssinaturaId());
         validarIdentidade(externo, registro);
         atualizarStatus(registro, externo);
+        registro.setEstadoCriacao(AssinaturaRecorrente.EstadoCriacao.CONFIRMADA);
         return resposta(repository.save(registro));
     }
 
@@ -428,6 +520,7 @@ public class AssinaturaRecorrenteService {
         dados.put("plano", registro.getPlano().name());
         dados.put("valorMensal", registro.getValor());
         dados.put("status", registro.getStatus().name());
+        dados.put("estadoCriacao", registro.getEstadoCriacao() == null ? null : registro.getEstadoCriacao().name());
         dados.put("mercadoPagoAssinaturaId", registro.getMercadoPagoAssinaturaId());
         dados.put("urlAutorizacao", registro.getUrlAutorizacao());
         dados.put("dataCriacao", registro.getDataCriacao());

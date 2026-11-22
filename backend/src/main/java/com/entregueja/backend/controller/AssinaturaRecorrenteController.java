@@ -1,3 +1,4 @@
+
 package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.Assinatura;
@@ -16,45 +17,95 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 @RestController
 @RequestMapping("/pagamentos/assinaturas/recorrentes")
 public class AssinaturaRecorrenteController {
 
+    private static final Pattern EMAIL_PATTERN =
+            Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
+
     private final AssinaturaRecorrenteService assinaturaRecorrenteService;
 
-    public AssinaturaRecorrenteController(AssinaturaRecorrenteService assinaturaRecorrenteService) {
+    public AssinaturaRecorrenteController(
+            AssinaturaRecorrenteService assinaturaRecorrenteService
+    ) {
         this.assinaturaRecorrenteService = assinaturaRecorrenteService;
     }
 
     @PostMapping
     public ResponseEntity<Map<String, Object>> criar(
             Authentication authentication,
-            @RequestHeader(value = "X-Idempotency-Key", required = false) String chaveIdempotencia,
-            @RequestBody CriarAssinaturaRequest pedido
+            @RequestHeader(value = "X-Idempotency-Key", required = false)
+            String chaveIdempotencia,
+            @RequestBody(required = false) CriarAssinaturaRequest pedido
     ) {
         Long empresaId = obterEmpresaId(authentication);
+
         if (pedido == null || pedido.plano() == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Plano obrigatório.");
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Plano obrigatório."
+            );
         }
+
         if (chaveIdempotencia == null || chaveIdempotencia.isBlank()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Chave de idempotência obrigatória.");
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Chave de idempotência obrigatória."
+            );
         }
+
+        String emailPagador = pedido.emailPagador();
+
+        if (emailPagador == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "E-mail do responsável pelo pagamento é obrigatório."
+            );
+        }
+
+        emailPagador = emailPagador.trim();
+
+        if (emailPagador.isEmpty()
+                || emailPagador.length() > 254
+                || !EMAIL_PATTERN.matcher(emailPagador).matches()) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Informe um e-mail válido para o responsável pelo pagamento."
+            );
+        }
+
         try {
             return ResponseEntity.status(HttpStatus.CREATED).body(
-                    assinaturaRecorrenteService.criar(empresaId, pedido.plano(), chaveIdempotencia)
+                    assinaturaRecorrenteService.criar(
+                            empresaId,
+                            pedido.plano(),
+                            chaveIdempotencia,
+                            emailPagador
+                    )
             );
         } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    e.getMessage(),
+                    e
+            );
         } catch (IllegalStateException e) {
-            e.printStackTrace();
-            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage(), e);
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    e.getMessage(),
+                    e
+            );
         }
     }
 
     @GetMapping
     public List<Map<String, Object>> listar(Authentication authentication) {
-        return assinaturaRecorrenteService.listar(obterEmpresaId(authentication));
+        return assinaturaRecorrenteService.listar(
+                obterEmpresaId(authentication)
+        );
     }
 
     @GetMapping("/{assinaturaId}")
@@ -63,11 +114,22 @@ public class AssinaturaRecorrenteController {
             @PathVariable Long assinaturaId
     ) {
         try {
-            return assinaturaRecorrenteService.consultar(obterEmpresaId(authentication), assinaturaId);
+            return assinaturaRecorrenteService.consultar(
+                    obterEmpresaId(authentication),
+                    assinaturaId
+            );
         } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    e.getMessage(),
+                    e
+            );
         } catch (IllegalStateException e) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage(), e);
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    e.getMessage(),
+                    e
+            );
         }
     }
 
@@ -77,31 +139,63 @@ public class AssinaturaRecorrenteController {
             @PathVariable Long assinaturaId
     ) {
         try {
-            return assinaturaRecorrenteService.cancelar(obterEmpresaId(authentication), assinaturaId);
+            return assinaturaRecorrenteService.cancelar(
+                    obterEmpresaId(authentication),
+                    assinaturaId
+            );
         } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    e.getMessage(),
+                    e
+            );
         } catch (IllegalStateException e) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage(), e);
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    e.getMessage(),
+                    e
+            );
         }
     }
 
     private Long obterEmpresaId(Authentication authentication) {
         if (authentication == null || !authentication.isAuthenticated()) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Autenticação obrigatória.");
+            throw new ResponseStatusException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Autenticação obrigatória."
+            );
         }
+
         String principal = authentication.getName();
+
         if (principal == null || !principal.matches("EMPRESA:[0-9]+")) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Acesso exclusivo para empresas.");
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Acesso exclusivo para empresas."
+            );
         }
+
         try {
-            Long id = Long.parseLong(principal.substring("EMPRESA:".length()));
-            if (id <= 0) throw new NumberFormatException();
+            Long id = Long.parseLong(
+                    principal.substring("EMPRESA:".length())
+            );
+
+            if (id <= 0) {
+                throw new NumberFormatException();
+            }
+
             return id;
         } catch (NumberFormatException e) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Conta empresarial inválida.");
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Conta empresarial inválida."
+            );
         }
     }
 
-    public record CriarAssinaturaRequest(Assinatura.Plano plano) {
+    public record CriarAssinaturaRequest(
+            Assinatura.Plano plano,
+            String emailPagador
+    ) {
     }
 }

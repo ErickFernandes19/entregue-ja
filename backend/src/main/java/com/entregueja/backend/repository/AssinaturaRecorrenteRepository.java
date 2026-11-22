@@ -23,6 +23,11 @@ public interface AssinaturaRecorrenteRepository extends JpaRepository<Assinatura
             List<AssinaturaRecorrente.Status> status
     );
 
+    Optional<AssinaturaRecorrente> findFirstByEmpresaIdAndEstadoCriacaoInOrderByIdDesc(
+            Long empresaId,
+            List<AssinaturaRecorrente.EstadoCriacao> estados
+    );
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select a from AssinaturaRecorrente a where a.id = :id")
     Optional<AssinaturaRecorrente> buscarPorIdComBloqueio(@Param("id") Long id);

@@ -1,11 +1,14 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../services/pagamento_assinatura_service.dart';
+import '../services/empresa_service.dart';
 
 class EmpresaPagamentoPage extends StatefulWidget {
   final String plano;
@@ -25,6 +28,7 @@ enum _FormaPagamento { pix, cartao }
 
 class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
   _FormaPagamento _forma = _FormaPagamento.pix;
+  final TextEditingController _emailPagadorController = TextEditingController();
 
   bool _carregando = false;
   bool _consultando = false;
@@ -42,11 +46,103 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
   String? _chaveRecorrente;
   bool _consultandoAssinatura = false;
   bool _recuperandoAssinatura = false;
+  bool _inicializandoTentativa = true;
+  bool _tentativaIncerta = false;
+  String? _chaveArmazenamento;
+  String? _emailTentativa;
+  String? _planoTentativa;
 
   @override
   void initState() {
     super.initState();
-    _recuperarAssinaturaExistente();
+    _inicializarTentativa();
+  }
+
+  @override
+  void dispose() {
+    _emailPagadorController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _inicializarTentativa() async {
+    try {
+      final token = await EmpresaService.obterTokenEmpresa();
+      if (token == null) throw StateError('Sessão empresarial não encontrada.');
+      final partes = token.split('.');
+      if (partes.length != 3) throw StateError('Sessão empresarial inválida.');
+      final payload = jsonDecode(
+        utf8.decode(base64Url.decode(base64Url.normalize(partes[1]))),
+      );
+      if (payload is! Map<String, dynamic> || payload['tipo'] != 'EMPRESA') {
+        throw StateError('Acesso exclusivo para empresas.');
+      }
+      final empresaId = int.tryParse(payload['sub']?.toString() ?? '');
+      final exp = payload['exp'];
+      final agora = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      if (empresaId == null || empresaId <= 0 || exp is! num || exp <= agora) {
+        throw StateError('Sessão empresarial expirada ou inválida.');
+      }
+      final chave = 'entregueja_assinatura_tentativa_empresa_$empresaId';
+      final prefs = await SharedPreferences.getInstance();
+      final registro = prefs.getString(chave);
+      if (!mounted) return;
+      _chaveArmazenamento = chave;
+      if (registro != null) {
+        final dados = jsonDecode(registro);
+        if (dados is! Map<String, dynamic> ||
+            dados['chave'] is! String ||
+            dados['email'] is! String ||
+            dados['plano'] is! String) {
+          throw StateError(
+            'Tentativa anterior inválida. Verifique a assinatura antes de prosseguir.',
+          );
+        }
+        _chaveRecorrente = dados['chave'] as String;
+        _emailTentativa = dados['email'] as String;
+        _planoTentativa = dados['plano'] as String;
+        _emailPagadorController.text = _emailTentativa!;
+        _tentativaIncerta = true;
+        _forma = _FormaPagamento.cartao;
+      }
+      await _recuperarAssinaturaExistente();
+    } catch (erro) {
+      if (mounted) {
+        setState(() {
+          _tentativaIncerta = true;
+          _mensagemErro =
+              'Não foi possível verificar a tentativa anterior: $erro';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _inicializandoTentativa = false);
+    }
+  }
+
+  Future<void> _salvarTentativa(String email) async {
+    final chave = _chaveArmazenamento;
+    if (chave == null)
+      throw StateError('Não foi possível identificar a empresa.');
+    final prefs = await SharedPreferences.getInstance();
+    final idempotencia = _chaveRecorrente ??= _gerarUuid();
+    await prefs.setString(
+      chave,
+      jsonEncode({'chave': idempotencia, 'email': email, 'plano': _planoApi}),
+    );
+    _emailTentativa = email;
+    _planoTentativa = _planoApi;
+    _tentativaIncerta = true;
+  }
+
+  Future<void> _limparTentativa() async {
+    final chave = _chaveArmazenamento;
+    if (chave != null) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(chave);
+    }
+    _chaveRecorrente = null;
+    _emailTentativa = null;
+    _planoTentativa = null;
+    _tentativaIncerta = false;
   }
 
   Future<void> _recuperarAssinaturaExistente() async {
@@ -76,6 +172,7 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
           _forma = _FormaPagamento.cartao;
         });
         _atualizarAssinatura(assinatura);
+        await _limparTentativa();
       }
     } catch (erro) {
       if (mounted) {
@@ -286,6 +383,8 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
     if (_carregando ||
         _consultandoAssinatura ||
         _recuperandoAssinatura ||
+        _inicializandoTentativa ||
+        _tentativaIncerta ||
         _assinaturaId != null) {
       return;
     }
@@ -293,18 +392,38 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
       setState(() => _mensagemErro = 'Selecione um plano pago válido.');
       return;
     }
-    _chaveRecorrente ??= _gerarUuid();
+    final emailPagador = _emailPagadorController.text.trim();
+    if (emailPagador.isEmpty ||
+        emailPagador.length > 254 ||
+        !RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(emailPagador)) {
+      setState(
+        () => _mensagemErro =
+            'Informe um e-mail válido do responsável pelo pagamento.',
+      );
+      return;
+    }
+    if (_emailTentativa != null &&
+        (_emailTentativa != emailPagador || _planoTentativa != _planoApi)) {
+      setState(
+        () => _mensagemErro =
+            'Existe uma tentativa anterior com outros dados. Consulte a assinatura antes de continuar.',
+      );
+      return;
+    }
     setState(() {
       _carregando = true;
       _mensagemErro = null;
     });
     try {
+      await _salvarTentativa(emailPagador);
       final dados = await PagamentoAssinaturaService.criarAssinaturaRecorrente(
         plano: _planoApi,
         chaveIdempotencia: _chaveRecorrente!,
+        emailPagador: emailPagador,
       );
       if (!mounted) return;
       _atualizarAssinatura(dados);
+      await _limparTentativa();
       if (_urlAutorizacao != null && _statusAssinatura == 'PENDENTE') {
         await _abrirAutorizacao();
       }
@@ -554,7 +673,8 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
     final colors = theme.colorScheme;
     final isPix = _forma == _FormaPagamento.pix;
     final temPagamento = _pagamentoId != null || _assinaturaId != null;
-    final bloqueado = _carregando || _recuperandoAssinatura;
+    final bloqueado =
+        _carregando || _recuperandoAssinatura || _inicializandoTentativa;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Pagamento da assinatura')),
@@ -611,7 +731,11 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                   child: RadioGroup<_FormaPagamento>(
                     groupValue: _forma,
                     onChanged: (value) {
-                      if (temPagamento || bloqueado || value == null) return;
+                      if (temPagamento ||
+                          bloqueado ||
+                          _tentativaIncerta ||
+                          value == null)
+                        return;
 
                       setState(() {
                         _forma = value;
@@ -641,6 +765,22 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                     ),
                   ),
                 ),
+                if (!isPix && _assinaturaId == null) ...[
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _emailPagadorController,
+                    enabled: !bloqueado && !_tentativaIncerta,
+                    keyboardType: TextInputType.emailAddress,
+                    textInputAction: TextInputAction.done,
+                    autofillHints: const [AutofillHints.email],
+                    decoration: const InputDecoration(
+                      labelText: 'E-mail do responsável pelo pagamento',
+                      hintText: 'pagador@exemplo.com',
+                      border: OutlineInputBorder(),
+                      helperText: 'Pode ser diferente do e-mail da empresa.',
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 16),
                 Container(
                   padding: const EdgeInsets.all(16),
@@ -681,7 +821,20 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                   ),
                   const SizedBox(height: 16),
                 ],
-                if (_recuperandoAssinatura) ...[
+                if (_tentativaIncerta && _assinaturaId == null && !isPix) ...[
+                  const Text(
+                    'Existe uma tentativa de assinatura cujo resultado ainda não foi confirmado. '
+                    'Para evitar cobranças duplicadas, não será criada outra assinatura.',
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: bloqueado ? null : _recuperarAssinaturaExistente,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Consultar assinatura existente'),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                if (_recuperandoAssinatura || _inicializandoTentativa) ...[
                   const Center(child: CircularProgressIndicator()),
                   const SizedBox(height: 12),
                   const Center(
@@ -693,7 +846,7 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                   _construirCartao(theme)
                 else
                   FilledButton.icon(
-                    onPressed: bloqueado
+                    onPressed: bloqueado || (!isPix && _tentativaIncerta)
                         ? null
                         : isPix
                         ? _criarPix
@@ -718,7 +871,7 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                   ),
                 const SizedBox(height: 16),
                 Text(
-                  'Ambiente de testes. Não realize pagamentos reais durante a validação.',
+                  'Confira os dados antes de continuar. A assinatura no cartão pode gerar cobranças mensais reais.',
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodySmall,
                 ),
