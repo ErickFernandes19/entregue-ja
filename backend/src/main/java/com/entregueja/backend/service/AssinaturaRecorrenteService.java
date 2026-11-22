@@ -1,5 +1,7 @@
 package com.entregueja.backend.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.entregueja.backend.entity.Assinatura;
 import com.entregueja.backend.entity.AssinaturaRecorrente;
 import com.entregueja.backend.entity.Empresa;
@@ -30,6 +32,7 @@ import java.util.UUID;
 @Service
 public class AssinaturaRecorrenteService {
 
+    private static final Logger log = LoggerFactory.getLogger(AssinaturaRecorrenteService.class);
     private static final ZoneId FUSO = ZoneId.of("America/Sao_Paulo");
     private static final Pattern EMAIL_PATTERN = Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
 
@@ -418,6 +421,7 @@ public class AssinaturaRecorrenteService {
                 }
             } catch (RuntimeException e) {
                 falhas++;
+                log.warn("Falha ao conciliar pagamento da empresa {}: {}", empresaId, e.getClass().getSimpleName());
             }
         }
 
@@ -428,6 +432,7 @@ public class AssinaturaRecorrenteService {
         } catch (RuntimeException e) {
             falhas++;
             erroRecuperacao = "Não foi possível concluir a recuperação de mensalidades recorrentes.";
+            log.warn("Falha ao recuperar mensalidades da empresa {}: {}", empresaId, e.getClass().getSimpleName());
         }
 
         Map<String, Object> resultado = new LinkedHashMap<>();
