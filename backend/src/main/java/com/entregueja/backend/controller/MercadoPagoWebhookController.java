@@ -108,11 +108,22 @@ public class MercadoPagoWebhookController {
 
         if (tipoUrl != null && !tipoUrl.isBlank()
                 && tipoCorpo != null && !tipoUrl.equalsIgnoreCase(tipoCorpo)) {
-            LOGGER.warn("Webhook com tipos de evento divergentes");
-            return ResponseEntity.badRequest().build();
+            boolean eventoAssinaturaEquivalente = recorrente
+                    && (("subscription_preapproval".equalsIgnoreCase(tipoUrl)
+                    && "preapproval".equalsIgnoreCase(tipoCorpo))
+                    || ("preapproval".equalsIgnoreCase(tipoUrl)
+                    && "subscription_preapproval".equalsIgnoreCase(tipoCorpo)));
+
+            if (!eventoAssinaturaEquivalente) {
+                LOGGER.warn("Webhook com tipos de evento divergentes, tipoUrl={}, tipoCorpo={}", tipoUrl, tipoCorpo);
+                return ResponseEntity.badRequest().build();
+            }
         }
 
         String tipo = tipoUrl != null && !tipoUrl.isBlank() ? tipoUrl : tipoCorpo;
+        if (recorrente && "preapproval".equalsIgnoreCase(tipo)) {
+            tipo = "subscription_preapproval";
+        }
 
         if (tipo == null || tipo.isBlank()) {
             tipo = parametros.get("topic");
