@@ -68,7 +68,11 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/uploads/empresas/**").permitAll()
                         .requestMatchers("/uploads/entregas/**").denyAll()
-                        .requestMatchers(HttpMethod.POST, "/pagamentos/assinaturas/webhook").permitAll()
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/pagamentos/assinaturas/webhook",
+                                "/pagamentos/assinaturas/webhook/recorrentes"
+                        ).permitAll()
                         .requestMatchers(
                                 HttpMethod.POST,
                                 "/auth/login",
