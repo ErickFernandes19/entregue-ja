@@ -214,7 +214,6 @@ public class MercadoPagoService {
             JsonNode resposta = interpretarResposta(cliente.get()
                     .uri(construtor -> construtor.path("/authorized_payments/search")
                             .queryParam("preapproval_id", assinaturaId)
-                            .queryParam("limit", limite)
                             .queryParam("offset", deslocamento)
                             .build())
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + subscriptionsAccessToken)
