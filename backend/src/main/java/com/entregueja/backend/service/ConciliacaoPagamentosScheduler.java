@@ -34,8 +34,8 @@ public class ConciliacaoPagamentosScheduler {
     }
 
     @Scheduled(
-            fixedDelayString = "${pagamentos.conciliacao.intervalo-ms:900000}",
-            initialDelayString = "${pagamentos.conciliacao.atraso-inicial-ms:60000}"
+            fixedDelayString = "${pagamentos.conciliacao.intervalo-ms:3600000}",
+            initialDelayString = "${pagamentos.conciliacao.atraso-inicial-ms:120000}"
     )
     public void executar() {
         if (!executando.compareAndSet(false, true)) {
@@ -72,9 +72,11 @@ public class ConciliacaoPagamentosScheduler {
                     var resultado = assinaturaRecorrenteService.conciliarPagamentos(empresaId);
                     Object falhasInternas = resultado.get("falhas");
                     if (falhasInternas instanceof Number numero && numero.intValue() > 0) {
+                        falhas++;
                         LOGGER.warn("Conciliação da empresa {} retornou {} falhas internas", empresaId, numero);
+                    } else {
+                        sucesso++;
                     }
-                    sucesso++;
                 } catch (Exception e) {
                     falhas++;
                     LOGGER.error("Falha ao conciliar pagamentos da empresa {}", empresaId, e);
@@ -82,7 +84,7 @@ public class ConciliacaoPagamentosScheduler {
             }
 
             if (!empresas.isEmpty()) {
-                LOGGER.info("Conciliação concluída: {} empresas, {} processadas, {} com falha",
+                LOGGER.info("Conciliação concluída: {} empresas, {} sem falhas, {} com falha",
                         empresas.size(), sucesso, falhas);
             }
         } catch (Exception e) {
