@@ -14,6 +14,8 @@ public interface AssinaturaRecorrenteRepository extends JpaRepository<Assinatura
 
     List<AssinaturaRecorrente> findByEmpresaIdOrderByIdDesc(Long empresaId);
 
+    List<AssinaturaRecorrente> findByEntregadorIdOrderByIdDesc(Long entregadorId);
+
     Optional<AssinaturaRecorrente> findByChaveIdempotencia(String chaveIdempotencia);
 
     Optional<AssinaturaRecorrente> findByMercadoPagoAssinaturaId(String mercadoPagoAssinaturaId);
@@ -23,8 +25,18 @@ public interface AssinaturaRecorrenteRepository extends JpaRepository<Assinatura
             List<AssinaturaRecorrente.Status> status
     );
 
+    Optional<AssinaturaRecorrente> findFirstByEntregadorIdAndStatusInOrderByIdDesc(
+            Long entregadorId,
+            List<AssinaturaRecorrente.Status> status
+    );
+
     Optional<AssinaturaRecorrente> findFirstByEmpresaIdAndEstadoCriacaoInOrderByIdDesc(
             Long empresaId,
+            List<AssinaturaRecorrente.EstadoCriacao> estados
+    );
+
+    Optional<AssinaturaRecorrente> findFirstByEntregadorIdAndEstadoCriacaoInOrderByIdDesc(
+            Long entregadorId,
             List<AssinaturaRecorrente.EstadoCriacao> estados
     );
 

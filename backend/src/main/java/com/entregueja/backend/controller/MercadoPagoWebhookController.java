@@ -1,5 +1,6 @@
 package com.entregueja.backend.controller;
 
+import com.entregueja.backend.entity.Assinatura;
 import com.entregueja.backend.entity.PagamentoAssinatura;
 import com.entregueja.backend.repository.PagamentoAssinaturaRepository;
 import com.entregueja.backend.service.PagamentoAssinaturaService;
@@ -193,7 +194,14 @@ public class MercadoPagoWebhookController {
                     LOGGER.warn("Pagamento não Pix recebido no webhook Pix, id={}", dataId);
                     return ResponseEntity.badRequest().build();
                 }
-                pagamentoService.consultarCobrancaPix(pagamento.getEmpresaId(), pagamento.getId());
+                Assinatura.TipoConta tipoConta = pagamento.getTipoConta();
+                Long contaId = pagamento.getContaId();
+
+                if (tipoConta == Assinatura.TipoConta.EMPRESA) {
+                    pagamentoService.consultarCobrancaPix(contaId, pagamento.getId());
+                } else {
+                    pagamentoService.consultarCobrancaPix(tipoConta, contaId, pagamento.getId());
+                }
             }
 
             return ResponseEntity.ok().build();

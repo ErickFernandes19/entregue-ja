@@ -4,7 +4,10 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../config/api_config.dart';
+import 'auth_service.dart';
 import 'empresa_service.dart';
+
+enum TipoContaPagamento { empresa, entregador }
 
 class PagamentoAssinaturaException implements Exception {
   final String mensagem;
@@ -20,19 +23,27 @@ class PagamentoAssinaturaService {
   static Uri get _urlBase =>
       Uri.parse('${ApiConfig.baseUrl}/pagamentos/assinaturas');
 
-  static Future<Map<String, String>> _headersAutenticados() async {
-    final token = await EmpresaService.obterTokenEmpresa();
+  static Future<Map<String, String>> _headersAutenticados(
+    TipoContaPagamento tipoConta,
+  ) async {
+    final token = switch (tipoConta) {
+      TipoContaPagamento.empresa => await EmpresaService.obterTokenEmpresa(),
+      TipoContaPagamento.entregador => await AuthService.obterToken(),
+    };
 
     if (token == null || token.trim().isEmpty) {
-      throw const PagamentoAssinaturaException(
-        'Faça login como empresa para realizar pagamentos.',
+      throw PagamentoAssinaturaException(
+        tipoConta == TipoContaPagamento.empresa
+            ? 'Faça login como empresa para realizar pagamentos.'
+            : 'Faça login como entregador para realizar pagamentos.',
         statusCode: 401,
       );
     }
 
     return {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer $token',
+      'Accept': 'application/json',
+      'Authorization': 'Bearer ${token.trim()}',
     };
   }
 
@@ -53,7 +64,7 @@ class PagamentoAssinaturaService {
         );
       case 403:
         throw const PagamentoAssinaturaException(
-          'Apenas empresas podem contratar planos.',
+          'Sua conta não possui permissão para realizar esta operação.',
           statusCode: 403,
         );
       case 404:
@@ -63,12 +74,12 @@ class PagamentoAssinaturaService {
         );
       case 409:
         throw const PagamentoAssinaturaException(
-          'Não foi possível concluir a operação devido a um conflito. Verifique sua assinatura antes de tentar novamente.',
+          'Não foi possível concluir a operação devido a um conflito. Verifique suas cobranças e assinaturas existentes antes de tentar novamente.',
           statusCode: 409,
         );
       case 502:
         throw const PagamentoAssinaturaException(
-          'O Mercado Pago não conseguiu processar a solicitação.',
+          'O Mercado Pago não conseguiu confirmar a operação. Verifique a situação da cobrança ou assinatura antes de tentar novamente.',
           statusCode: 502,
         );
       default:
@@ -106,8 +117,9 @@ class PagamentoAssinaturaService {
   static Future<Map<String, dynamic>> criarPix({
     required String plano,
     required String chaveIdempotencia,
+    TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
   }) async {
-    final headers = await _headersAutenticados();
+    final headers = await _headersAutenticados(tipoConta);
 
     try {
       final response = await http
@@ -124,19 +136,20 @@ class PagamentoAssinaturaService {
       return _processarResposta(response);
     } on TimeoutException {
       throw const PagamentoAssinaturaException(
-        'O servidor demorou para responder. A cobrança pode ter sido criada. Consulte o pagamento antes de tentar novamente.',
+        'O servidor demorou para responder. A cobrança pode ter sido criada. Consulte o pagamento ou recupere a tentativa com a mesma chave antes de gerar outra cobrança.',
       );
     } on http.ClientException {
       throw const PagamentoAssinaturaException(
-        'Falha de conexão. A cobrança pode ter sido criada. Verifique antes de tentar novamente.',
+        'Falha de conexão. A cobrança pode ter sido criada. Recupere a tentativa com a mesma chave antes de gerar outra cobrança.',
       );
     }
   }
 
   static Future<Map<String, dynamic>> consultarPix({
     required int pagamentoId,
+    TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
   }) async {
-    final headers = await _headersAutenticados();
+    final headers = await _headersAutenticados(tipoConta);
 
     try {
       final response = await http
@@ -155,10 +168,79 @@ class PagamentoAssinaturaService {
     }
   }
 
+  static Future<List<Map<String, dynamic>>> listarPixPendentes({
+    required TipoContaPagamento tipoConta,
+  }) async {
+    final headers = await _headersAutenticados(tipoConta);
+    final tipoEsperado = switch (tipoConta) {
+      TipoContaPagamento.empresa => 'EMPRESA',
+      TipoContaPagamento.entregador => 'ENTREGADOR',
+    };
+
+    try {
+      final response = await http
+          .get(Uri.parse('$_urlBase/pix/pendentes'), headers: headers)
+          .timeout(const Duration(seconds: 30));
+
+      final dados = _decodificarResposta(response);
+
+      if (dados is! List) {
+        throw const PagamentoAssinaturaException(
+          'Formato da lista de cobranças Pix inválido.',
+        );
+      }
+
+      final pagamentos = <Map<String, dynamic>>[];
+      final identificadores = <int>{};
+
+      for (final item in dados) {
+        if (item is! Map<String, dynamic>) {
+          throw const PagamentoAssinaturaException(
+            'O servidor retornou uma cobrança Pix inválida.',
+          );
+        }
+
+        final id = item['pagamentoId'];
+        final plano = item['plano'];
+        final valor = item['valor'];
+        final status = item['status'];
+
+        if (id is! int ||
+            id <= 0 ||
+            !identificadores.add(id) ||
+            item['tipoConta'] != tipoEsperado ||
+            (plano != 'ESSENCIAL' && plano != 'PROFISSIONAL') ||
+            valor is! num ||
+            !valor.isFinite ||
+            valor <= 0 ||
+            (status != 'PENDENTE' && status != 'APROVADO') ||
+            item['planoAtivado'] != false ||
+            item['requerConciliacao'] != true) {
+          throw const PagamentoAssinaturaException(
+            'Não foi possível validar as cobranças Pix pendentes com segurança.',
+          );
+        }
+
+        pagamentos.add(item);
+      }
+
+      return pagamentos;
+    } on TimeoutException {
+      throw const PagamentoAssinaturaException(
+        'O servidor demorou para listar as cobranças Pix. Tente consultar novamente antes de gerar outra cobrança.',
+      );
+    } on http.ClientException {
+      throw const PagamentoAssinaturaException(
+        'Não foi possível listar as cobranças Pix. Verifique sua conexão antes de gerar outra cobrança.',
+      );
+    }
+  }
+
   static Future<Map<String, dynamic>> criarAssinaturaRecorrente({
     required String plano,
     required String chaveIdempotencia,
     required String emailPagador,
+    TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
   }) async {
     final email = emailPagador.trim();
 
@@ -170,7 +252,7 @@ class PagamentoAssinaturaService {
       );
     }
 
-    final headers = await _headersAutenticados();
+    final headers = await _headersAutenticados(tipoConta);
     headers['X-Idempotency-Key'] = chaveIdempotencia;
 
     try {
@@ -199,8 +281,9 @@ class PagamentoAssinaturaService {
 
   static Future<Map<String, dynamic>> consultarAssinaturaRecorrente({
     required int assinaturaId,
+    TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
   }) async {
-    final headers = await _headersAutenticados();
+    final headers = await _headersAutenticados(tipoConta);
 
     try {
       final response = await http
@@ -222,9 +305,10 @@ class PagamentoAssinaturaService {
     }
   }
 
-  static Future<List<Map<String, dynamic>>>
-  listarAssinaturasRecorrentes() async {
-    final headers = await _headersAutenticados();
+  static Future<List<Map<String, dynamic>>> listarAssinaturasRecorrentes({
+    TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
+  }) async {
+    final headers = await _headersAutenticados(tipoConta);
 
     try {
       final response = await http
@@ -261,8 +345,9 @@ class PagamentoAssinaturaService {
 
   static Future<Map<String, dynamic>> cancelarAssinaturaRecorrente({
     required int assinaturaId,
+    TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
   }) async {
-    final headers = await _headersAutenticados();
+    final headers = await _headersAutenticados(tipoConta);
 
     try {
       final response = await http

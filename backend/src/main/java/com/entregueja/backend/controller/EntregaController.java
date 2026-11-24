@@ -102,7 +102,16 @@ public class EntregaController {
                 && !agora.isBefore(assinatura.getDataInicio())
                 && agora.isBefore(assinatura.getDataVencimento());
 
-        int limite = emTeste ? 500 : switch (assinatura.getPlano()) {
+        boolean autonomo = tipoConta == Assinatura.TipoConta.ENTREGADOR;
+        if (autonomo && assinatura.getPlano() == Assinatura.Plano.PROFISSIONAL) {
+            return null;
+        }
+
+        int limite = emTeste ? 500 : autonomo ? switch (assinatura.getPlano()) {
+            case GRATUITO -> 20;
+            case ESSENCIAL -> 50;
+            case PROFISSIONAL -> Integer.MAX_VALUE;
+        } : switch (assinatura.getPlano()) {
             case GRATUITO -> 100;
             case ESSENCIAL -> 1000;
             case PROFISSIONAL -> 5000;
@@ -114,8 +123,12 @@ public class EntregaController {
         if (emTeste) {
             inicio = assinatura.getDataInicio();
             fim = assinatura.getDataVencimento();
+        } else if (autonomo) {
+            LocalDate hoje = agora.toLocalDate();
+            inicio = hoje.atStartOfDay();
+            fim = hoje.plusDays(1).atStartOfDay();
         } else {
-            LocalDate hoje = LocalDate.now(ZoneId.of("America/Sao_Paulo"));
+            LocalDate hoje = agora.toLocalDate();
             inicio = hoje.withDayOfMonth(1).atStartOfDay();
             fim = hoje.withDayOfMonth(1).plusMonths(1).atStartOfDay();
         }
@@ -128,10 +141,11 @@ public class EntregaController {
             Map<String, Object> resposta = new LinkedHashMap<>();
             resposta.put("mensagem", emTeste
                     ? "Limite de 500 entregas do teste gratuito atingido"
-                    : "Limite mensal de entregas atingido para o plano " + assinatura.getPlano());
+                    : (autonomo ? "Limite diário" : "Limite mensal")
+                      + " de entregas atingido para o plano " + assinatura.getPlano());
             resposta.put("limiteEntregas", limite);
             resposta.put("entregasUtilizadas", quantidade);
-            resposta.put("periodo", emTeste ? "TESTE_GRATUITO" : "MENSAL");
+            resposta.put("periodo", emTeste ? "TESTE_GRATUITO" : autonomo ? "DIARIO" : "MENSAL");
             resposta.put("inicioPeriodo", inicio.toString());
             resposta.put("fimPeriodoExclusivo", fim.toString());
             return ResponseEntity.status(409).body(resposta);

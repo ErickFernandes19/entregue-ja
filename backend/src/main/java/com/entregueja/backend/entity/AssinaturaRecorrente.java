@@ -11,6 +11,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import jakarta.persistence.UniqueConstraint;
 
 import java.math.BigDecimal;
@@ -21,7 +22,8 @@ import java.time.LocalDateTime;
         name = "assinaturas_recorrentes",
         indexes = {
                 @Index(name = "idx_assinatura_recorrente_empresa", columnList = "empresa_id"),
-                @Index(name = "idx_assinatura_recorrente_status", columnList = "status")
+                @Index(name = "idx_assinatura_recorrente_status", columnList = "status"),
+                @Index(name = "idx_assinatura_recorrente_entregador_status", columnList = "entregador_id, status")
         },
         uniqueConstraints = {
                 @UniqueConstraint(name = "uk_assinatura_recorrente_mp", columnNames = "mercado_pago_assinatura_id"),
@@ -49,8 +51,11 @@ public class AssinaturaRecorrente {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "empresa_id", nullable = false)
+    @Column(name = "empresa_id")
     private Long empresaId;
+
+    @Column(name = "entregador_id")
+    private Long entregadorId;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)
@@ -90,6 +95,7 @@ public class AssinaturaRecorrente {
 
     @PrePersist
     public void antesDeCriar() {
+        validarTitularidade();
         LocalDateTime agora = LocalDateTime.now();
         dataCriacao = agora;
         dataAtualizacao = agora;
@@ -97,7 +103,30 @@ public class AssinaturaRecorrente {
 
     @PreUpdate
     public void antesDeAtualizar() {
+        validarTitularidade();
         dataAtualizacao = LocalDateTime.now();
+    }
+
+    private void validarTitularidade() {
+        if ((empresaId == null) == (entregadorId == null)) {
+            throw new IllegalStateException("A assinatura recorrente deve pertencer exclusivamente a uma empresa ou a um entregador.");
+        }
+        if ((empresaId != null && empresaId <= 0)
+                || (entregadorId != null && entregadorId <= 0)) {
+            throw new IllegalStateException("Identificador do titular da assinatura recorrente inválido.");
+        }
+    }
+
+    @Transient
+    public Assinatura.TipoConta getTipoConta() {
+        validarTitularidade();
+        return empresaId != null ? Assinatura.TipoConta.EMPRESA : Assinatura.TipoConta.ENTREGADOR;
+    }
+
+    @Transient
+    public Long getContaId() {
+        validarTitularidade();
+        return empresaId != null ? empresaId : entregadorId;
     }
 
     public Long getId() {
@@ -114,6 +143,14 @@ public class AssinaturaRecorrente {
 
     public void setEmpresaId(Long empresaId) {
         this.empresaId = empresaId;
+    }
+
+    public Long getEntregadorId() {
+        return entregadorId;
+    }
+
+    public void setEntregadorId(Long entregadorId) {
+        this.entregadorId = entregadorId;
     }
 
     public Assinatura.Plano getPlano() {

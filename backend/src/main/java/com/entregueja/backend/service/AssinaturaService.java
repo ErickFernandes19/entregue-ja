@@ -1,6 +1,7 @@
 package com.entregueja.backend.service;
 
 import com.entregueja.backend.entity.Assinatura;
+import com.entregueja.backend.entity.AssinaturaRecorrente;
 import com.entregueja.backend.entity.Empresa;
 import com.entregueja.backend.entity.PagamentoAssinatura;
 import com.entregueja.backend.entity.Usuario;
@@ -157,31 +158,54 @@ public class AssinaturaService {
 
     @Transactional
     public Assinatura ativarPlanoPagoPorPix(Long empresaId, Long pagamentoId) {
-        return ativarPlanoPago(empresaId, pagamentoId, PagamentoAssinatura.FormaPagamento.PIX);
+        return ativarPlanoPago(Assinatura.TipoConta.EMPRESA, empresaId, pagamentoId,
+                PagamentoAssinatura.FormaPagamento.PIX);
+    }
+
+    @Transactional
+    public Assinatura ativarPlanoPagoPorPix(
+            Assinatura.TipoConta tipoConta, Long contaId, Long pagamentoId) {
+        return ativarPlanoPago(tipoConta, contaId, pagamentoId, PagamentoAssinatura.FormaPagamento.PIX);
     }
 
     @Transactional
     public Assinatura ativarPlanoPagoPorCartao(Long empresaId, Long pagamentoId) {
-        return ativarPlanoPago(empresaId, pagamentoId, PagamentoAssinatura.FormaPagamento.CARTAO);
+        return ativarPlanoPago(Assinatura.TipoConta.EMPRESA, empresaId, pagamentoId,
+                PagamentoAssinatura.FormaPagamento.CARTAO);
+    }
+
+    @Transactional
+    public Assinatura ativarPlanoPagoPorCartao(
+            Assinatura.TipoConta tipoConta, Long contaId, Long pagamentoId) {
+        return ativarPlanoPago(tipoConta, contaId, pagamentoId, PagamentoAssinatura.FormaPagamento.CARTAO);
     }
 
     private Assinatura ativarPlanoPago(
-            Long empresaId,
+            Assinatura.TipoConta tipoConta,
+            Long contaId,
             Long pagamentoId,
             PagamentoAssinatura.FormaPagamento formaPagamento
     ) {
-        validarIdentificadores(Assinatura.TipoConta.EMPRESA, empresaId);
+        validarIdentificadores(tipoConta, contaId);
         if (pagamentoId == null || pagamentoId <= 0) {
             throw new IllegalArgumentException("Pagamento inválido.");
         }
 
-        bloquearConta(Assinatura.TipoConta.EMPRESA, empresaId);
+        bloquearConta(tipoConta, contaId);
 
         PagamentoAssinatura pagamento = pagamentoRepository.buscarPorIdComBloqueio(pagamentoId)
                 .orElseThrow(() -> new IllegalArgumentException("Pagamento não encontrado."));
 
-        if (!empresaId.equals(pagamento.getEmpresaId()) || pagamento.getFormaPagamento() != formaPagamento) {
-            throw new IllegalArgumentException("Pagamento não pertence à empresa ou possui forma inválida.");
+        boolean titularCorreto = switch (tipoConta) {
+            case EMPRESA -> contaId.equals(pagamento.getEmpresaId())
+                    && pagamento.getEntregadorId() == null;
+            case ENTREGADOR -> contaId.equals(pagamento.getEntregadorId())
+                    && pagamento.getEmpresaId() == null;
+        };
+        if (!titularCorreto || pagamento.getFormaPagamento() != formaPagamento) {
+            throw new IllegalArgumentException(tipoConta == Assinatura.TipoConta.EMPRESA
+                    ? "Pagamento não pertence à empresa ou possui forma inválida."
+                    : "Pagamento não pertence ao entregador ou possui forma inválida.");
         }
 
         if (pagamento.getStatus() != PagamentoAssinatura.Status.APROVADO
@@ -197,11 +221,7 @@ public class AssinaturaService {
             throw new IllegalStateException("O pagamento não possui assinatura recorrente válida.");
         }
 
-        BigDecimal esperado = switch (pagamento.getPlano()) {
-            case ESSENCIAL -> new BigDecimal("39.90");
-            case PROFISSIONAL -> new BigDecimal("79.90");
-            default -> throw new IllegalArgumentException("Plano inválido para pagamento.");
-        };
+        BigDecimal esperado = valorDoPlano(tipoConta, pagamento.getPlano());
 
         if (pagamento.getValor() == null || pagamento.getValor().compareTo(esperado) != 0) {
             throw new IllegalStateException("Valor do pagamento inconsistente.");
@@ -209,7 +229,7 @@ public class AssinaturaService {
 
         LocalDateTime agora = LocalDateTime.now(FUSO);
         Optional<Assinatura> ativa = assinaturaRepository.findFirstByTipoContaAndContaIdAndStatusOrderByIdDesc(
-                Assinatura.TipoConta.EMPRESA, empresaId, Assinatura.Status.ATIVA
+                tipoConta, contaId, Assinatura.Status.ATIVA
         );
 
         if (pagamento.getDataVencimento() != null) {
@@ -262,6 +282,13 @@ public class AssinaturaService {
                     && !atual.getMercadoPagoAssinaturaId().equals(pagamento.getMercadoPagoAssinaturaId())) {
                 throw new IllegalStateException("A cobrança pertence a outra assinatura recorrente.");
             }
+        }
+
+        boolean renovacaoAutomatica = formaPagamento == PagamentoAssinatura.FormaPagamento.CARTAO
+                && recorrenciaPermiteRenovacao(tipoConta, contaId, pagamento.getMercadoPagoAssinaturaId());
+
+        if (ativa.isPresent()) {
+            Assinatura atual = ativa.get();
 
             if (!estaVencida(atual, agora)
                     && !atual.isTesteGratuito()
@@ -269,9 +296,12 @@ public class AssinaturaService {
                     && atual.getDataVencimento() != null) {
                 LocalDateTime novoVencimento = atual.getDataVencimento().plusDays(DIAS_PLANO_PAGO);
                 atual.setDataVencimento(novoVencimento);
-                atual.setRenovacaoAutomatica(formaPagamento == PagamentoAssinatura.FormaPagamento.CARTAO);
-                atual.setMercadoPagoAssinaturaId(formaPagamento == PagamentoAssinatura.FormaPagamento.CARTAO
-                        ? pagamento.getMercadoPagoAssinaturaId() : null);
+                atual.setRenovacaoAutomatica(renovacaoAutomatica);
+                if (formaPagamento == PagamentoAssinatura.FormaPagamento.PIX) {
+                    atual.setMercadoPagoAssinaturaId(null);
+                } else if (renovacaoAutomatica || atual.getMercadoPagoAssinaturaId() != null) {
+                    atual.setMercadoPagoAssinaturaId(pagamento.getMercadoPagoAssinaturaId());
+                }
                 Assinatura renovada = assinaturaRepository.save(atual);
                 pagamento.setDataVencimento(novoVencimento);
                 pagamentoRepository.save(pagamento);
@@ -286,14 +316,14 @@ public class AssinaturaService {
         }
 
         Assinatura nova = new Assinatura();
-        nova.setTipoConta(Assinatura.TipoConta.EMPRESA);
-        nova.setContaId(empresaId);
+        nova.setTipoConta(tipoConta);
+        nova.setContaId(contaId);
         nova.setPlano(pagamento.getPlano());
         nova.setStatus(Assinatura.Status.ATIVA);
         nova.setTesteGratuito(false);
         nova.setDataInicio(agora);
         nova.setDataVencimento(agora.plusDays(DIAS_PLANO_PAGO));
-        nova.setRenovacaoAutomatica(formaPagamento == PagamentoAssinatura.FormaPagamento.CARTAO);
+        nova.setRenovacaoAutomatica(renovacaoAutomatica);
         if (formaPagamento == PagamentoAssinatura.FormaPagamento.CARTAO) {
             nova.setMercadoPagoAssinaturaId(pagamento.getMercadoPagoAssinaturaId());
         }
@@ -302,6 +332,59 @@ public class AssinaturaService {
         pagamento.setDataVencimento(salva.getDataVencimento());
         pagamentoRepository.save(pagamento);
         return salva;
+    }
+
+    private boolean recorrenciaPermiteRenovacao(
+            Assinatura.TipoConta tipoConta, Long contaId, String assinaturaExterna) {
+        List<AssinaturaRecorrente> registros = entityManager.createQuery(
+                        "select r from AssinaturaRecorrente r where r.mercadoPagoAssinaturaId = :assinaturaExterna",
+                        AssinaturaRecorrente.class)
+                .setParameter("assinaturaExterna", assinaturaExterna)
+                .setLockMode(LockModeType.PESSIMISTIC_WRITE)
+                .getResultList();
+
+        if (registros.size() != 1) {
+            throw new IllegalStateException("Não foi possível identificar a assinatura recorrente do pagamento.");
+        }
+
+        AssinaturaRecorrente recorrente = registros.getFirst();
+        entityManager.refresh(recorrente, LockModeType.PESSIMISTIC_WRITE);
+
+        if (recorrente.getTipoConta() != tipoConta
+                || !contaId.equals(recorrente.getContaId())
+                || !assinaturaExterna.equals(recorrente.getMercadoPagoAssinaturaId())) {
+            throw new IllegalStateException("A assinatura recorrente não pertence ao titular do pagamento.");
+        }
+
+        if (recorrente.getStatus() == null) {
+            throw new IllegalStateException("Status da assinatura recorrente não informado.");
+        }
+
+        return switch (recorrente.getStatus()) {
+            case CANCELADA, ENCERRADA -> false;
+            case PENDENTE, AUTORIZADA, PAUSADA -> true;
+        };
+    }
+
+    public static BigDecimal valorDoPlano(Assinatura.TipoConta tipoConta, Assinatura.Plano plano) {
+        if (tipoConta == null) {
+            throw new IllegalArgumentException("Tipo de conta é obrigatório.");
+        }
+        if (plano == null) {
+            throw new IllegalArgumentException("Plano inválido para pagamento.");
+        }
+        return switch (tipoConta) {
+            case EMPRESA -> switch (plano) {
+                case ESSENCIAL -> new BigDecimal("39.90");
+                case PROFISSIONAL -> new BigDecimal("79.90");
+                default -> throw new IllegalArgumentException("Plano inválido para pagamento.");
+            };
+            case ENTREGADOR -> switch (plano) {
+                case ESSENCIAL -> new BigDecimal("9.90");
+                case PROFISSIONAL -> new BigDecimal("19.90");
+                default -> throw new IllegalArgumentException("Plano inválido para pagamento.");
+            };
+        };
     }
 
     private boolean estaVencida(Assinatura assinatura, LocalDateTime agora) {

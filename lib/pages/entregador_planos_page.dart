@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../services/assinatura_service.dart';
+import 'entregador_pagamento_page.dart';
 
 class EntregadorPlanosPage extends StatefulWidget {
   const EntregadorPlanosPage({super.key});
@@ -47,6 +48,16 @@ class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
         _carregando = false;
       });
     }
+  }
+
+  Future<void> _abrirPagamento(String plano, String preco) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            EntregadorPagamentoPage(plano: plano, precoMensal: preco),
+      ),
+    );
+    if (mounted) await _carregarAssinatura();
   }
 
   Future<void> _abrirGerenciamento() async {
@@ -148,6 +159,7 @@ class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
               ],
               planoAtual:
                   !_carregando && _erro == null && _planoAtual == 'ESSENCIAL',
+              onSelecionar: () => _abrirPagamento('Essencial', 'R\$ 9,90'),
             ),
             const SizedBox(height: 14),
             _CartaoPlanoEntregador(
@@ -165,6 +177,7 @@ class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
                   !_carregando &&
                   _erro == null &&
                   _planoAtual == 'PROFISSIONAL',
+              onSelecionar: () => _abrirPagamento('Profissional', 'R\$ 19,90'),
             ),
             const SizedBox(height: 18),
             Card(
@@ -177,7 +190,7 @@ class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
                     const SizedBox(width: 12),
                     const Expanded(
                       child: Text(
-                        'Os preços e limites são provisórios. A contratação dos planos pagos ainda não está disponível. Entregas atribuídas por empresas vinculadas não exigem assinatura pessoal.',
+                        'Entregas atribuídas por empresas vinculadas não exigem assinatura pessoal. A contratação dos planos pagos depende da habilitação do pagamento para entregadores.',
                       ),
                     ),
                   ],
@@ -198,6 +211,7 @@ class _CartaoPlanoEntregador extends StatelessWidget {
   final bool gratuito;
   final bool destaque;
   final bool planoAtual;
+  final VoidCallback? onSelecionar;
 
   const _CartaoPlanoEntregador({
     required this.nome,
@@ -206,6 +220,7 @@ class _CartaoPlanoEntregador extends StatelessWidget {
     this.gratuito = false,
     this.destaque = false,
     this.planoAtual = false,
+    this.onSelecionar,
   });
 
   @override
@@ -291,20 +306,20 @@ class _CartaoPlanoEntregador extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
-                onPressed: null,
+                onPressed: planoAtual || gratuito ? null : onSelecionar,
                 icon: Icon(
                   planoAtual
                       ? Icons.check_circle_outline
                       : gratuito
                       ? Icons.check_circle_outline
-                      : Icons.lock_outline,
+                      : Icons.arrow_forward_outlined,
                 ),
                 label: Text(
                   planoAtual
                       ? 'Seu plano atual'
                       : gratuito
                       ? 'Plano gratuito'
-                      : 'Disponível em breve',
+                      : 'Selecionar plano',
                 ),
               ),
             ),

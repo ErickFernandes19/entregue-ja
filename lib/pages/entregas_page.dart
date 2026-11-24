@@ -239,33 +239,6 @@ class _EntregasPageState extends State<EntregasPage> {
     }
   }
 
-  Future<void> lerEtiqueta() async {
-    if (processandoAcao) return;
-    setState(() => processandoAcao = true);
-    try {
-      final texto = await context.push<String>('/entregador/entregas/ocr');
-
-      if (!mounted || texto == null || texto.trim().isEmpty) return;
-
-      final entrega = await context.push<EntregaModel>(
-        '/entregador/entregas/cadastro-manual',
-        extra: {'textoOcr': texto},
-      );
-
-      if (!mounted || entrega == null) return;
-
-      final provider = context.read<EntregasProvider>();
-      await provider.adicionarEntrega(entrega);
-    } catch (e) {
-      mostrarMensagem(
-        'Não foi possível atualizar a lista de entregas.',
-        erro: true,
-      );
-    } finally {
-      if (mounted) setState(() => processandoAcao = false);
-    }
-  }
-
   Future<void> abrirDetalhesEntrega(
     EntregaModel entrega,
     EntregasProvider provider,
@@ -808,13 +781,6 @@ class _EntregasPageState extends State<EntregasPage> {
                       ? Colors.white
                       : Colors.black,
                   onTap: escanearQRCode,
-                ),
-                const SizedBox(width: 10),
-                botaoTopo(
-                  icon: Icons.document_scanner,
-                  texto: 'Etiqueta',
-                  color: Colors.deepPurpleAccent,
-                  onTap: lerEtiqueta,
                 ),
                 const SizedBox(width: 10),
                 botaoTopo(

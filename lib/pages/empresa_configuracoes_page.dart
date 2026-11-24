@@ -66,41 +66,35 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
                         ),
                       ),
                     ),
-                    RadioListTile<ThemeMode>(
-                      value: ThemeMode.system,
+                    RadioGroup<ThemeMode>(
                       groupValue: provider.themeMode,
-                      secondary: const Icon(Icons.settings_brightness),
-                      title: const Text('Sistema'),
-                      subtitle: const Text('Segue a configuração do celular'),
                       onChanged: (modo) async {
                         if (modo == null) return;
-
                         await themeProvider.alterarTema(modo);
                       },
-                    ),
-                    RadioListTile<ThemeMode>(
-                      value: ThemeMode.light,
-                      groupValue: provider.themeMode,
-                      secondary: const Icon(Icons.light_mode),
-                      title: const Text('Claro'),
-                      subtitle: const Text('Sempre usar o modo claro'),
-                      onChanged: (modo) async {
-                        if (modo == null) return;
-
-                        await themeProvider.alterarTema(modo);
-                      },
-                    ),
-                    RadioListTile<ThemeMode>(
-                      value: ThemeMode.dark,
-                      groupValue: provider.themeMode,
-                      secondary: const Icon(Icons.dark_mode),
-                      title: const Text('Escuro'),
-                      subtitle: const Text('Sempre usar o modo escuro'),
-                      onChanged: (modo) async {
-                        if (modo == null) return;
-
-                        await themeProvider.alterarTema(modo);
-                      },
+                      child: const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          RadioListTile<ThemeMode>(
+                            value: ThemeMode.system,
+                            secondary: Icon(Icons.settings_brightness),
+                            title: Text('Sistema'),
+                            subtitle: Text('Segue a configuração do celular'),
+                          ),
+                          RadioListTile<ThemeMode>(
+                            value: ThemeMode.light,
+                            secondary: Icon(Icons.light_mode),
+                            title: Text('Claro'),
+                            subtitle: Text('Sempre usar o modo claro'),
+                          ),
+                          RadioListTile<ThemeMode>(
+                            value: ThemeMode.dark,
+                            secondary: Icon(Icons.dark_mode),
+                            title: Text('Escuro'),
+                            subtitle: Text('Sempre usar o modo escuro'),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -127,11 +121,11 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
       decoration: BoxDecoration(
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: color.withOpacity(0.18)),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
       ),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: color.withOpacity(0.14),
+          backgroundColor: color.withValues(alpha: 0.14),
           child: Icon(icon, color: color),
         ),
         title: Text(
@@ -163,11 +157,13 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
       decoration: BoxDecoration(
         color: theme.colorScheme.errorContainer,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: theme.colorScheme.error.withOpacity(0.20)),
+        border: Border.all(
+          color: theme.colorScheme.error.withValues(alpha: 0.20),
+        ),
       ),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: theme.colorScheme.error.withOpacity(0.14),
+          backgroundColor: theme.colorScheme.error.withValues(alpha: 0.14),
           child: Icon(Icons.logout, color: theme.colorScheme.error),
         ),
         title: Text(
@@ -180,7 +176,7 @@ class EmpresaConfiguracoesPage extends StatelessWidget {
         subtitle: Text(
           'Encerrar sessão da empresa',
           style: TextStyle(
-            color: theme.colorScheme.onErrorContainer.withOpacity(0.80),
+            color: theme.colorScheme.onErrorContainer.withValues(alpha: 0.80),
           ),
         ),
         onTap: () async {

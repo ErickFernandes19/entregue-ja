@@ -7,6 +7,8 @@ import '../config/api_config.dart';
 import 'auth_service.dart';
 import 'empresa_service.dart';
 
+enum TipoContaAssinatura { empresa, entregador }
+
 class AssinaturaException implements Exception {
   final String mensagem;
   final int? statusCode;
@@ -20,42 +22,60 @@ class AssinaturaException implements Exception {
 class AssinaturaService {
   static Uri get _urlBase => Uri.parse('${ApiConfig.baseUrl}/assinaturas');
 
+  static String? _normalizarToken(String? token) {
+    final valor = token?.trim();
+    return valor == null || valor.isEmpty ? null : valor;
+  }
+
   static Future<Map<String, String>> _headersAutenticados({
-    bool somenteEmpresa = false,
+    TipoContaAssinatura? tipoConta,
   }) async {
-    final tokenEmpresa = await EmpresaService.obterTokenEmpresa();
+    String? token;
 
-    if (tokenEmpresa != null && tokenEmpresa.trim().isNotEmpty) {
-      return {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $tokenEmpresa',
+    if (tipoConta == TipoContaAssinatura.empresa) {
+      token = _normalizarToken(await EmpresaService.obterTokenEmpresa());
+    } else if (tipoConta == TipoContaAssinatura.entregador) {
+      token = _normalizarToken(await AuthService.obterToken());
+    } else {
+      final tokenEmpresa = _normalizarToken(
+        await EmpresaService.obterTokenEmpresa(),
+      );
+      final tokenEntregador = _normalizarToken(await AuthService.obterToken());
+
+      if (tokenEmpresa != null && tokenEntregador != null) {
+        throw const AssinaturaException(
+          'Existem duas sessões disponíveis. Selecione o perfil correto para consultar a assinatura.',
+          statusCode: 409,
+        );
+      }
+
+      token = tokenEmpresa ?? tokenEntregador;
+    }
+
+    if (token == null) {
+      final mensagem = switch (tipoConta) {
+        TipoContaAssinatura.empresa =>
+          'Faça login como empresa para utilizar esta funcionalidade.',
+        TipoContaAssinatura.entregador =>
+          'Faça login como entregador para utilizar esta funcionalidade.',
+        null => 'Sua sessão não está disponível. Faça login novamente.',
       };
-    }
 
-    if (somenteEmpresa) {
-      throw const AssinaturaException(
-        'Faça login como empresa para utilizar esta funcionalidade.',
-        statusCode: 401,
-      );
-    }
-
-    final tokenEntregador = await AuthService.obterToken();
-
-    if (tokenEntregador == null || tokenEntregador.trim().isEmpty) {
-      throw const AssinaturaException(
-        'Sua sessão não está disponível. Faça login novamente.',
-        statusCode: 401,
-      );
+      throw AssinaturaException(mensagem, statusCode: 401);
     }
 
     return {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer $tokenEntregador',
+      'Accept': 'application/json',
+      'Authorization': 'Bearer $token',
     };
   }
 
-  static Future<http.Response> _get(String caminho) async {
-    final headers = await _headersAutenticados();
+  static Future<http.Response> _get(
+    String caminho, {
+    TipoContaAssinatura? tipoConta,
+  }) async {
+    final headers = await _headersAutenticados(tipoConta: tipoConta);
 
     try {
       return await http
@@ -107,8 +127,27 @@ class AssinaturaService {
     }
   }
 
-  static Future<Map<String, dynamic>?> buscarAtual() async {
-    final response = await _get('atual');
+  static void _validarTipoConta(
+    Map<String, dynamic> dados,
+    TipoContaAssinatura? tipoConta,
+  ) {
+    if (tipoConta == null) return;
+
+    final esperado = tipoConta == TipoContaAssinatura.empresa
+        ? 'EMPRESA'
+        : 'ENTREGADOR';
+
+    if (dados['tipoConta'] != esperado) {
+      throw const AssinaturaException(
+        'O servidor retornou dados de um perfil diferente do solicitado.',
+      );
+    }
+  }
+
+  static Future<Map<String, dynamic>?> buscarAtual({
+    TipoContaAssinatura? tipoConta,
+  }) async {
+    final response = await _get('atual', tipoConta: tipoConta);
 
     if (response.statusCode == 404) {
       return null;
@@ -122,11 +161,14 @@ class AssinaturaService {
       throw const AssinaturaException('Formato de assinatura inválido.');
     }
 
+    _validarTipoConta(dados, tipoConta);
     return dados;
   }
 
-  static Future<List<Map<String, dynamic>>> buscarHistorico() async {
-    final response = await _get('historico');
+  static Future<List<Map<String, dynamic>>> buscarHistorico({
+    TipoContaAssinatura? tipoConta,
+  }) async {
+    final response = await _get('historico', tipoConta: tipoConta);
 
     _verificarStatus(response);
 
@@ -136,17 +178,20 @@ class AssinaturaService {
       throw const AssinaturaException('Formato de histórico inválido.');
     }
 
-    try {
-      return dados
-          .map((item) => Map<String, dynamic>.from(item as Map))
-          .toList();
-    } on TypeError {
-      throw const AssinaturaException('O histórico contém dados inválidos.');
-    }
+    return dados.map<Map<String, dynamic>>((item) {
+      if (item is! Map<String, dynamic>) {
+        throw const AssinaturaException('O histórico contém dados inválidos.');
+      }
+
+      _validarTipoConta(item, tipoConta);
+      return item;
+    }).toList();
   }
 
-  static Future<Map<String, dynamic>> buscarConsumo() async {
-    final response = await _get('consumo');
+  static Future<Map<String, dynamic>> buscarConsumo({
+    TipoContaAssinatura? tipoConta,
+  }) async {
+    final response = await _get('consumo', tipoConta: tipoConta);
 
     _verificarStatus(response);
 
@@ -156,11 +201,14 @@ class AssinaturaService {
       throw const AssinaturaException('Formato de consumo inválido.');
     }
 
+    _validarTipoConta(dados, tipoConta);
     return dados;
   }
 
   static Future<Map<String, dynamic>> iniciarTesteEssencial() async {
-    final headers = await _headersAutenticados(somenteEmpresa: true);
+    final headers = await _headersAutenticados(
+      tipoConta: TipoContaAssinatura.empresa,
+    );
 
     try {
       final response = await http
@@ -184,14 +232,15 @@ class AssinaturaService {
         );
       }
 
+      _validarTipoConta(dados, TipoContaAssinatura.empresa);
       return dados;
     } on TimeoutException {
       throw const AssinaturaException(
-        'O servidor demorou para responder. Tente novamente.',
+        'O servidor demorou para responder. Consulte sua assinatura antes de tentar novamente.',
       );
     } on http.ClientException {
       throw const AssinaturaException(
-        'Não foi possível conectar ao servidor. Verifique sua conexão.',
+        'Não foi possível conectar ao servidor. Consulte sua assinatura antes de tentar novamente.',
       );
     }
   }

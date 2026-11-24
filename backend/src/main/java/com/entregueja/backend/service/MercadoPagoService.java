@@ -18,6 +18,7 @@ import java.net.URI;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
 public class MercadoPagoService {
@@ -100,6 +101,74 @@ public class MercadoPagoService {
         } catch (RestClientException e) {
             throw erroComunicacao();
         }
+    }
+
+    public Optional<JsonNode> buscarPagamentoPixPorReferencia(String referenciaExterna, BigDecimal valorEsperado) {
+        validarConfiguracao();
+        validarValor(valorEsperado);
+        if (referenciaExterna == null || !referenciaExterna.matches("entregueja-pagamento-[1-9][0-9]{0,18}")) {
+            throw new IllegalArgumentException("Referência externa de pagamento inválida.");
+        }
+
+        JsonNode busca;
+        try {
+            busca = interpretarResposta(cliente.get()
+                    .uri(construtor -> construtor.path("/v1/payments/search")
+                            .queryParam("external_reference", referenciaExterna)
+                            .queryParam("sort", "date_created")
+                            .queryParam("criteria", "desc")
+                            .queryParam("range", "date_created")
+                            .queryParam("begin_date", "NOW-364DAYS")
+                            .queryParam("end_date", "NOW")
+                            .queryParam("offset", 0)
+                            .queryParam("limit", 2)
+                            .build())
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .retrieve()
+                    .body(String.class));
+        } catch (RestClientResponseException e) {
+            throw erroHttp("buscar pagamento Pix por referência", e);
+        } catch (RestClientException e) {
+            throw erroComunicacao();
+        }
+
+        JsonNode resultados = busca.path("results");
+        JsonNode total = busca.path("paging").path("total");
+        JsonNode offset = busca.path("paging").path("offset");
+        if (!resultados.isArray() || !total.isIntegralNumber() || !total.canConvertToLong()
+                || total.asLong() < 0 || !offset.isIntegralNumber() || !offset.canConvertToLong()
+                || offset.asLong() != 0) {
+            throw new MercadoPagoException("A busca de pagamentos retornou dados inesperados.", null);
+        }
+        if (total.asLong() > 1 || resultados.size() > 1) {
+            throw new MercadoPagoException("Há mais de um pagamento para esta referência. É necessária conciliação manual.", null);
+        }
+        if (total.asLong() != resultados.size()) {
+            throw new MercadoPagoException("A busca de pagamentos retornou resultados incompletos.", null);
+        }
+        if (resultados.isEmpty()) {
+            return Optional.empty();
+        }
+
+        JsonNode encontrado = resultados.get(0);
+        String pagamentoId = encontrado.path("id").asText("");
+        if (!pagamentoId.matches("[0-9]+")
+                || !referenciaExterna.equals(encontrado.path("external_reference").asText())) {
+            throw new MercadoPagoException("O pagamento encontrado possui identidade inconsistente.", null);
+        }
+
+        JsonNode pagamento = consultarPagamento(pagamentoId);
+        JsonNode valor = pagamento.path("transaction_amount");
+        if (!pagamentoId.equals(pagamento.path("id").asText())
+                || !referenciaExterna.equals(pagamento.path("external_reference").asText())
+                || !"pix".equalsIgnoreCase(pagamento.path("payment_method_id").asText())
+                || !"BRL".equals(pagamento.path("currency_id").asText())
+                || !valor.isNumber() || valor.decimalValue().compareTo(valorEsperado) != 0
+                || !pagamento.path("status").isTextual() || pagamento.path("status").asText().isBlank()) {
+            throw new MercadoPagoException("Os dados do pagamento recuperado são inconsistentes.", null);
+        }
+        return Optional.of(pagamento);
     }
 
     public JsonNode consultarPagamentoRecorrente(String pagamentoId) {

@@ -14,6 +14,8 @@ public interface PagamentoAssinaturaRepository extends JpaRepository<PagamentoAs
 
     List<PagamentoAssinatura> findByEmpresaIdOrderByDataCriacaoDesc(Long empresaId);
 
+    List<PagamentoAssinatura> findByEntregadorIdOrderByDataCriacaoDesc(Long entregadorId);
+
     Optional<PagamentoAssinatura> findByChaveIdempotencia(String chaveIdempotencia);
 
     boolean existsByChaveIdempotencia(String chaveIdempotencia);
@@ -30,6 +32,11 @@ public interface PagamentoAssinaturaRepository extends JpaRepository<PagamentoAs
 
     List<PagamentoAssinatura> findByEmpresaIdAndStatusOrderByDataCriacaoDesc(
             Long empresaId,
+            PagamentoAssinatura.Status status
+    );
+
+    List<PagamentoAssinatura> findByEntregadorIdAndStatusOrderByDataCriacaoDesc(
+            Long entregadorId,
             PagamentoAssinatura.Status status
     );
 

@@ -83,8 +83,62 @@ public class AssinaturaController {
     public ResponseEntity<Map<String, Object>> consultarConsumo(Authentication authentication) {
         ContaAutenticada conta = obterConta(authentication);
         Assinatura assinatura = assinaturaService.obterOuCriarGratuita(conta.tipo(), conta.id());
-
         LocalDateTime agora = LocalDateTime.now(FUSO);
+
+        if (conta.tipo() == Assinatura.TipoConta.ENTREGADOR) {
+            return ResponseEntity.ok(consultarConsumoEntregador(conta.id(), assinatura, agora.toLocalDate()));
+        }
+
+        return ResponseEntity.ok(consultarConsumoEmpresa(conta.id(), assinatura, agora));
+    }
+
+    private Map<String, Object> consultarConsumoEntregador(
+            Long entregadorId, Assinatura assinatura, LocalDate hoje
+    ) {
+        Usuario entregador = usuarioRepository.findById(entregadorId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Entregador não encontrado"
+                ));
+
+        LocalDateTime inicio = hoje.atStartOfDay();
+        LocalDateTime fim = hoje.plusDays(1).atStartOfDay();
+        long entregasUtilizadas = entregaRepository.contarEntregasAutonomasNoPeriodo(
+                entregador, inicio, fim
+        );
+
+        Integer limiteEntregas = switch (assinatura.getPlano()) {
+            case GRATUITO -> 20;
+            case ESSENCIAL -> 50;
+            case PROFISSIONAL -> null;
+        };
+        boolean ilimitadas = limiteEntregas == null;
+        Long disponiveis = ilimitadas ? null : Math.max(0L, limiteEntregas - entregasUtilizadas);
+
+        Map<String, Object> resultado = new LinkedHashMap<>();
+        resultado.put("tipoConta", Assinatura.TipoConta.ENTREGADOR.name());
+        resultado.put("plano", assinatura.getPlano().name());
+        resultado.put("status", assinatura.getStatus().name());
+        resultado.put("testeGratuito", false);
+        resultado.put("periodo", "DIARIO");
+        resultado.put("dataReferencia", hoje.toString());
+        resultado.put("inicioPeriodo", hoje.toString());
+        resultado.put("fimPeriodoExclusivo", hoje.plusDays(1).toString());
+        resultado.put("inicioPeriodoDataHora", inicio.toString());
+        resultado.put("fimPeriodoExclusivoDataHora", fim.toString());
+        resultado.put("entregasUtilizadasHoje", entregasUtilizadas);
+        resultado.put("limiteEntregasDia", limiteEntregas);
+        resultado.put("entregasDisponiveisHoje", disponiveis);
+        resultado.put("entregasUtilizadasPeriodo", entregasUtilizadas);
+        resultado.put("limiteEntregasPeriodo", limiteEntregas);
+        resultado.put("entregasDisponiveisPeriodo", disponiveis);
+        resultado.put("entregasIlimitadas", ilimitadas);
+        return resultado;
+    }
+
+    private Map<String, Object> consultarConsumoEmpresa(
+            Long empresaId, Assinatura assinatura, LocalDateTime agora
+    ) {
         LocalDate hoje = agora.toLocalDate();
         LocalDate inicioMes = hoje.withDayOfMonth(1);
         LocalDate inicioProximoMes = inicioMes.plusMonths(1);
@@ -104,10 +158,9 @@ public class AssinaturaController {
                 : inicioProximoMes.atStartOfDay();
 
         int limiteEntregas = emTeste ? 500 : limiteMensal(assinatura.getPlano());
-        long entregasUtilizadas;
 
         Map<String, Object> resultado = new LinkedHashMap<>();
-        resultado.put("tipoConta", conta.tipo().name());
+        resultado.put("tipoConta", Assinatura.TipoConta.EMPRESA.name());
         resultado.put("plano", assinatura.getPlano().name());
         resultado.put("status", assinatura.getStatus().name());
         resultado.put("testeGratuito", emTeste);
@@ -123,39 +176,26 @@ public class AssinaturaController {
             resultado.put("dataFimTeste", assinatura.getDataVencimento().toString());
         }
 
-        if (conta.tipo() == Assinatura.TipoConta.EMPRESA) {
-            Empresa empresa = empresaRepository.findById(conta.id())
-                    .orElseThrow(() -> new ResponseStatusException(
-                            HttpStatus.NOT_FOUND,
-                            "Empresa não encontrada"
-                    ));
+        Empresa empresa = empresaRepository.findById(empresaId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Empresa não encontrada"
+                ));
 
-            entregasUtilizadas = entregaRepository.contarEntregasEmpresaNoPeriodo(
-                    empresa, inicio, fim
-            );
+        long entregasUtilizadas = entregaRepository.contarEntregasEmpresaNoPeriodo(
+                empresa, inicio, fim
+        );
 
-            long vinculados = usuarioRepository.countByEmpresa(empresa);
-            long pendentes = usuarioRepository.findByEmpresaPendente(empresa).size();
-            long ocupadas = vinculados + pendentes;
-            int limiteEntregadores = limiteEntregadores(assinatura.getPlano());
+        long vinculados = usuarioRepository.countByEmpresa(empresa);
+        long pendentes = usuarioRepository.findByEmpresaPendente(empresa).size();
+        long ocupadas = vinculados + pendentes;
+        int limiteEntregadores = limiteEntregadores(assinatura.getPlano());
 
-            resultado.put("entregadoresVinculados", vinculados);
-            resultado.put("solicitacoesPendentes", pendentes);
-            resultado.put("vagasOcupadas", ocupadas);
-            resultado.put("limiteEntregadores", limiteEntregadores);
-            resultado.put("vagasDisponiveis", Math.max(0L, limiteEntregadores - ocupadas));
-        } else {
-            Usuario entregador = usuarioRepository.findById(conta.id())
-                    .orElseThrow(() -> new ResponseStatusException(
-                            HttpStatus.NOT_FOUND,
-                            "Entregador não encontrado"
-                    ));
-
-            entregasUtilizadas = entregaRepository.contarEntregasAutonomasNoPeriodo(
-                    entregador, inicio, fim
-            );
-        }
-
+        resultado.put("entregadoresVinculados", vinculados);
+        resultado.put("solicitacoesPendentes", pendentes);
+        resultado.put("vagasOcupadas", ocupadas);
+        resultado.put("limiteEntregadores", limiteEntregadores);
+        resultado.put("vagasDisponiveis", Math.max(0L, limiteEntregadores - ocupadas));
         resultado.put("entregasUtilizadasMes", entregasUtilizadas);
         resultado.put("limiteEntregasMes", limiteEntregas);
         resultado.put("entregasDisponiveisMes", Math.max(0L, limiteEntregas - entregasUtilizadas));
@@ -163,8 +203,7 @@ public class AssinaturaController {
         resultado.put("limiteEntregasPeriodo", limiteEntregas);
         resultado.put("entregasDisponiveisPeriodo", Math.max(0L, limiteEntregas - entregasUtilizadas));
         resultado.put("entregasIlimitadas", false);
-
-        return ResponseEntity.ok(resultado);
+        return resultado;
     }
 
     private int limiteMensal(Assinatura.Plano plano) {
@@ -194,7 +233,7 @@ public class AssinaturaController {
         }
 
         String[] partes = principal.split(":", -1);
-        if (partes.length != 2) {
+        if (partes.length != 2 || !partes[1].matches("[0-9]+")) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Autenticação inválida");
         }
 

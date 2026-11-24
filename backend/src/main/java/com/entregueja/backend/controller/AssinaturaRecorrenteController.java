@@ -1,8 +1,8 @@
-
 package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.Assinatura;
 import com.entregueja.backend.service.AssinaturaRecorrenteService;
+import com.entregueja.backend.service.MercadoPagoService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -41,12 +41,19 @@ public class AssinaturaRecorrenteController {
             String chaveIdempotencia,
             @RequestBody(required = false) CriarAssinaturaRequest pedido
     ) {
-        Long empresaId = obterEmpresaId(authentication);
+        ContaAutenticada conta = obterConta(authentication);
 
         if (pedido == null || pedido.plano() == null) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
                     "Plano obrigatório."
+            );
+        }
+
+        if (pedido.plano() == Assinatura.Plano.GRATUITO) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Selecione um plano pago válido."
             );
         }
 
@@ -78,34 +85,65 @@ public class AssinaturaRecorrenteController {
         }
 
         try {
-            return ResponseEntity.status(HttpStatus.CREATED).body(
-                    assinaturaRecorrenteService.criar(
-                            empresaId,
-                            pedido.plano(),
-                            chaveIdempotencia,
-                            emailPagador
-                    )
+            Map<String, Object> resultado;
+
+            if (conta.tipo() == Assinatura.TipoConta.EMPRESA) {
+                resultado = assinaturaRecorrenteService.criar(
+                        conta.id(),
+                        pedido.plano(),
+                        chaveIdempotencia,
+                        emailPagador
+                );
+            } else {
+                resultado = assinaturaRecorrenteService.criar(
+                        conta.tipo(),
+                        conta.id(),
+                        pedido.plano(),
+                        chaveIdempotencia,
+                        emailPagador
+                );
+            }
+
+            return ResponseEntity.status(HttpStatus.CREATED).body(resultado);
+
+        } catch (MercadoPagoService.MercadoPagoException e) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY,
+                    "Não foi possível criar a assinatura no Mercado Pago."
             );
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    e.getMessage(),
-                    e
+                    e.getMessage()
             );
         } catch (IllegalStateException e) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
-                    e.getMessage(),
-                    e
+                    e.getMessage()
             );
         }
     }
 
     @GetMapping
     public List<Map<String, Object>> listar(Authentication authentication) {
-        return assinaturaRecorrenteService.listar(
-                obterEmpresaId(authentication)
-        );
+        ContaAutenticada conta = obterConta(authentication);
+
+        try {
+            if (conta.tipo() == Assinatura.TipoConta.EMPRESA) {
+                return assinaturaRecorrenteService.listar(conta.id());
+            }
+
+            return assinaturaRecorrenteService.listar(
+                    conta.tipo(),
+                    conta.id()
+            );
+
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND,
+                    "Conta não encontrada."
+            );
+        }
     }
 
     @GetMapping("/{assinaturaId}")
@@ -113,22 +151,37 @@ public class AssinaturaRecorrenteController {
             Authentication authentication,
             @PathVariable Long assinaturaId
     ) {
+        ContaAutenticada conta = obterConta(authentication);
+        validarAssinaturaId(assinaturaId);
+
         try {
+            if (conta.tipo() == Assinatura.TipoConta.EMPRESA) {
+                return assinaturaRecorrenteService.consultar(
+                        conta.id(),
+                        assinaturaId
+                );
+            }
+
             return assinaturaRecorrenteService.consultar(
-                    obterEmpresaId(authentication),
+                    conta.tipo(),
+                    conta.id(),
                     assinaturaId
+            );
+
+        } catch (MercadoPagoService.MercadoPagoException e) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY,
+                    "Não foi possível consultar a assinatura no Mercado Pago."
             );
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    e.getMessage(),
-                    e
+                    HttpStatus.NOT_FOUND,
+                    "Assinatura não encontrada."
             );
         } catch (IllegalStateException e) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
-                    e.getMessage(),
-                    e
+                    e.getMessage()
             );
         }
     }
@@ -138,27 +191,51 @@ public class AssinaturaRecorrenteController {
             Authentication authentication,
             @PathVariable Long assinaturaId
     ) {
+        ContaAutenticada conta = obterConta(authentication);
+        validarAssinaturaId(assinaturaId);
+
         try {
+            if (conta.tipo() == Assinatura.TipoConta.EMPRESA) {
+                return assinaturaRecorrenteService.cancelar(
+                        conta.id(),
+                        assinaturaId
+                );
+            }
+
             return assinaturaRecorrenteService.cancelar(
-                    obterEmpresaId(authentication),
+                    conta.tipo(),
+                    conta.id(),
                     assinaturaId
+            );
+
+        } catch (MercadoPagoService.MercadoPagoException e) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY,
+                    "Não foi possível cancelar a assinatura no Mercado Pago."
             );
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    e.getMessage(),
-                    e
+                    HttpStatus.NOT_FOUND,
+                    "Assinatura não encontrada."
             );
         } catch (IllegalStateException e) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
-                    e.getMessage(),
-                    e
+                    e.getMessage()
             );
         }
     }
 
-    private Long obterEmpresaId(Authentication authentication) {
+    private void validarAssinaturaId(Long assinaturaId) {
+        if (assinaturaId == null || assinaturaId <= 0) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Identificador de assinatura inválido."
+            );
+        }
+    }
+
+    private ContaAutenticada obterConta(Authentication authentication) {
         if (authentication == null || !authentication.isAuthenticated()) {
             throw new ResponseStatusException(
                     HttpStatus.UNAUTHORIZED,
@@ -168,34 +245,55 @@ public class AssinaturaRecorrenteController {
 
         String principal = authentication.getName();
 
-        if (principal == null || !principal.matches("EMPRESA:[0-9]+")) {
+        if (principal == null) {
             throw new ResponseStatusException(
-                    HttpStatus.FORBIDDEN,
-                    "Acesso exclusivo para empresas."
+                    HttpStatus.UNAUTHORIZED,
+                    "Autenticação inválida."
             );
         }
 
-        try {
-            Long id = Long.parseLong(
-                    principal.substring("EMPRESA:".length())
+        String[] partes = principal.split(":", -1);
+
+        if (partes.length != 2 || !partes[1].matches("[0-9]+")) {
+            throw new ResponseStatusException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Autenticação inválida."
             );
+        }
+
+        Assinatura.TipoConta tipo = switch (partes[0]) {
+            case "EMPRESA" -> Assinatura.TipoConta.EMPRESA;
+            case "ENTREGADOR" -> Assinatura.TipoConta.ENTREGADOR;
+            default -> throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Tipo de conta não autorizado a contratar planos."
+            );
+        };
+
+        try {
+            long id = Long.parseLong(partes[1]);
 
             if (id <= 0) {
-                throw new NumberFormatException();
+                throw new NumberFormatException("ID inválido");
             }
 
-            return id;
+            return new ContaAutenticada(tipo, id);
+
         } catch (NumberFormatException e) {
             throw new ResponseStatusException(
-                    HttpStatus.FORBIDDEN,
-                    "Conta empresarial inválida."
+                    HttpStatus.UNAUTHORIZED,
+                    "Autenticação inválida."
             );
         }
     }
+
+    private record ContaAutenticada(
+            Assinatura.TipoConta tipo,
+            Long id
+    ) {}
 
     public record CriarAssinaturaRequest(
             Assinatura.Plano plano,
             String emailPagador
-    ) {
-    }
+    ) {}
 }

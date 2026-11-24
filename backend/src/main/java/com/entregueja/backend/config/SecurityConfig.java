@@ -1,4 +1,3 @@
-
 package com.entregueja.backend.config;
 
 import com.entregueja.backend.security.JwtAuthenticationFilter;
@@ -31,6 +30,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
+
         configuration.setAllowedOriginPatterns(List.of(
                 "http://localhost:*",
                 "http://127.0.0.1:*",
@@ -39,19 +39,34 @@ public class SecurityConfig {
                 "https://entregueja.netlify.app",
                 "https://jocular-cassata-48f61b.netlify.app"
         ));
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+
+        configuration.setAllowedMethods(List.of(
+                "GET",
+                "POST",
+                "PUT",
+                "DELETE",
+                "OPTIONS"
+        ));
+
         configuration.setAllowedHeaders(List.of(
                 HttpHeaders.AUTHORIZATION,
                 HttpHeaders.CONTENT_TYPE,
                 HttpHeaders.ACCEPT,
                 "X-Idempotency-Key"
         ));
-        configuration.setExposedHeaders(List.of(HttpHeaders.CONTENT_TYPE));
+
+        configuration.setExposedHeaders(List.of(
+                HttpHeaders.CONTENT_TYPE
+        ));
+
         configuration.setAllowCredentials(false);
         configuration.setMaxAge(3600L);
 
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        UrlBasedCorsConfigurationSource source =
+                new UrlBasedCorsConfigurationSource();
+
         source.registerCorsConfiguration("/**", configuration);
+
         return source;
     }
 
@@ -65,14 +80,27 @@ public class SecurityConfig {
                 )
                 .authorizeHttpRequests(auth -> auth
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
-                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/uploads/empresas/**").permitAll()
-                        .requestMatchers("/uploads/entregas/**").denyAll()
+
+                        .requestMatchers(
+                                HttpMethod.OPTIONS,
+                                "/**"
+                        ).permitAll()
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/uploads/empresas/**"
+                        ).permitAll()
+
+                        .requestMatchers(
+                                "/uploads/entregas/**"
+                        ).denyAll()
+
                         .requestMatchers(
                                 HttpMethod.POST,
                                 "/pagamentos/assinaturas/webhook",
                                 "/pagamentos/assinaturas/webhook/recorrentes"
                         ).permitAll()
+
                         .requestMatchers(
                                 HttpMethod.POST,
                                 "/auth/login",
@@ -88,26 +116,61 @@ public class SecurityConfig {
                                 "/empresas/esqueci-senha",
                                 "/empresas/verificar-codigo"
                         ).permitAll()
+
                         .requestMatchers(
                                 HttpMethod.PUT,
                                 "/auth/redefinir-senha",
                                 "/empresas/redefinir-senha"
                         ).permitAll()
-                        .requestMatchers("/pagamentos/assinaturas/**").hasAuthority("EMPRESA")
-                        .requestMatchers("/notificacoes/**", "/assinaturas/**")
-                        .hasAnyAuthority("EMPRESA", "ENTREGADOR")
-                        .requestMatchers("/auth/**").hasAuthority("ENTREGADOR")
-                        .requestMatchers("/empresas/**").hasAuthority("EMPRESA")
-                        .requestMatchers("/entregas/**")
-                        .hasAnyAuthority("EMPRESA", "ENTREGADOR")
+
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/pagamentos/assinaturas/pix",
+                                "/pagamentos/assinaturas/recorrentes",
+                                "/pagamentos/assinaturas/recorrentes/{assinaturaId}/cancelar"
+                        ).hasAnyAuthority("EMPRESA", "ENTREGADOR")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/pagamentos/assinaturas/pix/pendentes",
+                                "/pagamentos/assinaturas/pix/{pagamentoId}",
+                                "/pagamentos/assinaturas/recorrentes",
+                                "/pagamentos/assinaturas/recorrentes/{assinaturaId}"
+                        ).hasAnyAuthority("EMPRESA", "ENTREGADOR")
+
+                        .requestMatchers(
+                                "/pagamentos/assinaturas/**"
+                        ).hasAuthority("EMPRESA")
+
+                        .requestMatchers(
+                                "/notificacoes/**",
+                                "/assinaturas/**"
+                        ).hasAnyAuthority("EMPRESA", "ENTREGADOR")
+
+                        .requestMatchers(
+                                "/auth/**"
+                        ).hasAuthority("ENTREGADOR")
+
+                        .requestMatchers(
+                                "/empresas/**"
+                        ).hasAuthority("EMPRESA")
+
+                        .requestMatchers(
+                                "/entregas/**"
+                        ).hasAnyAuthority("EMPRESA", "ENTREGADOR")
+
                         .anyRequest().authenticated()
                 )
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint((request, response, exception) ->
-                                response.sendError(HttpServletResponse.SC_UNAUTHORIZED)
+                                response.sendError(
+                                        HttpServletResponse.SC_UNAUTHORIZED
+                                )
                         )
                         .accessDeniedHandler((request, response, exception) ->
-                                response.sendError(HttpServletResponse.SC_FORBIDDEN)
+                                response.sendError(
+                                        HttpServletResponse.SC_FORBIDDEN
+                                )
                         )
                 )
                 .addFilterBefore(

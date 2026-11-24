@@ -1,8 +1,10 @@
 package com.entregueja.backend.service;
 
 import com.entregueja.backend.entity.Assinatura;
+import com.entregueja.backend.entity.AssinaturaRecorrente;
 import com.entregueja.backend.entity.Empresa;
 import com.entregueja.backend.entity.PagamentoAssinatura;
+import com.entregueja.backend.repository.AssinaturaRecorrenteRepository;
 import com.entregueja.backend.repository.AssinaturaRepository;
 import com.entregueja.backend.repository.EmpresaRepository;
 import com.entregueja.backend.repository.PagamentoAssinaturaRepository;
@@ -61,6 +63,7 @@ class PagamentoRecorrenteConcorrenciaIntegrationTest {
     @Autowired private AssinaturaService assinaturaService;
     @Autowired private EmpresaRepository empresaRepository;
     @Autowired private AssinaturaRepository assinaturaRepository;
+    @Autowired private AssinaturaRecorrenteRepository recorrenteRepository;
     @Autowired private PagamentoAssinaturaRepository pagamentoRepository;
     @Autowired private PlatformTransactionManager transactionManager;
 
@@ -70,6 +73,18 @@ class PagamentoRecorrenteConcorrenciaIntegrationTest {
         Long[] ids = transacao.execute(status -> {
             Empresa empresa = empresaRepository.saveAndFlush(new Empresa(
                     "Empresa teste", "teste-" + UUID.randomUUID() + "@example.com", "senha-teste"));
+            String assinaturaExterna = "assinatura_teste_" + UUID.randomUUID();
+            AssinaturaRecorrente recorrente = new AssinaturaRecorrente();
+            recorrente.setEmpresaId(empresa.getId());
+            recorrente.setPlano(Assinatura.Plano.ESSENCIAL);
+            recorrente.setValor(new BigDecimal("39.90"));
+            recorrente.setEmailPagador(empresa.getEmail());
+            recorrente.setMercadoPagoAssinaturaId(assinaturaExterna);
+            recorrente.setChaveIdempotencia(UUID.randomUUID().toString());
+            recorrente.setStatus(AssinaturaRecorrente.Status.AUTORIZADA);
+            recorrente.setEstadoCriacao(AssinaturaRecorrente.EstadoCriacao.CONFIRMADA);
+            recorrenteRepository.saveAndFlush(recorrente);
+
             Assinatura assinatura = new Assinatura();
             assinatura.setTipoConta(Assinatura.TipoConta.EMPRESA);
             assinatura.setContaId(empresa.getId());
@@ -79,7 +94,7 @@ class PagamentoRecorrenteConcorrenciaIntegrationTest {
             assinatura.setDataInicio(LocalDateTime.now().minusDays(2));
             assinatura.setDataVencimento(LocalDateTime.now().plusDays(15));
             assinatura.setRenovacaoAutomatica(true);
-            assinatura.setMercadoPagoAssinaturaId("assinatura_teste_" + UUID.randomUUID());
+            assinatura.setMercadoPagoAssinaturaId(assinaturaExterna);
             assinaturaRepository.saveAndFlush(assinatura);
             PagamentoAssinatura pagamento = new PagamentoAssinatura();
             pagamento.setEmpresaId(empresa.getId());
@@ -117,9 +132,16 @@ class PagamentoRecorrenteConcorrenciaIntegrationTest {
         transacao.executeWithoutResult(status -> {
             Assinatura assinatura = assinaturaRepository.findById(ids[2]).orElseThrow();
             PagamentoAssinatura pagamento = pagamentoRepository.findById(ids[1]).orElseThrow();
+            AssinaturaRecorrente recorrente = recorrenteRepository
+                    .findByMercadoPagoAssinaturaId(pagamento.getMercadoPagoAssinaturaId()).orElseThrow();
             assertEquals(vencimentoAnterior.plusDays(30), assinatura.getDataVencimento());
             assertEquals(assinatura.getDataVencimento(), pagamento.getDataVencimento());
             assertEquals(Assinatura.Status.ATIVA, assinatura.getStatus());
+            assertTrue(assinatura.isRenovacaoAutomatica());
+            assertEquals(AssinaturaRecorrente.Status.AUTORIZADA, recorrente.getStatus());
+            assertEquals(assinatura.getMercadoPagoAssinaturaId(), recorrente.getMercadoPagoAssinaturaId());
+            assertEquals(ids[0], recorrente.getEmpresaId());
+            assertNull(recorrente.getEntregadorId());
         });
     }
 }

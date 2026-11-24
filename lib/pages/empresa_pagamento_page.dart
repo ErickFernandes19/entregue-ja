@@ -7,8 +7,9 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../services/pagamento_assinatura_service.dart';
+import '../services/assinatura_service.dart';
 import '../services/empresa_service.dart';
+import '../services/pagamento_assinatura_service.dart';
 
 class EmpresaPagamentoPage extends StatefulWidget {
   final String plano;
@@ -27,655 +28,1031 @@ class EmpresaPagamentoPage extends StatefulWidget {
 enum _FormaPagamento { pix, cartao }
 
 class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
+  static const _tipo = TipoContaPagamento.empresa;
+  static const _planos = {
+    'ESSENCIAL': 'R\$ 39,90',
+    'PROFISSIONAL': 'R\$ 79,90',
+  };
+  static const _statusPix = {
+    'PENDENTE',
+    'APROVADO',
+    'RECUSADO',
+    'CANCELADO',
+    'REEMBOLSADO',
+  };
+  static const _statusRecorrente = {
+    'PENDENTE',
+    'AUTORIZADA',
+    'PAUSADA',
+    'CANCELADA',
+    'ENCERRADA',
+  };
+  static const _estadosCriacao = {
+    'PREPARADA',
+    'ENVIANDO',
+    'INCERTA',
+    'CONFIRMADA',
+  };
+
+  final _emailController = TextEditingController();
   _FormaPagamento _forma = _FormaPagamento.pix;
-  final TextEditingController _emailPagadorController = TextEditingController();
+  bool _ocupado = true;
+  bool _pronto = false;
+  String? _erro;
+  String? _token;
+  String? _chaveLocal;
+  Map<String, dynamic>? _tentativa;
+  Map<String, dynamic>? _pix;
+  List<Map<String, dynamic>> _pixPendentes = [];
+  bool _pixVerificado = false;
+  Map<String, dynamic>? _recorrente;
+  Map<String, dynamic>? _planoAtivo;
+  bool _multiplasRecorrentes = false;
 
-  bool _carregando = false;
-  bool _consultando = false;
-
-  String? _chaveIdempotencia;
-  String? _codigoPix;
-  String? _status;
-  String? _mensagemErro;
-
-  int? _pagamentoId;
-  bool _planoAtivado = false;
-  int? _assinaturaId;
-  String? _statusAssinatura;
-  String? _urlAutorizacao;
-  String? _chaveRecorrente;
-  bool _consultandoAssinatura = false;
-  bool _recuperandoAssinatura = false;
-  bool _inicializandoTentativa = true;
-  bool _tentativaIncerta = false;
-  String? _chaveArmazenamento;
-  String? _emailTentativa;
-  String? _planoTentativa;
+  String get _planoApi => widget.plano.trim().toUpperCase();
+  String get _planoExibido =>
+      (_pix?['plano'] as String?) ??
+      (_tentativa?['plano'] as String?) ??
+      (_recorrenteAberta ? (_recorrente?['plano'] as String?) : null) ??
+      _planoApi;
+  bool get _pixPendente => _pix?['status'] == 'PENDENTE';
+  bool get _pixAtivado =>
+      _pix?['status'] == 'APROVADO' && _pix?['planoAtivado'] == true;
+  bool get _pixFinalizado =>
+      _pixAtivado ||
+      const {'RECUSADO', 'CANCELADO', 'REEMBOLSADO'}.contains(_pix?['status']);
+  bool get _recorrenteAberta =>
+      _recorrente != null &&
+      (_recorrente?['estadoCriacao'] != 'CONFIRMADA' ||
+          const {
+            'PENDENTE',
+            'AUTORIZADA',
+            'PAUSADA',
+          }.contains(_recorrente?['status']));
+  bool get _contratacaoBloqueada =>
+      _planoAtivo?['status'] == 'ATIVA' &&
+      (_planoAtivo?['planoAgendado'] != null ||
+          _planoAtivo?['renovacaoAutomatica'] == true ||
+          (_planoAtivo?['testeGratuito'] != true &&
+              _planoAtivo?['plano'] != 'GRATUITO' &&
+              _planoAtivo?['plano'] != _planoApi));
+  bool get _podeCriar =>
+      !_contratacaoBloqueada &&
+      _pronto &&
+      !_ocupado &&
+      !_multiplasRecorrentes &&
+      _pixVerificado &&
+      _pixPendentes.isEmpty &&
+      _tentativa == null &&
+      !_recorrenteAberta &&
+      _pix == null &&
+      _planos.containsKey(_planoApi);
 
   @override
   void initState() {
     super.initState();
-    _inicializarTentativa();
+    _inicializar();
   }
 
   @override
   void dispose() {
-    _emailPagadorController.dispose();
+    _emailController.dispose();
     super.dispose();
   }
 
-  Future<void> _inicializarTentativa() async {
+  String _uuid() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    final h = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return '${h.substring(0, 8)}-${h.substring(8, 12)}-'
+        '${h.substring(12, 16)}-${h.substring(16, 20)}-${h.substring(20)}';
+  }
+
+  bool _emailValido(String email) =>
+      email.length <= 254 &&
+      RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email);
+
+  Future<void> _validarSessao() async {
+    final tokenAtual = await EmpresaService.obterTokenEmpresa();
+    if (!mounted || _token == null || tokenAtual != _token) {
+      if (mounted) {
+        setState(() {
+          _pronto = false;
+          _pix = null;
+          _pixPendentes = [];
+          _pixVerificado = false;
+          _recorrente = null;
+          _planoAtivo = null;
+          _tentativa = null;
+          _emailController.clear();
+        });
+      }
+      throw const PagamentoAssinaturaException(
+        'A sessão mudou. Volte aos planos e entre novamente.',
+      );
+    }
+  }
+
+  Future<void> _inicializar() async {
+    if (mounted) {
+      setState(() {
+        _ocupado = true;
+        _pronto = false;
+        _pixVerificado = false;
+        _erro = null;
+      });
+    }
     try {
       final token = await EmpresaService.obterTokenEmpresa();
-      if (token == null) throw StateError('Sessão empresarial não encontrada.');
+      if (token == null) {
+        throw const PagamentoAssinaturaException('Faça login como empresa.');
+      }
       final partes = token.split('.');
-      if (partes.length != 3) throw StateError('Sessão empresarial inválida.');
+      if (partes.length != 3) {
+        throw const FormatException();
+      }
       final payload = jsonDecode(
         utf8.decode(base64Url.decode(base64Url.normalize(partes[1]))),
       );
       if (payload is! Map<String, dynamic> || payload['tipo'] != 'EMPRESA') {
-        throw StateError('Acesso exclusivo para empresas.');
+        throw const PagamentoAssinaturaException(
+          'Sessão empresarial inválida.',
+        );
       }
-      final empresaId = int.tryParse(payload['sub']?.toString() ?? '');
+      final id = int.tryParse(payload['sub']?.toString() ?? '');
       final exp = payload['exp'];
-      final agora = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      if (empresaId == null || empresaId <= 0 || exp is! num || exp <= agora) {
-        throw StateError('Sessão empresarial expirada ou inválida.');
+      if (id == null ||
+          id <= 0 ||
+          exp is! num ||
+          exp <= DateTime.now().millisecondsSinceEpoch ~/ 1000) {
+        throw const PagamentoAssinaturaException(
+          'Sessão expirada. Faça login novamente.',
+        );
       }
-      final chave = 'entregueja_assinatura_tentativa_empresa_$empresaId';
+      if (_token != null && _token != token) {
+        throw const PagamentoAssinaturaException(
+          'A sessão mudou. Reabra esta tela.',
+        );
+      }
+      if (!mounted) {
+        return;
+      }
+      _token = token;
+      _chaveLocal = 'entregueja_assinatura_tentativa_empresa_$id';
       final prefs = await SharedPreferences.getInstance();
-      final registro = prefs.getString(chave);
-      if (!mounted) return;
-      _chaveArmazenamento = chave;
+      await prefs.reload();
+      await _validarSessao();
+      final registro = prefs.getString(_chaveLocal!);
       if (registro != null) {
-        final dados = jsonDecode(registro);
-        if (dados is! Map<String, dynamic> ||
-            dados['chave'] is! String ||
-            dados['email'] is! String ||
-            dados['plano'] is! String) {
-          throw StateError(
-            'Tentativa anterior inválida. Verifique a assinatura antes de prosseguir.',
+        final registroDecodificado = jsonDecode(registro);
+        if (registroDecodificado is! Map<String, dynamic>) {
+          throw const PagamentoAssinaturaException(
+            'Tentativa anterior inválida. Verifique a cobrança antes de continuar.',
           );
         }
-        _chaveRecorrente = dados['chave'] as String;
-        _emailTentativa = dados['email'] as String;
-        _planoTentativa = dados['plano'] as String;
-        _emailPagadorController.text = _emailTentativa!;
-        _tentativaIncerta = true;
-        _forma = _FormaPagamento.cartao;
+        final dados = <String, dynamic>{...registroDecodificado};
+        if (!dados.containsKey('forma') && dados['email'] is String) {
+          dados['forma'] = 'cartao';
+        }
+        if (dados['plano'] is String) {
+          dados['plano'] = (dados['plano'] as String).trim().toUpperCase();
+        }
+        if (!_planos.containsKey(dados['plano']) ||
+            !const {'pix', 'cartao'}.contains(dados['forma']) ||
+            dados['chave'] is! String ||
+            !RegExp(
+              r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+            ).hasMatch(dados['chave'] as String) ||
+            (dados['id'] != null && _id(dados['id']) == null) ||
+            (dados['forma'] == 'cartao' &&
+                (dados['email'] is! String ||
+                    !_emailValido(dados['email'] as String)))) {
+          throw const PagamentoAssinaturaException(
+            'Tentativa anterior inválida. Não gere outra cobrança antes de verificar a anterior.',
+          );
+        }
+        _tentativa = dados;
+        _forma = dados['forma'] == 'pix'
+            ? _FormaPagamento.pix
+            : _FormaPagamento.cartao;
+        if (dados['forma'] == 'cartao') {
+          _emailController.text = dados['email'] as String;
+        }
+      } else {
+        _tentativa = null;
       }
-      await _recuperarAssinaturaExistente();
-    } catch (erro) {
+      await _recuperarRecorrentes();
+      try {
+        await _recuperarPix();
+      } catch (e) {
+        if (!_pixVerificado) {
+          rethrow;
+        }
+        _erro = _mensagem(e);
+      }
+      await _consultarPlano();
       if (mounted) {
-        setState(() {
-          _tentativaIncerta = true;
-          _mensagemErro =
-              'Não foi possível verificar a tentativa anterior: $erro';
-        });
+        setState(() => _pronto = true);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _erro = _mensagem(e));
       }
     } finally {
-      if (mounted) setState(() => _inicializandoTentativa = false);
+      if (mounted) {
+        setState(() => _ocupado = false);
+      }
     }
   }
 
-  Future<void> _salvarTentativa(String email) async {
-    final chave = _chaveArmazenamento;
-    if (chave == null)
-      throw StateError('Não foi possível identificar a empresa.');
+  String _mensagem(Object e) {
+    if (e is PagamentoAssinaturaException || e is AssinaturaException) {
+      return e.toString();
+    }
+    return 'Não foi possível concluir a operação. Verifique sua sessão e a cobrança anterior antes de tentar novamente.';
+  }
+
+  int? _id(dynamic valor) => valor is int && valor > 0 ? valor : null;
+
+  Future<void> _salvar(Map<String, dynamic> dados) async {
+    await _validarSessao();
     final prefs = await SharedPreferences.getInstance();
-    final idempotencia = _chaveRecorrente ??= _gerarUuid();
-    await prefs.setString(
-      chave,
-      jsonEncode({'chave': idempotencia, 'email': email, 'plano': _planoApi}),
-    );
-    _emailTentativa = email;
-    _planoTentativa = _planoApi;
-    _tentativaIncerta = true;
+    await prefs.reload();
+    await _validarSessao();
+    final existente = prefs.getString(_chaveLocal!);
+    if (existente != null) {
+      final anterior = jsonDecode(existente);
+      if (anterior is! Map || anterior['chave'] != dados['chave']) {
+        throw const PagamentoAssinaturaException(
+          'Existe outra tentativa salva. Reabra a tela antes de continuar.',
+        );
+      }
+    } else if (_tentativa != null) {
+      throw const PagamentoAssinaturaException(
+        'A tentativa salva mudou. Reabra a tela.',
+      );
+    }
+    if (!await prefs.setString(_chaveLocal!, jsonEncode(dados))) {
+      throw const PagamentoAssinaturaException(
+        'Não foi possível salvar a tentativa com segurança.',
+      );
+    }
+    await _validarSessao();
+    _tentativa = dados;
   }
 
   Future<void> _limparTentativa() async {
-    final chave = _chaveArmazenamento;
-    if (chave != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(chave);
+    final tentativa = _tentativa;
+    if (tentativa == null) {
+      return;
     }
-    _chaveRecorrente = null;
-    _emailTentativa = null;
-    _planoTentativa = null;
-    _tentativaIncerta = false;
-  }
-
-  Future<void> _recuperarAssinaturaExistente() async {
-    if (_recuperandoAssinatura || _carregando) return;
-    setState(() {
-      _recuperandoAssinatura = true;
-      _mensagemErro = null;
-    });
-    try {
-      final assinaturas =
-          await PagamentoAssinaturaService.listarAssinaturasRecorrentes();
-      if (!mounted) return;
-      final ativas = assinaturas.where((assinatura) {
-        final status = assinatura['status']?.toString().toUpperCase();
-        return status == 'PENDENTE' ||
-            status == 'AUTORIZADA' ||
-            status == 'PAUSADA';
-      }).toList();
-      if (ativas.isNotEmpty) {
-        ativas.sort((a, b) {
-          final aId = int.tryParse(a['assinaturaId'].toString()) ?? 0;
-          final bId = int.tryParse(b['assinaturaId'].toString()) ?? 0;
-          return bId.compareTo(aId);
-        });
-        final assinatura = ativas.first;
-        setState(() {
-          _forma = _FormaPagamento.cartao;
-        });
-        _atualizarAssinatura(assinatura);
-        await _limparTentativa();
-      }
-    } catch (erro) {
-      if (mounted) {
-        setState(
-          () => _mensagemErro =
-              'Não foi possível verificar suas assinaturas: $erro',
+    await _validarSessao();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    await _validarSessao();
+    final registro = prefs.getString(_chaveLocal!);
+    if (registro != null) {
+      final dados = jsonDecode(registro);
+      if (dados is! Map || dados['chave'] != tentativa['chave']) {
+        throw const PagamentoAssinaturaException(
+          'Outra tentativa está salva. Reabra a tela.',
         );
       }
-    } finally {
-      if (mounted) setState(() => _recuperandoAssinatura = false);
+      if (!await prefs.remove(_chaveLocal!)) {
+        throw const PagamentoAssinaturaException(
+          'Não foi possível atualizar a tentativa salva.',
+        );
+      }
     }
+    _tentativa = null;
   }
 
-  String _gerarUuid() {
-    final random = Random.secure();
-    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
-
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-
-    final hexadecimal = bytes
-        .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
-        .join();
-
-    return '${hexadecimal.substring(0, 8)}-'
-        '${hexadecimal.substring(8, 12)}-'
-        '${hexadecimal.substring(12, 16)}-'
-        '${hexadecimal.substring(16, 20)}-'
-        '${hexadecimal.substring(20)}';
-  }
-
-  String get _planoApi {
-    return widget.plano.trim().toUpperCase();
-  }
-
-  bool get _pagamentoFinalizado {
-    return _status == 'APROVADO' ||
-        _status == 'RECUSADO' ||
-        _status == 'CANCELADO' ||
-        _status == 'REEMBOLSADO';
-  }
-
-  void _atualizarPagamento(Map<String, dynamic> dados) {
-    final id = dados['pagamentoId'];
-
-    if (id is! int || id <= 0) {
-      throw const PagamentoAssinaturaException(
-        'O servidor não retornou um identificador válido para o pagamento.',
-      );
-    }
-
-    final status = dados['status'];
-    final codigo = dados['pixCopiaECola'];
-
-    setState(() {
-      _pagamentoId = id;
-      _status = status is String ? status.toUpperCase() : 'PENDENTE';
-      _codigoPix = codigo is String && codigo.isNotEmpty ? codigo : null;
-      _planoAtivado = dados['planoAtivado'] == true;
-      _mensagemErro = null;
-    });
-  }
-
-  Future<void> _criarPix() async {
-    if (_carregando || _consultando || _pagamentoId != null) {
+  Future<void> _executar(Future<void> Function() acao) async {
+    if (_ocupado || !_pronto) {
       return;
     }
-
-    if (_planoApi != 'ESSENCIAL' && _planoApi != 'PROFISSIONAL') {
-      setState(() {
-        _mensagemErro = 'Selecione um plano pago válido.';
-      });
-      return;
-    }
-
-    _chaveIdempotencia ??= _gerarUuid();
-
     setState(() {
-      _carregando = true;
-      _mensagemErro = null;
+      _ocupado = true;
+      _erro = null;
     });
-
     try {
-      final dados = await PagamentoAssinaturaService.criarPix(
-        plano: _planoApi,
-        chaveIdempotencia: _chaveIdempotencia!,
-      );
-
-      if (!mounted) return;
-
-      _atualizarPagamento(dados);
-    } catch (erro) {
-      if (!mounted) return;
-
-      setState(() {
-        _mensagemErro = erro.toString();
-      });
-    } finally {
+      await _validarSessao();
+      await acao();
+    } catch (e) {
       if (mounted) {
         setState(() {
-          _carregando = false;
+          _erro = _mensagem(e);
+          _pixVerificado = false;
         });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _ocupado = false);
       }
     }
   }
 
-  Future<void> _consultarPagamento() async {
-    final id = _pagamentoId;
-
-    if (id == null || _consultando || _carregando) {
-      return;
-    }
-
-    setState(() {
-      _consultando = true;
-      _mensagemErro = null;
-    });
-
-    try {
-      final dados = await PagamentoAssinaturaService.consultarPix(
-        pagamentoId: id,
-      );
-
-      if (!mounted) return;
-
-      _atualizarPagamento(dados);
-    } catch (erro) {
-      if (!mounted) return;
-
-      setState(() {
-        _mensagemErro = erro.toString();
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _consultando = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _copiarCodigo() async {
-    final codigo = _codigoPix;
-
-    if (codigo == null || codigo.isEmpty) {
-      return;
-    }
-
-    await Clipboard.setData(ClipboardData(text: codigo));
-
-    if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Código Pix copiado com sucesso.')),
+  Future<void> _consultarPlano() async {
+    await _validarSessao();
+    final dados = await AssinaturaService.buscarAtual(
+      tipoConta: TipoContaAssinatura.empresa,
     );
+    await _validarSessao();
+    _planoAtivo = dados;
   }
 
-  void _atualizarAssinatura(Map<String, dynamic> dados) {
-    final id = dados['assinaturaId'];
-    if (id is! int || id <= 0) {
+  bool _aberta(Map<String, dynamic> dados) =>
+      dados['estadoCriacao'] != 'CONFIRMADA' ||
+      const {'PENDENTE', 'AUTORIZADA', 'PAUSADA'}.contains(dados['status']);
+
+  void _validarRecorrente(Map<String, dynamic> dados, {int? esperado}) {
+    final id = _id(dados['assinaturaId']);
+    final plano = dados['plano'];
+    final valor = dados['valorMensal'];
+    final valorEsperado = plano == 'ESSENCIAL' ? 39.90 : 79.90;
+    if (id == null ||
+        (esperado != null && id != esperado) ||
+        !_planos.containsKey(plano) ||
+        valor is! num ||
+        !valor.isFinite ||
+        (valor - valorEsperado).abs() > 0.000001 ||
+        !_statusRecorrente.contains(dados['status']) ||
+        !_estadosCriacao.contains(dados['estadoCriacao'])) {
       throw const PagamentoAssinaturaException(
-        'O servidor não retornou um identificador válido para a assinatura.',
+        'Dados da assinatura recorrente inválidos.',
       );
     }
-    final url = dados['urlAutorizacao']?.toString();
-    setState(() {
-      _assinaturaId = id;
-      _statusAssinatura =
-          dados['status']?.toString().toUpperCase() ?? 'PENDENTE';
-      _urlAutorizacao = url != null && url.isNotEmpty ? url : null;
-      _mensagemErro = null;
-    });
   }
 
-  Future<void> _abrirAutorizacao() async {
-    final url = _urlAutorizacao;
-    final uri = url == null ? null : Uri.tryParse(url);
+  Future<void> _recuperarRecorrentes() async {
+    await _validarSessao();
+    final lista = await PagamentoAssinaturaService.listarAssinaturasRecorrentes(
+      tipoConta: _tipo,
+    );
+    await _validarSessao();
+    for (final dados in lista) {
+      _validarRecorrente(dados);
+    }
+    final abertas = lista.where(_aberta).toList();
+    _multiplasRecorrentes = abertas.length > 1;
+    final tentativa = _tentativa;
+    final idSalvo = tentativa?['forma'] == 'cartao'
+        ? _id(tentativa?['id'])
+        : null;
+    Map<String, dynamic>? selecionada;
+    if (idSalvo != null) {
+      for (final dados in lista) {
+        if (dados['assinaturaId'] == idSalvo) {
+          selecionada = dados;
+          break;
+        }
+      }
+    }
+    selecionada ??= abertas.isEmpty ? null : abertas.first;
+    _recorrente = selecionada;
+    if (selecionada != null && tentativa?['forma'] != 'pix') {
+      _forma = _FormaPagamento.cartao;
+    }
+    if (selecionada != null &&
+        idSalvo != null &&
+        selecionada['assinaturaId'] == idSalvo &&
+        !_aberta(selecionada)) {
+      await _limparTentativa();
+      if (abertas.isNotEmpty) {
+        _recorrente = abertas.first;
+      }
+    }
+  }
+
+  void _validarPix(Map<String, dynamic> dados, {int? esperado}) {
+    final id = _id(dados['pagamentoId']);
+    final valor = dados['valor'];
+    final plano = dados['plano'];
+    final status = dados['status'];
+    final externo = dados['mercadoPagoPagamentoId'];
+    final valorEsperado = plano == 'ESSENCIAL' ? 39.90 : 79.90;
+    if (id == null ||
+        (esperado != null && id != esperado) ||
+        dados['tipoConta'] != 'EMPRESA' ||
+        !_planos.containsKey(plano) ||
+        valor is! num ||
+        !valor.isFinite ||
+        (valor - valorEsperado).abs() > 0.000001 ||
+        !_statusPix.contains(status) ||
+        dados['planoAtivado'] is! bool ||
+        dados['requerConciliacao'] is! bool ||
+        (dados['requerConciliacao'] !=
+            (status == 'PENDENTE' ||
+                (status == 'APROVADO' && dados['planoAtivado'] == false))) ||
+        (externo != null &&
+            (externo is! String ||
+                (externo.trim().isNotEmpty &&
+                    !RegExp(r'^[0-9]+$').hasMatch(externo))))) {
+      throw const PagamentoAssinaturaException(
+        'O servidor retornou dados inconsistentes do Pix.',
+      );
+    }
+  }
+
+  Future<void> _atualizarPix(
+    Map<String, dynamic> dados, {
+    int? esperado,
+    bool vincularTentativa = false,
+  }) async {
+    _validarPix(dados, esperado: esperado);
+    final id = _id(dados['pagamentoId'])!;
+    final tentativa = _tentativa;
+    final corresponde =
+        tentativa?['forma'] == 'pix' &&
+        (tentativa?['id'] == id ||
+            (vincularTentativa && tentativa?['id'] == null));
+    if (vincularTentativa && !corresponde) {
+      throw const PagamentoAssinaturaException(
+        'O pagamento não corresponde à tentativa salva.',
+      );
+    }
+    if (corresponde && tentativa != null) {
+      if (dados['plano'] != tentativa['plano']) {
+        throw const PagamentoAssinaturaException(
+          'O plano retornado não corresponde à tentativa salva.',
+        );
+      }
+      await _salvar({...tentativa, 'id': id});
+    }
+    _pix = dados;
+    _pixPendentes = [
+      for (final item in _pixPendentes)
+        if (item['pagamentoId'] != id) item,
+      if (dados['requerConciliacao'] == true) dados,
+    ];
+    if (corresponde && _pixFinalizado) {
+      await _limparTentativa();
+    }
+  }
+
+  Future<void> _consultarPixInterno({int? pagamentoId}) async {
+    final id =
+        pagamentoId ??
+        _id(_pix?['pagamentoId']) ??
+        (_tentativa?['forma'] == 'pix' ? _id(_tentativa?['id']) : null);
+    if (id == null) {
+      return;
+    }
+    await _validarSessao();
+    final dados = await PagamentoAssinaturaService.consultarPix(
+      pagamentoId: id,
+      tipoConta: _tipo,
+    );
+    await _validarSessao();
+    await _atualizarPix(dados, esperado: id);
+  }
+
+  Future<void> _recuperarPix({bool consultar = true}) async {
+    _pixVerificado = false;
+    await _validarSessao();
+    final lista = await PagamentoAssinaturaService.listarPixPendentes(
+      tipoConta: _tipo,
+    );
+    await _validarSessao();
+    for (final item in lista) {
+      _validarPix(item);
+    }
+    _pixPendentes = lista;
+    _pixVerificado = true;
+    final idLocal = _tentativa?['forma'] == 'pix'
+        ? _id(_tentativa?['id'])
+        : null;
+    final idAtual = _id(_pix?['pagamentoId']);
+    Map<String, dynamic>? selecionado;
+    for (final item in lista) {
+      if (item['pagamentoId'] == idAtual) {
+        selecionado = item;
+        break;
+      }
+    }
+    if (selecionado == null && idLocal != null) {
+      for (final item in lista) {
+        if (item['pagamentoId'] == idLocal) {
+          selecionado = item;
+          break;
+        }
+      }
+    }
+    if (lista.isNotEmpty) {
+      selecionado ??= lista.first;
+    }
+    if (selecionado != null) {
+      _pix = selecionado;
+      _forma = _FormaPagamento.pix;
+    }
+    if (!consultar) {
+      return;
+    }
+    if (idLocal != null &&
+        !lista.any((item) => item['pagamentoId'] == idLocal)) {
+      await _consultarPixInterno(pagamentoId: idLocal);
+    }
+    if (selecionado != null) {
+      _pix = selecionado;
+      await _consultarPixInterno(pagamentoId: _id(selecionado['pagamentoId'])!);
+    } else if (_pix != null &&
+        !_pixFinalizado &&
+        idAtual != null &&
+        idAtual != idLocal) {
+      await _consultarPixInterno(pagamentoId: idAtual);
+    }
+  }
+
+  Future<void> _selecionarPix(int id) => _executar(() async {
+    for (final item in _pixPendentes) {
+      if (item['pagamentoId'] == id) {
+        _pix = item;
+        break;
+      }
+    }
+    await _consultarPixInterno(pagamentoId: id);
+    await _consultarPlano();
+  });
+
+  Future<void> _criarOuRetomarPix() => _executar(() async {
+    await _recuperarRecorrentes();
+    await _recuperarPix(consultar: false);
+    await _consultarPlano();
+    if (_tentativa == null) {
+      if (_pixPendentes.isNotEmpty ||
+          _recorrenteAberta ||
+          _multiplasRecorrentes ||
+          _contratacaoBloqueada ||
+          !_planos.containsKey(_planoApi) ||
+          _pix != null) {
+        return;
+      }
+      await _salvar({'forma': 'pix', 'plano': _planoApi, 'chave': _uuid()});
+    }
+    final tentativa = _tentativa!;
+    if (tentativa['forma'] != 'pix') {
+      return;
+    }
+    if (_id(tentativa['id']) != null) {
+      await _consultarPixInterno(pagamentoId: _id(tentativa['id'])!);
+      await _consultarPlano();
+      return;
+    }
+    if (_pixPendentes.isNotEmpty ||
+        _recorrenteAberta ||
+        _multiplasRecorrentes) {
+      throw const PagamentoAssinaturaException(
+        'Consulte as cobranças em aberto antes de retomar a tentativa salva.',
+      );
+    }
+    await _validarSessao();
+    final dados = await PagamentoAssinaturaService.criarPix(
+      plano: tentativa['plano'] as String,
+      chaveIdempotencia: tentativa['chave'] as String,
+      tipoConta: _tipo,
+    );
+    await _validarSessao();
+    await _atualizarPix(dados, vincularTentativa: true);
+    await _consultarPlano();
+  });
+
+  Future<void> _criarOuRetomarCartao() => _executar(() async {
+    await _recuperarRecorrentes();
+    await _recuperarPix(consultar: false);
+    await _consultarPlano();
+    if (_multiplasRecorrentes || _pixPendentes.isNotEmpty || _pix != null) {
+      return;
+    }
+    if (_tentativa == null) {
+      if (_contratacaoBloqueada ||
+          _recorrenteAberta ||
+          !_planos.containsKey(_planoApi)) {
+        return;
+      }
+      final email = _emailController.text.trim();
+      if (!_emailValido(email)) {
+        throw const PagamentoAssinaturaException(
+          'Informe um e-mail válido para o pagamento.',
+        );
+      }
+      await _salvar({
+        'forma': 'cartao',
+        'plano': _planoApi,
+        'chave': _uuid(),
+        'email': email,
+      });
+    }
+    final tentativa = _tentativa!;
+    if (tentativa['forma'] != 'cartao') {
+      return;
+    }
+    if (_id(tentativa['id']) != null) {
+      await _consultarRecorrenteInterno(_id(tentativa['id'])!);
+      return;
+    }
+    await _validarSessao();
+    final dados = await PagamentoAssinaturaService.criarAssinaturaRecorrente(
+      plano: tentativa['plano'] as String,
+      chaveIdempotencia: tentativa['chave'] as String,
+      emailPagador: tentativa['email'] as String,
+      tipoConta: _tipo,
+    );
+    await _validarSessao();
+    _validarRecorrente(dados);
+    if (dados['plano'] != tentativa['plano']) {
+      throw const PagamentoAssinaturaException(
+        'O plano retornado não corresponde à tentativa.',
+      );
+    }
+    await _salvar({...tentativa, 'id': dados['assinaturaId']});
+    _recorrente = dados;
+    if (!_aberta(dados)) {
+      await _limparTentativa();
+    }
+  });
+
+  Future<void> _consultarRecorrenteInterno(int id) async {
+    await _validarSessao();
+    final dados =
+        await PagamentoAssinaturaService.consultarAssinaturaRecorrente(
+          assinaturaId: id,
+          tipoConta: _tipo,
+        );
+    await _validarSessao();
+    _validarRecorrente(dados, esperado: id);
+    _recorrente = dados;
+    if (!_aberta(dados) &&
+        _tentativa?['forma'] == 'cartao' &&
+        _tentativa?['id'] == id) {
+      await _limparTentativa();
+    }
+  }
+
+  Future<void> _atualizar() => _executar(() async {
+    await _recuperarRecorrentes();
+    await _recuperarPix();
+    final id = _id(_recorrente?['assinaturaId']);
+    if (id != null) {
+      await _consultarRecorrenteInterno(id);
+    }
+    await _consultarPlano();
+  });
+
+  Future<void> _abrirMercadoPago() => _executar(() async {
+    final id = _id(_recorrente?['assinaturaId']);
+    await _recuperarRecorrentes();
+    await _recuperarPix(consultar: false);
+    if (id == null ||
+        _recorrente?['assinaturaId'] != id ||
+        _pixPendentes.isNotEmpty ||
+        _multiplasRecorrentes ||
+        (_tentativa != null &&
+            (_tentativa?['forma'] != 'cartao' ||
+                _tentativa?['id'] != _recorrente?['assinaturaId'])) ||
+        _recorrente?['status'] != 'PENDENTE' ||
+        _recorrente?['estadoCriacao'] != 'CONFIRMADA') {
+      return;
+    }
+    final uri = Uri.tryParse(_recorrente?['urlAutorizacao']?.toString() ?? '');
     if (uri == null ||
         uri.scheme != 'https' ||
-        uri.host.isEmpty ||
-        !(uri.host == 'mercadopago.com.br' ||
-            uri.host.endsWith('.mercadopago.com.br') ||
-            uri.host == 'mercadopago.com' ||
-            uri.host.endsWith('.mercadopago.com'))) {
-      setState(
-        () =>
-            _mensagemErro = 'A URL de autorização do Mercado Pago é inválida.',
+        uri.userInfo.isNotEmpty ||
+        (uri.hasPort && uri.port != 443) ||
+        !const [
+          'mercadopago.com',
+          'mercadopago.com.br',
+        ].any((host) => uri.host == host || uri.host.endsWith('.$host'))) {
+      throw const PagamentoAssinaturaException(
+        'O endereço de autorização do Mercado Pago é inválido.',
       );
-      return;
     }
-    try {
-      final abriu = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!abriu && mounted) {
-        setState(
-          () => _mensagemErro = 'Não foi possível abrir o Mercado Pago.',
-        );
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(
-          () => _mensagemErro = 'Não foi possível abrir o Mercado Pago.',
-        );
-      }
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      throw const PagamentoAssinaturaException(
+        'Não foi possível abrir o Mercado Pago.',
+      );
     }
-  }
+  });
 
-  Future<void> _criarAssinaturaCartao() async {
-    if (_carregando ||
-        _consultandoAssinatura ||
-        _recuperandoAssinatura ||
-        _inicializandoTentativa ||
-        _tentativaIncerta ||
-        _assinaturaId != null) {
+  Future<void> _cancelarAssinaturaCartao() => _executar(() async {
+    final id = _id(_recorrente?['assinaturaId']);
+    if (id == null ||
+        !_recorrenteAberta ||
+        _recorrente?['estadoCriacao'] != 'CONFIRMADA' ||
+        _multiplasRecorrentes) {
       return;
     }
-    if (_planoApi != 'ESSENCIAL' && _planoApi != 'PROFISSIONAL') {
-      setState(() => _mensagemErro = 'Selecione um plano pago válido.');
-      return;
-    }
-    final emailPagador = _emailPagadorController.text.trim();
-    if (emailPagador.isEmpty ||
-        emailPagador.length > 254 ||
-        !RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(emailPagador)) {
-      setState(
-        () => _mensagemErro =
-            'Informe um e-mail válido do responsável pelo pagamento.',
-      );
-      return;
-    }
-    if (_emailTentativa != null &&
-        (_emailTentativa != emailPagador || _planoTentativa != _planoApi)) {
-      setState(
-        () => _mensagemErro =
-            'Existe uma tentativa anterior com outros dados. Consulte a assinatura antes de continuar.',
-      );
-      return;
-    }
-    setState(() {
-      _carregando = true;
-      _mensagemErro = null;
-    });
-    try {
-      await _salvarTentativa(emailPagador);
-      final dados = await PagamentoAssinaturaService.criarAssinaturaRecorrente(
-        plano: _planoApi,
-        chaveIdempotencia: _chaveRecorrente!,
-        emailPagador: emailPagador,
-      );
-      if (!mounted) return;
-      _atualizarAssinatura(dados);
-      await _limparTentativa();
-      if (_urlAutorizacao != null && _statusAssinatura == 'PENDENTE') {
-        await _abrirAutorizacao();
-      }
-    } on PagamentoAssinaturaException catch (erro) {
-      if (!mounted) return;
-      if (erro.statusCode == 409) {
-        setState(() => _carregando = false);
-        await _recuperarAssinaturaExistente();
-        if (mounted && _assinaturaId == null && _mensagemErro == null) {
-          setState(() => _mensagemErro = erro.toString());
-        }
-      } else {
-        setState(() => _mensagemErro = erro.toString());
-      }
-    } catch (erro) {
-      if (mounted) setState(() => _mensagemErro = erro.toString());
-    } finally {
-      if (mounted) setState(() => _carregando = false);
-    }
-  }
-
-  Future<void> _consultarAssinaturaCartao() async {
-    final id = _assinaturaId;
-    if (id == null || _consultandoAssinatura || _carregando) return;
-    setState(() {
-      _consultandoAssinatura = true;
-      _mensagemErro = null;
-    });
-    try {
-      final dados =
-          await PagamentoAssinaturaService.consultarAssinaturaRecorrente(
-            assinaturaId: id,
-          );
-      if (mounted) _atualizarAssinatura(dados);
-    } catch (erro) {
-      if (mounted) setState(() => _mensagemErro = erro.toString());
-    } finally {
-      if (mounted) setState(() => _consultandoAssinatura = false);
-    }
-  }
-
-  Widget _construirCartao(ThemeData theme) {
-    final status = _statusAssinatura ?? 'PENDENTE';
-    final autorizada = status == 'AUTORIZADA';
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Assinatura nº $_assinaturaId',
-                  style: theme.textTheme.titleMedium,
-                ),
-                const SizedBox(height: 8),
-                Text('Status: $status'),
-                const SizedBox(height: 8),
-                Text(
-                  autorizada
-                      ? 'Cartão autorizado. A ativação do plano depende da confirmação da cobrança pelo servidor.'
-                      : status == 'PENDENTE'
-                      ? 'Autorize a assinatura no Mercado Pago. Depois, volte e consulte o status.'
-                      : 'Consulte o gerenciamento de assinaturas para verificar os próximos passos.',
-                ),
-              ],
-            ),
-          ),
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Cancelar assinatura?'),
+        content: Text(
+          'Deseja cancelar a renovação da assinatura nº $id no Mercado Pago? '
+          'O plano já pago permanece válido até o vencimento.',
         ),
-        const SizedBox(height: 12),
-        if (_urlAutorizacao != null && status == 'PENDENTE') ...[
-          FilledButton.icon(
-            onPressed: _carregando ? null : _abrirAutorizacao,
-            icon: const Icon(Icons.open_in_new),
-            label: const Text('Abrir autorização no Mercado Pago'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Voltar'),
           ),
-          const SizedBox(height: 12),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Confirmar cancelamento'),
+          ),
         ],
-        OutlinedButton.icon(
-          onPressed: _consultandoAssinatura ? null : _consultarAssinaturaCartao,
-          icon: _consultandoAssinatura
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.refresh),
-          label: Text(
-            _consultandoAssinatura
-                ? 'Consultando...'
-                : 'Consultar status da assinatura',
-          ),
-        ),
-      ],
+      ),
     );
-  }
-
-  Widget _construirStatus(ThemeData theme) {
-    final status = _status;
-
-    if (status == null) {
-      return const SizedBox.shrink();
+    if (confirmar != true || !mounted) {
+      return;
     }
-
-    String mensagem;
-    IconData icone;
-    Color cor;
-
-    switch (status) {
-      case 'APROVADO':
-        mensagem = _planoAtivado
-            ? 'Pagamento aprovado! Seu plano foi ativado.'
-            : 'Pagamento aprovado. A ativação do plano ainda não foi confirmada.';
-        icone = Icons.check_circle_outline;
-        cor = Colors.green;
-        break;
-      case 'RECUSADO':
-        mensagem = 'O pagamento foi recusado.';
-        icone = Icons.cancel_outlined;
-        cor = theme.colorScheme.error;
-        break;
-      case 'CANCELADO':
-        mensagem = 'O pagamento foi cancelado.';
-        icone = Icons.cancel_outlined;
-        cor = theme.colorScheme.error;
-        break;
-      case 'REEMBOLSADO':
-        mensagem = 'O pagamento foi reembolsado.';
-        icone = Icons.info_outline;
-        cor = theme.colorScheme.error;
-        break;
-      default:
-        mensagem = 'Aguardando confirmação do pagamento.';
-        icone = Icons.schedule;
-        cor = theme.colorScheme.primary;
+    await _validarSessao();
+    final dados = await PagamentoAssinaturaService.cancelarAssinaturaRecorrente(
+      assinaturaId: id,
+      tipoConta: _tipo,
+    );
+    await _validarSessao();
+    _validarRecorrente(dados, esperado: id);
+    _recorrente = dados;
+    if (_aberta(dados)) {
+      throw const PagamentoAssinaturaException(
+        'O cancelamento ainda não foi confirmado. Consulte novamente.',
+      );
     }
+    if (_tentativa?['forma'] == 'cartao' && _tentativa?['id'] == id) {
+      await _limparTentativa();
+    }
+    await _consultarPlano();
+    await _recuperarRecorrentes();
+    await _recuperarPix(consultar: false);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Renovação encerrada. Confira o plano atual.'),
+        ),
+      );
+    }
+  });
 
+  Future<void> _copiarPix() => _executar(() async {
+    final codigo = _pix?['pixCopiaECola'];
+    if (!_pixPendente ||
+        !_pixVerificado ||
+        _pixPendentes.length > 1 ||
+        _recorrenteAberta ||
+        _multiplasRecorrentes ||
+        codigo is! String ||
+        codigo.isEmpty) {
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: codigo));
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Código Pix copiado.')));
+    }
+  });
+
+  String _rotulo(String? plano) => switch (plano) {
+    'ESSENCIAL' => 'Essencial',
+    'PROFISSIONAL' => 'Profissional',
+    'GRATUITO' => 'Gratuito',
+    _ => 'Não informado',
+  };
+
+  Widget _botao(String texto, VoidCallback? acao, IconData icone) =>
+      FilledButton.icon(
+        onPressed: acao,
+        icon: Icon(icone),
+        label: Text(texto),
+        style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52)),
+      );
+
+  Widget _painelPix(ThemeData theme) {
+    final codigo = _pix?['pixCopiaECola'];
+    final status = _pix?['status'];
+    final mensagem = switch (status) {
+      'PENDENTE' =>
+        (_pix?['mercadoPagoPagamentoId']?.toString().trim().isEmpty ?? true)
+            ? 'A cobrança ainda não foi identificada no Mercado Pago. Consulte novamente; não gere outro Pix.'
+            : 'Aguardando pagamento. Confira o valor e a validade no seu banco.',
+      'APROVADO' =>
+        _pixAtivado
+            ? 'Pagamento aprovado e plano ativado para esta cobrança.'
+            : 'Pagamento aprovado. Aguardando confirmação da ativação.',
+      'RECUSADO' => 'Pagamento recusado.',
+      'CANCELADO' => 'Pagamento cancelado.',
+      'REEMBOLSADO' => 'Pagamento reembolsado.',
+      _ =>
+        'Nenhum pagamento confirmado. Verifique a tentativa salva antes de contratar novamente.',
+    };
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Icon(icone, color: cor),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    mensagem,
-                    style: theme.textTheme.bodyLarge?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  if (_pagamentoId != null) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      'Pagamento nº $_pagamentoId',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ],
-                ],
+            Text('Pagamento Pix', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(mensagem),
+            if (_pix != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Cobrança #${_pix?['pagamentoId']} — Plano ${_rotulo(_pix?['plano'] as String?)} (${_planos[_pix?['plano']]})',
               ),
-            ),
+            ],
+            if (_pixPendentes.length > 1 ||
+                (_pixPendentes.isNotEmpty &&
+                    !_pixPendentes.any(
+                      (item) => item['pagamentoId'] == _pix?['pagamentoId'],
+                    ))) ...[
+              const SizedBox(height: 12),
+              Text(
+                _pixPendentes.length > 1
+                    ? 'Há mais de uma cobrança em aberto. Consulte cada uma antes de realizar qualquer pagamento.'
+                    : 'Há outra cobrança em aberto. Consulte-a antes de continuar.',
+              ),
+              for (final item in _pixPendentes)
+                OutlinedButton(
+                  onPressed: _pronto && !_ocupado
+                      ? () => _selecionarPix(_id(item['pagamentoId'])!)
+                      : null,
+                  child: Text(
+                    'Consultar #${item['pagamentoId']} — ${_rotulo(item['plano'] as String?)}',
+                  ),
+                ),
+            ],
+            if (_pixPendente &&
+                _pixVerificado &&
+                _pixPendentes.length == 1 &&
+                _pixPendentes.first['pagamentoId'] == _pix?['pagamentoId'] &&
+                !_recorrenteAberta &&
+                !_multiplasRecorrentes &&
+                _pronto &&
+                !_ocupado &&
+                _erro == null &&
+                codigo is String &&
+                codigo.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Center(
+                child: Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.all(12),
+                  child: QrImageView(
+                    data: codigo,
+                    size: 200,
+                    backgroundColor: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SelectableText(codigo, maxLines: 4),
+              const SizedBox(height: 12),
+              _botao(
+                'Copiar código Pix',
+                _ocupado ? null : _copiarPix,
+                Icons.copy,
+              ),
+            ],
+            const SizedBox(height: 12),
+            if (_pix != null ||
+                _id(_tentativa?['id']) != null ||
+                _pixPendentes.isNotEmpty)
+              _botao(
+                'Consultar pagamento',
+                _pronto && !_ocupado ? _atualizar : null,
+                Icons.refresh,
+              ),
+            if (_tentativa?['forma'] == 'pix' &&
+                _id(_tentativa?['id']) == null) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Existe uma tentativa salva neste dispositivo. Retome somente se desejar concluir essa contratação. Se ela ainda não foi registrada no servidor, a solicitação poderá gerar o Pix original.',
+              ),
+              _botao(
+                'Retomar tentativa salva',
+                _pronto &&
+                        !_ocupado &&
+                        _pixVerificado &&
+                        _pixPendentes.isEmpty &&
+                        !_recorrenteAberta &&
+                        !_multiplasRecorrentes
+                    ? _criarOuRetomarPix
+                    : null,
+                Icons.refresh,
+              ),
+            ],
           ],
         ),
       ),
     );
   }
 
-  Widget _construirPix(ThemeData theme) {
-    final codigo = _codigoPix;
-
-    if (_pagamentoId == null) {
-      return const SizedBox.shrink();
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _construirStatus(theme),
-        const SizedBox(height: 16),
-        if (codigo != null && !_pagamentoFinalizado) ...[
-          Text('QR Code Pix', style: theme.textTheme.titleLarge),
-          const SizedBox(height: 12),
-          Center(
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
+  Widget _painelCartao(ThemeData theme) {
+    final status = _recorrente?['status'];
+    final criacao = _recorrente?['estadoCriacao'];
+    final externa = _recorrente?['mercadoPagoAssinaturaId'];
+    final ativada =
+        status == 'AUTORIZADA' &&
+        externa is String &&
+        externa.isNotEmpty &&
+        _planoAtivo?['status'] == 'ATIVA' &&
+        _planoAtivo?['plano'] == _recorrente?['plano'] &&
+        _planoAtivo?['mercadoPagoAssinaturaId'] == externa;
+    final mensagem = criacao != null && criacao != 'CONFIRMADA'
+        ? 'A criação da assinatura ainda não foi confirmada. Não inicie outra contratação.'
+        : switch (status) {
+            'PENDENTE' =>
+              'Autorize a assinatura no ambiente seguro do Mercado Pago.',
+            'AUTORIZADA' =>
+              ativada
+                  ? 'Assinatura autorizada e plano ativo.'
+                  : 'Assinatura autorizada. Aguardando confirmação do pagamento e ativação do plano.',
+            'PAUSADA' =>
+              'Assinatura pausada. Consulte o status antes de contratar outro plano.',
+            'CANCELADA' => 'Assinatura recorrente cancelada.',
+            'ENCERRADA' => 'Assinatura recorrente encerrada.',
+            _ =>
+              'Existe uma tentativa de contratação salva. Verifique ou retome a mesma solicitação.',
+          };
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Assinatura por cartão', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            if (_recorrente != null)
+              Text(
+                'Assinatura #${_recorrente?['assinaturaId']} — Plano ${_rotulo(_recorrente?['plano'] as String?)} (${_planos[_recorrente?['plano']]})',
               ),
-              child: QrImageView(
-                data: codigo,
-                version: QrVersions.auto,
-                size: 240,
-                backgroundColor: Colors.white,
+            Text(mensagem),
+            const SizedBox(height: 12),
+            if (status == 'PENDENTE' &&
+                criacao == 'CONFIRMADA' &&
+                !_multiplasRecorrentes &&
+                _pixVerificado &&
+                _pixPendentes.isEmpty &&
+                (_tentativa == null ||
+                    (_tentativa?['forma'] == 'cartao' &&
+                        _tentativa?['id'] ==
+                            _recorrente?['assinaturaId']))) ...[
+              _botao(
+                'Autorizar no Mercado Pago',
+                _pronto && !_ocupado ? _abrirMercadoPago : null,
+                Icons.open_in_new,
               ),
+              const SizedBox(height: 8),
+            ],
+            if (_tentativa?['forma'] == 'cartao' &&
+                _id(_tentativa?['id']) == null) ...[
+              OutlinedButton.icon(
+                onPressed:
+                    _pronto &&
+                        !_ocupado &&
+                        !_multiplasRecorrentes &&
+                        _pixVerificado &&
+                        _pixPendentes.isEmpty &&
+                        _pix == null
+                    ? _criarOuRetomarCartao
+                    : null,
+                icon: const Icon(Icons.sync),
+                label: const Text('Retomar tentativa anterior'),
+              ),
+              const SizedBox(height: 8),
+            ],
+            _botao(
+              'Atualizar assinatura e plano',
+              _pronto && !_ocupado ? _atualizar : null,
+              Icons.refresh,
             ),
-          ),
-          const SizedBox(height: 20),
-          Text('Pix copia e cola', style: theme.textTheme.titleMedium),
-          const SizedBox(height: 8),
-          TextField(
-            controller: TextEditingController(text: codigo),
-            readOnly: true,
-            maxLines: 3,
-            decoration: const InputDecoration(border: OutlineInputBorder()),
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: _copiarCodigo,
-            icon: const Icon(Icons.copy),
-            label: const Text('Copiar código Pix'),
-          ),
-          const SizedBox(height: 16),
-        ],
-        if (!_pagamentoFinalizado || !_planoAtivado)
-          FilledButton.icon(
-            onPressed: _consultando ? null : _consultarPagamento,
-            icon: _consultando
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.refresh),
-            label: Text(
-              _consultando
-                  ? 'Consultando pagamento...'
-                  : 'Consultar status do pagamento',
-            ),
-            style: FilledButton.styleFrom(
-              minimumSize: const Size.fromHeight(52),
-            ),
-          ),
-      ],
+            if (_recorrenteAberta &&
+                criacao == 'CONFIRMADA' &&
+                !_multiplasRecorrentes) ...[
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _pronto && !_ocupado
+                    ? _cancelarAssinaturaCartao
+                    : null,
+                icon: const Icon(Icons.cancel_outlined),
+                label: const Text('Cancelar assinatura'),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colors = theme.colorScheme;
-    final isPix = _forma == _FormaPagamento.pix;
-    final temPagamento = _pagamentoId != null || _assinaturaId != null;
-    final bloqueado =
-        _carregando || _recuperandoAssinatura || _inicializandoTentativa;
-
+    final recuperacao =
+        _tentativa != null ||
+        _recorrenteAberta ||
+        _pix != null ||
+        _pixPendentes.isNotEmpty;
     return Scaffold(
       appBar: AppBar(title: const Text('Pagamento da assinatura')),
       body: SafeArea(
@@ -694,7 +1071,7 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Plano ${widget.plano}',
+                          'Plano ${_rotulo(_planoExibido)}',
                           style: theme.textTheme.titleMedium,
                         ),
                         const SizedBox(height: 8),
@@ -702,7 +1079,7 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
                             Text(
-                              widget.precoMensal,
+                              _planos[_planoExibido] ?? '—',
                               style: theme.textTheme.headlineMedium?.copyWith(
                                 fontWeight: FontWeight.bold,
                               ),
@@ -715,163 +1092,143 @@ class _EmpresaPagamentoPageState extends State<EmpresaPagamentoPage> {
                           ],
                         ),
                         const SizedBox(height: 12),
-                        Text(
-                          'Pagamento da mensalidade selecionada.',
-                          style: theme.textTheme.bodySmall,
-                        ),
+                        const Text('Pagamento da mensalidade empresarial.'),
+                        if (_planoExibido != _planoApi)
+                          const Text(
+                            'Exibindo uma contratação anterior. Resolva-a antes de contratar outro plano.',
+                          ),
+                        if (_planoAtivo != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            'Plano atual informado pelo servidor: ${_rotulo(_planoAtivo?['plano'] as String?)}',
+                          ),
+                        ],
                       ],
                     ),
                   ),
                 ),
-                const SizedBox(height: 24),
-                Text('Forma de pagamento', style: theme.textTheme.titleLarge),
-                const SizedBox(height: 12),
-                Card(
-                  clipBehavior: Clip.antiAlias,
-                  child: RadioGroup<_FormaPagamento>(
-                    groupValue: _forma,
-                    onChanged: (value) {
-                      if (temPagamento ||
-                          bloqueado ||
-                          _tentativaIncerta ||
-                          value == null)
-                        return;
-
-                      setState(() {
-                        _forma = value;
-                        _mensagemErro = null;
-                      });
-                    },
-                    child: Column(
-                      children: [
-                        const RadioListTile<_FormaPagamento>(
-                          value: _FormaPagamento.pix,
-                          title: Text('Pix'),
-                          subtitle: Text(
-                            'Pagamento por QR Code ou código copia e cola',
-                          ),
-                          secondary: Icon(Icons.qr_code_2),
-                        ),
-                        const Divider(height: 1),
-                        const RadioListTile<_FormaPagamento>(
-                          value: _FormaPagamento.cartao,
-                          title: Text('Cartão de crédito'),
-                          subtitle: Text(
-                            'Pagamento com cartão via provedor seguro',
-                          ),
-                          secondary: Icon(Icons.credit_card),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                if (!isPix && _assinaturaId == null) ...[
+                if (_ocupado) ...[
                   const SizedBox(height: 16),
-                  TextField(
-                    controller: _emailPagadorController,
-                    enabled: !bloqueado && !_tentativaIncerta,
-                    keyboardType: TextInputType.emailAddress,
-                    textInputAction: TextInputAction.done,
-                    autofillHints: const [AutofillHints.email],
-                    decoration: const InputDecoration(
-                      labelText: 'E-mail do responsável pelo pagamento',
-                      hintText: 'pagador@exemplo.com',
-                      border: OutlineInputBorder(),
-                      helperText: 'Pode ser diferente do e-mail da empresa.',
-                    ),
+                  const LinearProgressIndicator(),
+                ],
+                if (_erro != null) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    _erro!,
+                    style: TextStyle(color: theme.colorScheme.error),
                   ),
                 ],
-                const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: colors.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
+                if ((!_pronto || !_pixVerificado) && !_ocupado) ...[
+                  const SizedBox(height: 12),
+                  _botao(
+                    'Verificar pagamentos anteriores',
+                    _inicializar,
+                    Icons.refresh,
                   ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Icon(Icons.info_outline),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          isPix
-                              ? 'O pagamento Pix será gerado pelo Mercado Pago. '
-                                    'A confirmação será consultada diretamente no servidor.'
-                              : 'A autorização do cartão será feita no Mercado Pago. A cobrança recorrente e a ativação do plano dependem da confirmação do servidor.',
-                        ),
-                      ),
-                    ],
+                ],
+                if (_multiplasRecorrentes) ...[
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Há mais de uma assinatura em aberto. Verifique o gerenciamento de assinaturas antes de continuar.',
                   ),
-                ),
+                ],
                 const SizedBox(height: 24),
-                if (_mensagemErro != null) ...[
+                if (!recuperacao && _contratacaoBloqueada)
+                  const Text(
+                    'Existe um plano ativo, renovação automática ou troca agendada que impede esta contratação. Consulte sua assinatura antes de continuar.',
+                  ),
+                if (!recuperacao && !_multiplasRecorrentes) ...[
+                  Text('Forma de pagamento', style: theme.textTheme.titleLarge),
+                  const SizedBox(height: 12),
                   Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    clipBehavior: Clip.antiAlias,
+                    child: RadioGroup<_FormaPagamento>(
+                      groupValue: _forma,
+                      onChanged: (value) {
+                        if (value != null && _podeCriar) {
+                          setState(() => _forma = value);
+                        }
+                      },
+                      child: Column(
                         children: [
-                          Icon(Icons.error_outline, color: colors.error),
-                          const SizedBox(width: 12),
-                          Expanded(child: Text(_mensagemErro!)),
+                          RadioListTile<_FormaPagamento>(
+                            enabled: _podeCriar,
+                            value: _FormaPagamento.pix,
+                            title: const Text('Pix'),
+                            subtitle: const Text(
+                              'Pagamento por QR Code ou código copia e cola',
+                            ),
+                            secondary: const Icon(Icons.qr_code_2),
+                          ),
+                          const Divider(height: 1),
+                          RadioListTile<_FormaPagamento>(
+                            enabled: _podeCriar,
+                            value: _FormaPagamento.cartao,
+                            title: const Text('Cartão de crédito'),
+                            subtitle: const Text(
+                              'Assinatura mensal recorrente',
+                            ),
+                            secondary: const Icon(Icons.credit_card),
+                          ),
                         ],
                       ),
                     ),
                   ),
                   const SizedBox(height: 16),
-                ],
-                if (_tentativaIncerta && _assinaturaId == null && !isPix) ...[
-                  const Text(
-                    'Existe uma tentativa de assinatura cujo resultado ainda não foi confirmado. '
-                    'Para evitar cobranças duplicadas, não será criada outra assinatura.',
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: bloqueado ? null : _recuperarAssinaturaExistente,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Consultar assinatura existente'),
-                  ),
-                  const SizedBox(height: 16),
-                ],
-                if (_recuperandoAssinatura || _inicializandoTentativa) ...[
-                  const Center(child: CircularProgressIndicator()),
-                  const SizedBox(height: 12),
-                  const Center(
-                    child: Text('Verificando assinaturas existentes...'),
-                  ),
-                ] else if (isPix && _pagamentoId != null)
-                  _construirPix(theme)
-                else if (!isPix && _assinaturaId != null)
-                  _construirCartao(theme)
-                else
-                  FilledButton.icon(
-                    onPressed: bloqueado || (!isPix && _tentativaIncerta)
-                        ? null
-                        : isPix
-                        ? _criarPix
-                        : _criarAssinaturaCartao,
-                    icon: _carregando
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : Icon(isPix ? Icons.qr_code : Icons.lock_outline),
-                    label: Text(
-                      _carregando
-                          ? (isPix ? 'Gerando Pix...' : 'Criando assinatura...')
-                          : isPix
-                          ? 'Continuar com Pix'
-                          : 'Continuar com cartão',
+                  if (_forma == _FormaPagamento.cartao) ...[
+                    TextField(
+                      controller: _emailController,
+                      enabled: _podeCriar,
+                      keyboardType: TextInputType.emailAddress,
+                      textInputAction: TextInputAction.done,
+                      autofillHints: const [AutofillHints.email],
+                      decoration: const InputDecoration(
+                        labelText: 'E-mail do responsável pelo pagamento',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size.fromHeight(52),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Você autorizará a cobrança recorrente no Mercado Pago. Não informe dados do cartão nesta tela.',
                     ),
+                    const SizedBox(height: 12),
+                    _botao(
+                      'Criar assinatura recorrente',
+                      _podeCriar ? _criarOuRetomarCartao : null,
+                      Icons.credit_card,
+                    ),
+                  ] else ...[
+                    const Text(
+                      'Pagamento único via Pix, sem renovação automática.',
+                    ),
+                    const SizedBox(height: 12),
+                    _botao(
+                      'Gerar Pix',
+                      _podeCriar ? _criarOuRetomarPix : null,
+                      Icons.qr_code_2,
+                    ),
+                  ],
+                ],
+                if (_pix != null ||
+                    _pixPendentes.isNotEmpty ||
+                    _tentativa?['forma'] == 'pix')
+                  _painelPix(theme),
+                if (_recorrente != null || _tentativa?['forma'] == 'cartao')
+                  _painelCartao(theme),
+                const SizedBox(height: 20),
+                OutlinedButton.icon(
+                  onPressed: _ocupado
+                      ? null
+                      : () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text('Voltar aos planos'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(52),
                   ),
-                const SizedBox(height: 16),
+                ),
+                const SizedBox(height: 12),
                 Text(
-                  'Confira os dados antes de continuar. A assinatura no cartão pode gerar cobranças mensais reais.',
+                  'Os pagamentos são processados pelo Mercado Pago. O plano é ativado somente após a confirmação pelo servidor.',
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodySmall,
                 ),

@@ -29,7 +29,6 @@ import '../pages/login_page.dart';
 import '../pages/mapa_page.dart';
 import '../pages/meus_entregadores_page.dart';
 import '../pages/notificacoes_page.dart';
-import '../pages/ocr_page.dart';
 import '../pages/perfil_page.dart';
 import '../pages/perfil_entregador_empresa_page.dart';
 import '../pages/recuperar_senha_empresa_page.dart';
@@ -224,10 +223,6 @@ class AppRouter {
       GoRoute(
         path: '/entregador/entregas/scanner',
         builder: (context, state) => const ScannerPage(),
-      ),
-      GoRoute(
-        path: '/entregador/entregas/ocr',
-        builder: (context, state) => const OcrPage(),
       ),
       GoRoute(
         path: '/entregador/entregas/detalhes',

@@ -117,38 +117,35 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
                         ),
                       ),
                     ),
-                    RadioListTile<ThemeMode>(
-                      value: ThemeMode.system,
+                    RadioGroup<ThemeMode>(
                       groupValue: provider.themeMode,
-                      secondary: const Icon(Icons.settings_brightness),
-                      title: const Text('Sistema'),
-                      subtitle: const Text('Segue a configuração do celular'),
-                      onChanged: (modo) async {
+                      onChanged: (ThemeMode? modo) async {
                         if (modo == null) return;
                         await themeProvider.alterarTema(modo);
                       },
-                    ),
-                    RadioListTile<ThemeMode>(
-                      value: ThemeMode.light,
-                      groupValue: provider.themeMode,
-                      secondary: const Icon(Icons.light_mode),
-                      title: const Text('Claro'),
-                      subtitle: const Text('Sempre usar o modo claro'),
-                      onChanged: (modo) async {
-                        if (modo == null) return;
-                        await themeProvider.alterarTema(modo);
-                      },
-                    ),
-                    RadioListTile<ThemeMode>(
-                      value: ThemeMode.dark,
-                      groupValue: provider.themeMode,
-                      secondary: const Icon(Icons.dark_mode),
-                      title: const Text('Escuro'),
-                      subtitle: const Text('Sempre usar o modo escuro'),
-                      onChanged: (modo) async {
-                        if (modo == null) return;
-                        await themeProvider.alterarTema(modo);
-                      },
+                      child: const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          RadioListTile<ThemeMode>(
+                            value: ThemeMode.system,
+                            secondary: Icon(Icons.settings_brightness),
+                            title: Text('Sistema'),
+                            subtitle: Text('Segue a configuração do celular'),
+                          ),
+                          RadioListTile<ThemeMode>(
+                            value: ThemeMode.light,
+                            secondary: Icon(Icons.light_mode),
+                            title: Text('Claro'),
+                            subtitle: Text('Sempre usar o modo claro'),
+                          ),
+                          RadioListTile<ThemeMode>(
+                            value: ThemeMode.dark,
+                            secondary: Icon(Icons.dark_mode),
+                            title: Text('Escuro'),
+                            subtitle: Text('Sempre usar o modo escuro'),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -157,66 +154,6 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
           },
         );
       },
-    );
-  }
-
-  Widget header() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(18, 46, 18, 24),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [AppColors.primary, AppColors.primaryLight],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.only(
-          bottomLeft: Radius.circular(28),
-          bottomRight: Radius.circular(28),
-        ),
-      ),
-      child: Row(
-        children: [
-          IconButton(
-            onPressed: () {
-              context.go('/entregador/inicio');
-            },
-            icon: const Icon(Icons.arrow_back, color: Colors.white),
-          ),
-          const SizedBox(width: 6),
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Configurações',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                SizedBox(height: 6),
-                Text(
-                  'Preferências do entregador.',
-                  style: TextStyle(color: Colors.white70, fontSize: 14),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.all(3),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.25),
-              shape: BoxShape.circle,
-            ),
-            child: const CircleAvatar(
-              radius: 24,
-              backgroundColor: Colors.white,
-              child: Icon(Icons.settings, color: AppColors.primary),
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -234,11 +171,11 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
       decoration: BoxDecoration(
         color: tema.cardColor,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: color.withOpacity(0.15)),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
       ),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: color.withOpacity(0.15),
+          backgroundColor: color.withValues(alpha: 0.14),
           child: Icon(icon, color: color),
         ),
         title: Text(
@@ -252,7 +189,11 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
           subtitulo,
           style: TextStyle(color: tema.colorScheme.onSurfaceVariant),
         ),
-        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+        trailing: Icon(
+          Icons.arrow_forward_ios,
+          size: 16,
+          color: tema.colorScheme.onSurfaceVariant,
+        ),
         onTap: onTap,
       ),
     );
@@ -277,7 +218,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
       decoration: BoxDecoration(
         color: tema.cardColor,
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: Colors.blue.withOpacity(0.25)),
+        border: Border.all(color: Colors.blue.withValues(alpha: 0.25)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -285,7 +226,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
           Row(
             children: [
               CircleAvatar(
-                backgroundColor: AppColors.primary.withOpacity(0.12),
+                backgroundColor: AppColors.primary.withValues(alpha: 0.12),
                 child: const Icon(Icons.business, color: AppColors.primary),
               ),
               const SizedBox(width: 10),
@@ -346,14 +287,15 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 20),
+      margin: const EdgeInsets.only(top: 8, bottom: 20),
       decoration: BoxDecoration(
         color: colorScheme.errorContainer,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: colorScheme.error.withValues(alpha: 0.20)),
       ),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: colorScheme.error.withOpacity(0.15),
+          backgroundColor: colorScheme.error.withValues(alpha: 0.14),
           child: Icon(Icons.logout, color: colorScheme.error),
         ),
         title: Text(
@@ -365,15 +307,32 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
         ),
         subtitle: Text(
           'Encerrar sessão do entregador',
-          style: TextStyle(color: colorScheme.onErrorContainer),
+          style: TextStyle(
+            color: colorScheme.onErrorContainer.withValues(alpha: 0.80),
+          ),
         ),
         onTap: () async {
           await AuthService.logout();
 
-          if (!context.mounted) return;
+          if (!mounted) return;
 
           context.go('/selecionar');
         },
+      ),
+    );
+  }
+
+  Widget tituloSecao(String titulo) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Text(
+        titulo,
+        style: TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+          color: theme.colorScheme.onSurface,
+        ),
       ),
     );
   }
@@ -383,89 +342,77 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
     final themeProvider = Provider.of<ThemeProvider>(context);
 
     return Scaffold(
-      body: Column(
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Voltar ao início',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => context.go('/entregador/inicio'),
+        ),
+        title: const Text('Configurações do Entregador'),
+        centerTitle: true,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
         children: [
-          header(),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.all(18),
-              children: [
-                cardVinculoPendente(),
-
-                opcaoMenu(
-                  icon: Icons.directions_car,
-                  titulo: 'Veículo e Combustível',
-                  subtitulo: 'Capacidade, consumo e preço do combustível',
-                  color: AppColors.primary,
-                  onTap: () {
-                    context.push('/entregador/configuracoes/veiculo');
-                  },
-                ),
-
-                opcaoMenu(
-                  icon: Icons.notifications,
-                  titulo: 'Notificações',
-                  subtitulo: 'Ativar ou desativar alertas',
-                  color: Colors.orange,
-                  onTap: () {
-                    context.push('/entregador/notificacoes');
-                  },
-                ),
-
-                opcaoMenu(
-                  icon: iconeTema(themeProvider.themeMode),
-                  titulo: 'Aparência',
-                  subtitulo: textoTema(themeProvider.themeMode),
-                  color: Colors.indigo,
-                  onTap: abrirAparencia,
-                ),
-
-                opcaoMenu(
-                  icon: Icons.article,
-                  titulo: 'Relatórios',
-                  subtitulo: 'Veja seu resumo de entregas',
-                  color: AppColors.primary,
-                  onTap: () {
-                    context.push('/entregador/relatorios');
-                  },
-                ),
-
-                opcaoMenu(
-                  icon: Icons.workspace_premium_outlined,
-                  titulo: 'Planos e Assinaturas',
-                  subtitulo: 'Conheça os planos disponíveis para entregadores',
-                  color: AppColors.primary,
-                  onTap: () {
-                    context.push('/entregador/planos');
-                  },
-                ),
-
-                opcaoMenu(
-                  icon: Icons.support_agent,
-                  titulo: 'Suporte',
-                  subtitulo: 'Ajuda e atendimento',
-                  color: Colors.deepPurple,
-                  onTap: () {
-                    context.push('/entregador/suporte');
-                  },
-                ),
-
-                opcaoMenu(
-                  icon: Icons.info,
-                  titulo: 'Sobre o App',
-                  subtitulo: 'Informações do Entregue Já',
-                  color: AppColors.success,
-                  onTap: () {
-                    context.push('/entregador/sobre');
-                  },
-                ),
-
-                const SizedBox(height: 8),
-
-                botaoSair(),
-              ],
-            ),
+          tituloSecao('Conta'),
+          cardVinculoPendente(),
+          opcaoMenu(
+            icon: Icons.directions_car,
+            titulo: 'Veículo e Combustível',
+            subtitulo: 'Capacidade, consumo e preço do combustível',
+            color: AppColors.primary,
+            onTap: () => context.push('/entregador/configuracoes/veiculo'),
           ),
+          opcaoMenu(
+            icon: Icons.article,
+            titulo: 'Relatórios',
+            subtitulo: 'Veja seu resumo de entregas',
+            color: AppColors.primary,
+            onTap: () => context.push('/entregador/relatorios'),
+          ),
+          const SizedBox(height: 14),
+          tituloSecao('Assinatura'),
+          opcaoMenu(
+            icon: Icons.workspace_premium,
+            titulo: 'Meu Plano',
+            subtitulo: 'Conhecer planos e limites disponíveis',
+            color: AppColors.primary,
+            onTap: () => context.push('/entregador/planos'),
+          ),
+          const SizedBox(height: 14),
+          tituloSecao('Preferências'),
+          opcaoMenu(
+            icon: Icons.notifications,
+            titulo: 'Notificações',
+            subtitulo: 'Ativar ou desativar alertas',
+            color: AppColors.warning,
+            onTap: () => context.push('/entregador/notificacoes'),
+          ),
+          opcaoMenu(
+            icon: iconeTema(themeProvider.themeMode),
+            titulo: 'Aparência',
+            subtitulo: textoTema(themeProvider.themeMode),
+            color: Colors.indigo,
+            onTap: abrirAparencia,
+          ),
+          const SizedBox(height: 14),
+          tituloSecao('Ajuda'),
+          opcaoMenu(
+            icon: Icons.support_agent,
+            titulo: 'Suporte',
+            subtitulo: 'Ajuda e atendimento',
+            color: Colors.deepPurple,
+            onTap: () => context.push('/entregador/suporte'),
+          ),
+          opcaoMenu(
+            icon: Icons.info,
+            titulo: 'Sobre o App',
+            subtitulo: 'Informações do Entregue Já',
+            color: AppColors.primary,
+            onTap: () => context.push('/entregador/sobre'),
+          ),
+          const SizedBox(height: 8),
+          botaoSair(),
         ],
       ),
     );

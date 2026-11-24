@@ -4,18 +4,25 @@ import com.entregueja.backend.entity.Assinatura;
 import com.entregueja.backend.entity.AssinaturaRecorrente;
 import com.entregueja.backend.entity.Empresa;
 import com.entregueja.backend.entity.PagamentoAssinatura;
+import com.entregueja.backend.entity.Usuario;
 import com.entregueja.backend.repository.PagamentoAssinaturaRepository;
 import com.entregueja.backend.repository.AssinaturaRecorrenteRepository;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.MissingNode;
 import jakarta.persistence.EntityManager;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -29,83 +36,197 @@ public class PagamentoAssinaturaService {
     private final MercadoPagoService mercadoPagoService;
     private final AssinaturaService assinaturaService;
     private final EntityManager entityManager;
+    private final TransactionTemplate transacaoPix;
+
+    private record TentativaPix(Long id, String email, String chave, boolean nova) {}
 
     public PagamentoAssinaturaService(
             PagamentoAssinaturaRepository pagamentoRepository,
             AssinaturaRecorrenteRepository recorrenteRepository,
             MercadoPagoService mercadoPagoService,
             AssinaturaService assinaturaService,
-            EntityManager entityManager
+            EntityManager entityManager,
+            PlatformTransactionManager transactionManager
     ) {
         this.pagamentoRepository = pagamentoRepository;
         this.recorrenteRepository = recorrenteRepository;
         this.mercadoPagoService = mercadoPagoService;
         this.assinaturaService = assinaturaService;
         this.entityManager = entityManager;
+        this.transacaoPix = new TransactionTemplate(transactionManager);
+        this.transacaoPix.setPropagationBehavior(Propagation.REQUIRES_NEW.value());
     }
 
-    @Transactional(noRollbackFor = MercadoPagoService.MercadoPagoException.class)
+    @Transactional(propagation = Propagation.NEVER)
     public Map<String, Object> criarCobrancaPix(Long empresaId, Assinatura.Plano plano, String chaveIdempotencia) {
-        Empresa empresa = obterEmpresa(empresaId);
-        BigDecimal valor = valorDoPlano(plano);
+        return criarCobrancaPix(Assinatura.TipoConta.EMPRESA, empresaId, plano, chaveIdempotencia);
+    }
+
+    @Transactional(propagation = Propagation.NEVER)
+    public Map<String, Object> criarCobrancaPix(
+            Assinatura.TipoConta tipoConta, Long contaId, Assinatura.Plano plano, String chaveIdempotencia) {
+        BigDecimal valor = AssinaturaService.valorDoPlano(tipoConta, plano);
         validarChave(chaveIdempotencia);
 
-        obterEmpresaComBloqueio(empresaId);
+        TentativaPix tentativa = transacaoPix.execute(status -> {
+            bloquearConta(tipoConta, contaId);
+            String email = obterEmailConta(tipoConta, contaId);
+            PagamentoAssinatura existente = pagamentoRepository.findByChaveIdempotencia(chaveIdempotencia)
+                    .orElse(null);
+            if (existente != null) {
+                validarVinculoTentativaPix(existente, tipoConta, contaId, plano, valor, chaveIdempotencia);
+                return new TentativaPix(existente.getId(), email, existente.getChaveIdempotencia(), false);
+            }
+            validarContratacaoPix(tipoConta, contaId, plano);
+            validarCobrancasEmAberto(tipoConta, contaId, null);
+            PagamentoAssinatura novo = registrarPagamento(tipoConta, contaId, plano, valor, chaveIdempotencia);
+            if (novo.getId() == null || novo.getId() <= 0) {
+                throw new IllegalStateException("Não foi possível registrar a tentativa de pagamento.");
+            }
+            return new TentativaPix(novo.getId(), email, novo.getChaveIdempotencia(), true);
+        });
 
-        PagamentoAssinatura pagamento = pagamentoRepository.findByChaveIdempotencia(chaveIdempotencia)
-                .orElseGet(() -> registrarPagamento(empresaId, plano, valor, chaveIdempotencia));
-
-        if (!empresaId.equals(pagamento.getEmpresaId())
-                || pagamento.getPlano() != plano
-                || pagamento.getFormaPagamento() != PagamentoAssinatura.FormaPagamento.PIX
-                || pagamento.getValor().compareTo(valor) != 0) {
-            throw new IllegalArgumentException("A chave de idempotência já pertence a outra cobrança.");
+        if (tentativa == null || tentativa.id() == null || tentativa.id() <= 0) {
+            throw new IllegalStateException("Tentativa de pagamento inválida.");
         }
 
-        if (pagamento.getMercadoPagoPagamentoId() != null) {
-            JsonNode consulta = mercadoPagoService.consultarPagamento(pagamento.getMercadoPagoPagamentoId());
-            atualizarStatusEAtivar(pagamento, consulta);
-            return montarResposta(pagamento, consulta);
+        if (!tentativa.nova()) {
+            return transacaoPix.execute(status -> consultarCobrancaPix(tipoConta, contaId, tentativa.id()));
         }
 
-        if (pagamento.getStatus() != PagamentoAssinatura.Status.PENDENTE) {
-            throw new IllegalStateException("Esta cobrança não está mais pendente.");
-        }
-
-        validarContratacaoPix(empresaId, plano);
-
-        JsonNode resposta = mercadoPagoService.criarPagamentoPix(
+        JsonNode respostaExterna = mercadoPagoService.criarPagamentoPix(
                 valor,
                 "Assinatura Entregue Já - " + plano.name(),
-                empresa.getEmail(),
-                "entregueja-pagamento-" + pagamento.getId(),
-                pagamento.getChaveIdempotencia()
+                tentativa.email(),
+                "entregueja-pagamento-" + tentativa.id(),
+                tentativa.chave()
         );
 
-        String idExterno = texto(resposta, "id");
-        if (idExterno == null || !idExterno.matches("[0-9]+")) {
+        String idExterno = texto(respostaExterna, "id");
+        if (idExterno == null || !idExterno.matches("[0-9]{1,100}")) {
             throw new IllegalStateException("O Mercado Pago não retornou um identificador válido.");
         }
 
-        pagamento.setMercadoPagoPagamentoId(idExterno);
-        atualizarStatusEAtivar(pagamento, resposta);
-        return montarResposta(pagamento, resposta);
+        JsonNode respostaConfirmada = transacaoPix.execute(status -> {
+            bloquearConta(tipoConta, contaId);
+            PagamentoAssinatura pagamento = obterTentativaPix(tipoConta, contaId, plano, valor, tentativa);
+            String idRegistrado = pagamento.getMercadoPagoPagamentoId();
+            JsonNode resposta = respostaExterna;
+            if (idRegistrado != null && !idRegistrado.isBlank()) {
+                if (!idExterno.equals(idRegistrado)) {
+                    throw new IllegalStateException("A tentativa já está vinculada a outro pagamento.");
+                }
+                resposta = mercadoPagoService.consultarPagamento(idRegistrado);
+            } else {
+                validarIdentificadorDisponivel(pagamento, idExterno);
+                pagamento.setMercadoPagoPagamentoId(idExterno);
+            }
+            registrarStatusPix(pagamento, resposta);
+            return resposta;
+        });
+
+        return transacaoPix.execute(status -> {
+            bloquearConta(tipoConta, contaId);
+            PagamentoAssinatura pagamento = obterTentativaPix(tipoConta, contaId, plano, valor, tentativa);
+            if (!idExterno.equals(pagamento.getMercadoPagoPagamentoId())) {
+                throw new IllegalStateException("Identificador da tentativa de pagamento inconsistente.");
+            }
+            ativarPixAprovado(pagamento);
+            return montarResposta(pagamento, respostaConfirmada);
+        });
+    }
+
+    private PagamentoAssinatura obterTentativaPix(
+            Assinatura.TipoConta tipoConta, Long contaId, Assinatura.Plano plano,
+            BigDecimal valor, TentativaPix tentativa) {
+        PagamentoAssinatura pagamento = pagamentoRepository.buscarPorIdComBloqueio(tentativa.id())
+                .orElseThrow(() -> new IllegalStateException("Tentativa de pagamento não encontrada."));
+        validarVinculoTentativaPix(pagamento, tipoConta, contaId, plano, valor, tentativa.chave());
+        return pagamento;
+    }
+
+    private void validarVinculoTentativaPix(
+            PagamentoAssinatura pagamento, Assinatura.TipoConta tipoConta, Long contaId,
+            Assinatura.Plano plano, BigDecimal valor, String chave) {
+        if (!pertenceAoTitular(pagamento, tipoConta, contaId)
+                || pagamento.getPlano() != plano
+                || pagamento.getFormaPagamento() != PagamentoAssinatura.FormaPagamento.PIX
+                || pagamento.getValor() == null || pagamento.getValor().compareTo(valor) != 0
+                || !chave.equals(pagamento.getChaveIdempotencia())) {
+            throw new IllegalArgumentException("A chave de idempotência já pertence a outra cobrança.");
+        }
+    }
+
+    private void validarIdentificadorDisponivel(PagamentoAssinatura pagamento, String idExterno) {
+        pagamentoRepository.buscarPorMercadoPagoPagamentoIdComBloqueio(idExterno).ifPresent(vinculado -> {
+            if (!pagamento.getId().equals(vinculado.getId())
+                    || !pertenceAoTitular(vinculado, pagamento.getTipoConta(), pagamento.getContaId())
+                    || vinculado.getFormaPagamento() != PagamentoAssinatura.FormaPagamento.PIX) {
+                throw new IllegalStateException("O pagamento recuperado já está vinculado a outra cobrança.");
+            }
+        });
+    }
+
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> listarCobrancasPixPendentes(Long empresaId) {
+        return listarCobrancasPixPendentes(Assinatura.TipoConta.EMPRESA, empresaId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> listarCobrancasPixPendentes(
+            Assinatura.TipoConta tipoConta, Long contaId) {
+        obterEmailConta(tipoConta, contaId);
+        List<PagamentoAssinatura> pagamentos = switch (tipoConta) {
+            case EMPRESA -> pagamentoRepository.findByEmpresaIdOrderByDataCriacaoDesc(contaId);
+            case ENTREGADOR -> pagamentoRepository.findByEntregadorIdOrderByDataCriacaoDesc(contaId);
+        };
+
+        List<Map<String, Object>> resultado = new ArrayList<>();
+        for (PagamentoAssinatura pagamento : pagamentos) {
+            if (!pertenceAoTitular(pagamento, tipoConta, contaId)) {
+                throw new IllegalStateException("Pagamento com titularidade inconsistente.");
+            }
+            if (pixNaoResolvido(pagamento)) {
+                resultado.add(montarResposta(pagamento, MissingNode.getInstance()));
+            }
+        }
+        return resultado;
+    }
+
+    private boolean pixNaoResolvido(PagamentoAssinatura pagamento) {
+        return pagamento.getFormaPagamento() == PagamentoAssinatura.FormaPagamento.PIX
+                && (pagamento.getStatus() == PagamentoAssinatura.Status.PENDENTE
+                || pagamento.getStatus() == PagamentoAssinatura.Status.APROVADO
+                && pagamento.getDataVencimento() == null);
     }
 
     @Transactional
     public Map<String, Object> consultarCobrancaPix(Long empresaId, Long pagamentoId) {
-        obterEmpresa(empresaId);
-        obterEmpresaComBloqueio(empresaId);
+        return consultarCobrancaPix(Assinatura.TipoConta.EMPRESA, empresaId, pagamentoId);
+    }
+
+    @Transactional
+    public Map<String, Object> consultarCobrancaPix(
+            Assinatura.TipoConta tipoConta, Long contaId, Long pagamentoId) {
+        bloquearConta(tipoConta, contaId);
+        obterEmailConta(tipoConta, contaId);
+        if (pagamentoId == null || pagamentoId <= 0) {
+            throw new IllegalArgumentException("Pagamento não encontrado.");
+        }
         PagamentoAssinatura pagamento = pagamentoRepository.buscarPorIdComBloqueio(pagamentoId)
                 .orElseThrow(() -> new IllegalArgumentException("Pagamento não encontrado."));
 
-        if (!empresaId.equals(pagamento.getEmpresaId())
+        if (!pertenceAoTitular(pagamento, tipoConta, contaId)
                 || pagamento.getFormaPagamento() != PagamentoAssinatura.FormaPagamento.PIX) {
             throw new IllegalArgumentException("Pagamento não encontrado.");
         }
 
-        if (pagamento.getMercadoPagoPagamentoId() == null) {
-            throw new IllegalStateException("A cobrança ainda não possui identificador externo.");
+        if (pagamento.getMercadoPagoPagamentoId() == null
+                || pagamento.getMercadoPagoPagamentoId().isBlank()) {
+            if (!pixNaoResolvido(pagamento)) {
+                throw new IllegalStateException("A cobrança ainda não possui identificador externo.");
+            }
+            return recuperarPixPorReferencia(pagamento);
         }
 
         JsonNode resposta = mercadoPagoService.consultarPagamento(pagamento.getMercadoPagoPagamentoId());
@@ -113,6 +234,37 @@ public class PagamentoAssinaturaService {
         return montarResposta(pagamento, resposta);
     }
 
+
+    private Map<String, Object> recuperarPixPorReferencia(PagamentoAssinatura pagamento) {
+        if (pagamento.getId() == null || pagamento.getId() <= 0 || !pixNaoResolvido(pagamento)) {
+            throw new IllegalStateException("Cobrança inválida para recuperação.");
+        }
+        BigDecimal valorEsperado = AssinaturaService.valorDoPlano(pagamento.getTipoConta(), pagamento.getPlano());
+        if (pagamento.getValor() == null || pagamento.getValor().compareTo(valorEsperado) != 0) {
+            throw new IllegalStateException("Valor da cobrança local inconsistente.");
+        }
+
+        String referencia = "entregueja-pagamento-" + pagamento.getId();
+        var encontrado = mercadoPagoService.buscarPagamentoPixPorReferencia(referencia, pagamento.getValor());
+        if (encontrado.isEmpty()) {
+            Map<String, Object> resultado = montarResposta(pagamento, MissingNode.getInstance());
+            resultado.put("buscaReferenciaRealizada", true);
+            return resultado;
+        }
+
+        JsonNode resposta = encontrado.get();
+        String idExterno = texto(resposta, "id");
+        if (idExterno == null || !idExterno.matches("[0-9]+")) {
+            throw new IllegalStateException("Identificador do pagamento recuperado inválido.");
+        }
+        validarIdentificadorDisponivel(pagamento, idExterno);
+
+        pagamento.setMercadoPagoPagamentoId(idExterno);
+        atualizarStatusEAtivar(pagamento, resposta);
+        Map<String, Object> resultado = montarResposta(pagamento, resposta);
+        resultado.put("buscaReferenciaRealizada", true);
+        return resultado;
+    }
 
     @Transactional
     public Map<String, Object> processarPagamentoRecorrente(String mercadoPagoPagamentoId) {
@@ -149,12 +301,18 @@ public class PagamentoAssinaturaService {
                 .findByMercadoPagoAssinaturaId(assinaturaExterna)
                 .orElseThrow(() -> new IllegalStateException("Assinatura recorrente não encontrada."));
 
-        Empresa empresa = obterEmpresaComBloqueio(recorrente.getEmpresaId());
-        if (empresa.getId() == null) {
-            throw new IllegalStateException("Empresa inválida.");
+        Assinatura.TipoConta tipoConta = recorrente.getTipoConta();
+        Long contaId = recorrente.getContaId();
+        Long idBloqueado = bloquearConta(tipoConta, contaId);
+        if (!contaId.equals(idBloqueado)) {
+            throw new IllegalStateException("Conta inválida.");
         }
 
         validarTrocaProgramada(recorrente);
+        if (recorrente.getValor() == null || recorrente.getValor().compareTo(
+                AssinaturaService.valorDoPlano(tipoConta, recorrente.getPlano())) != 0) {
+            throw new IllegalStateException("Valor do plano recorrente inconsistente.");
+        }
 
         JsonNode assinaturaMercadoPago = mercadoPagoService.consultarAssinaturaRecorrente(assinaturaExterna);
         if (!assinaturaExterna.equals(texto(assinaturaMercadoPago, "id"))
@@ -195,7 +353,7 @@ public class PagamentoAssinaturaService {
         PagamentoAssinatura pagamento = pagamentoRepository.buscarPorMercadoPagoPagamentoIdComBloqueio(mercadoPagoPagamentoId)
                 .orElseGet(() -> {
                     PagamentoAssinatura novo = new PagamentoAssinatura();
-                    novo.setEmpresaId(recorrente.getEmpresaId());
+                    atribuirTitular(novo, tipoConta, contaId);
                     novo.setPlano(recorrente.getPlano());
                     novo.setFormaPagamento(PagamentoAssinatura.FormaPagamento.CARTAO);
                     novo.setValor(recorrente.getValor());
@@ -208,10 +366,11 @@ public class PagamentoAssinaturaService {
                     return pagamentoRepository.saveAndFlush(novo);
                 });
 
-        if (!recorrente.getEmpresaId().equals(pagamento.getEmpresaId())
+        if (!pertenceAoTitular(pagamento, tipoConta, contaId)
                 || pagamento.getPlano() != recorrente.getPlano()
                 || pagamento.getFormaPagamento() != PagamentoAssinatura.FormaPagamento.CARTAO
                 || !assinaturaExterna.equals(pagamento.getMercadoPagoAssinaturaId())
+                || pagamento.getValor() == null
                 || pagamento.getValor().compareTo(recorrente.getValor()) != 0) {
             throw new IllegalStateException("Cobrança já vinculada a outra assinatura.");
         }
@@ -224,7 +383,11 @@ public class PagamentoAssinaturaService {
         pagamentoRepository.saveAndFlush(pagamento);
 
         if (status == PagamentoAssinatura.Status.APROVADO && pagamento.getDataVencimento() == null) {
-            assinaturaService.ativarPlanoPagoPorCartao(recorrente.getEmpresaId(), pagamento.getId());
+            if (tipoConta == Assinatura.TipoConta.EMPRESA) {
+                assinaturaService.ativarPlanoPagoPorCartao(contaId, pagamento.getId());
+            } else {
+                assinaturaService.ativarPlanoPagoPorCartao(tipoConta, contaId, pagamento.getId());
+            }
         }
 
         Map<String, Object> resultado = new LinkedHashMap<>();
@@ -239,14 +402,27 @@ public class PagamentoAssinaturaService {
 
     @Transactional
     public Map<String, Object> recuperarMensalidadesRecorrentes(Long empresaId) {
-        obterEmpresaComBloqueio(empresaId);
+        return recuperarMensalidadesRecorrentes(Assinatura.TipoConta.EMPRESA, empresaId);
+    }
+
+    @Transactional
+    public Map<String, Object> recuperarMensalidadesRecorrentes(
+            Assinatura.TipoConta tipoConta, Long contaId) {
+        bloquearConta(tipoConta, contaId);
 
         int assinaturasConsultadas = 0;
         int mensalidadesEncontradas = 0;
         int mensalidadesProcessadas = 0;
         int mensalidadesJaRegistradas = 0;
 
-        for (AssinaturaRecorrente recorrente : recorrenteRepository.findByEmpresaIdOrderByIdDesc(empresaId)) {
+        List<AssinaturaRecorrente> recorrentes = switch (tipoConta) {
+            case EMPRESA -> recorrenteRepository.findByEmpresaIdOrderByIdDesc(contaId);
+            case ENTREGADOR -> recorrenteRepository.findByEntregadorIdOrderByIdDesc(contaId);
+        };
+        for (AssinaturaRecorrente recorrente : recorrentes) {
+            if (recorrente.getTipoConta() != tipoConta || !contaId.equals(recorrente.getContaId())) {
+                throw new IllegalStateException("Assinatura recorrente vinculada a outra conta.");
+            }
             String assinaturaExterna = recorrente.getMercadoPagoAssinaturaId();
             if (assinaturaExterna == null || assinaturaExterna.isBlank()) {
                 continue;
@@ -312,13 +488,64 @@ public class PagamentoAssinaturaService {
         return resultado;
     }
 
-    private void validarContratacaoPix(Long empresaId, Assinatura.Plano plano) {
+    private void validarCobrancasEmAberto(
+            Assinatura.TipoConta tipoConta, Long contaId, PagamentoAssinatura pagamentoAtual) {
+        List<AssinaturaRecorrente.Status> statusAtivos = List.of(
+                AssinaturaRecorrente.Status.PENDENTE,
+                AssinaturaRecorrente.Status.AUTORIZADA,
+                AssinaturaRecorrente.Status.PAUSADA);
+        List<AssinaturaRecorrente.EstadoCriacao> estadosIncertos = List.of(
+                AssinaturaRecorrente.EstadoCriacao.PREPARADA,
+                AssinaturaRecorrente.EstadoCriacao.ENVIANDO,
+                AssinaturaRecorrente.EstadoCriacao.INCERTA);
+
+        boolean possuiRecorrente = switch (tipoConta) {
+            case EMPRESA -> recorrenteRepository.findFirstByEmpresaIdAndStatusInOrderByIdDesc(
+                    contaId, statusAtivos).isPresent();
+            case ENTREGADOR -> recorrenteRepository.findFirstByEntregadorIdAndStatusInOrderByIdDesc(
+                    contaId, statusAtivos).isPresent();
+        };
+        boolean tentativaIncerta = switch (tipoConta) {
+            case EMPRESA -> recorrenteRepository.findFirstByEmpresaIdAndEstadoCriacaoInOrderByIdDesc(
+                    contaId, estadosIncertos).isPresent();
+            case ENTREGADOR -> recorrenteRepository.findFirstByEntregadorIdAndEstadoCriacaoInOrderByIdDesc(
+                    contaId, estadosIncertos).isPresent();
+        };
+        if (possuiRecorrente || tentativaIncerta) {
+            throw new IllegalStateException(
+                    "Existe uma assinatura recorrente ou tentativa não resolvida. Concilie ou cancele a contratação anterior antes de gerar um Pix.");
+        }
+
+        List<PagamentoAssinatura> pagamentos = switch (tipoConta) {
+            case EMPRESA -> pagamentoRepository.findByEmpresaIdOrderByDataCriacaoDesc(contaId);
+            case ENTREGADOR -> pagamentoRepository.findByEntregadorIdOrderByDataCriacaoDesc(contaId);
+        };
+
+        for (PagamentoAssinatura pagamento : pagamentos) {
+            if (!pertenceAoTitular(pagamento, tipoConta, contaId)) {
+                throw new IllegalStateException("Pagamento com titularidade inconsistente.");
+            }
+            if (pagamentoAtual != null && pagamentoAtual.getId() != null
+                    && pagamentoAtual.getId().equals(pagamento.getId())) {
+                continue;
+            }
+            boolean pendente = pagamento.getStatus() == PagamentoAssinatura.Status.PENDENTE;
+            boolean aprovadoNaoAtivado = pagamento.getStatus() == PagamentoAssinatura.Status.APROVADO
+                    && pagamento.getDataVencimento() == null;
+            if (pendente || aprovadoNaoAtivado) {
+                throw new IllegalStateException(
+                        "Existe uma cobrança não resolvida. Consulte ou concilie o pagamento anterior antes de gerar outro Pix.");
+            }
+        }
+    }
+
+    private void validarContratacaoPix(Assinatura.TipoConta tipoConta, Long contaId, Assinatura.Plano plano) {
         Assinatura atual = entityManager.createQuery(
                         "select a from Assinatura a where a.tipoConta = :tipo "
                                 + "and a.contaId = :contaId and a.status = :status order by a.id desc",
                         Assinatura.class)
-                .setParameter("tipo", Assinatura.TipoConta.EMPRESA)
-                .setParameter("contaId", empresaId)
+                .setParameter("tipo", tipoConta)
+                .setParameter("contaId", contaId)
                 .setParameter("status", Assinatura.Status.ATIVA)
                 .setMaxResults(1)
                 .getResultStream()
@@ -353,8 +580,8 @@ public class PagamentoAssinaturaService {
                         "select a from Assinatura a where a.tipoConta = :tipo "
                                 + "and a.contaId = :contaId and a.status = :status order by a.id desc",
                         Assinatura.class)
-                .setParameter("tipo", Assinatura.TipoConta.EMPRESA)
-                .setParameter("contaId", recorrente.getEmpresaId())
+                .setParameter("tipo", recorrente.getTipoConta())
+                .setParameter("contaId", recorrente.getContaId())
                 .setParameter("status", Assinatura.Status.ATIVA)
                 .setMaxResults(1)
                 .getResultStream()
@@ -383,7 +610,7 @@ public class PagamentoAssinaturaService {
 
         if (recorrente.getPlano() != atual.getPlanoAgendado()
                 || recorrente.getValor() == null
-                || recorrente.getValor().compareTo(valorDoPlano(atual.getPlanoAgendado())) != 0) {
+                || recorrente.getValor().compareTo(AssinaturaService.valorDoPlano(recorrente.getTipoConta(), atual.getPlanoAgendado())) != 0) {
             throw new IllegalStateException(
                     "A cobrança recorrente ainda não corresponde ao plano agendado. "
                             + "É necessário conciliar o novo valor antes de ativar a mensalidade."
@@ -403,10 +630,11 @@ public class PagamentoAssinaturaService {
     }
 
     private PagamentoAssinatura registrarPagamento(
-            Long empresaId, Assinatura.Plano plano, BigDecimal valor, String chaveIdempotencia
+            Assinatura.TipoConta tipoConta, Long contaId, Assinatura.Plano plano,
+            BigDecimal valor, String chaveIdempotencia
     ) {
         PagamentoAssinatura pagamento = new PagamentoAssinatura();
-        pagamento.setEmpresaId(empresaId);
+        atribuirTitular(pagamento, tipoConta, contaId);
         pagamento.setPlano(plano);
         pagamento.setFormaPagamento(PagamentoAssinatura.FormaPagamento.PIX);
         pagamento.setStatus(PagamentoAssinatura.Status.PENDENTE);
@@ -426,10 +654,51 @@ public class PagamentoAssinaturaService {
         return empresa;
     }
 
-    private BigDecimal valorDoPlano(Assinatura.Plano plano) {
-        if (plano == Assinatura.Plano.ESSENCIAL) return new BigDecimal("39.90");
-        if (plano == Assinatura.Plano.PROFISSIONAL) return new BigDecimal("79.90");
-        throw new IllegalArgumentException("Selecione um plano pago válido.");
+    private void validarConta(Assinatura.TipoConta tipoConta, Long contaId) {
+        if (tipoConta == null || contaId == null || contaId <= 0) {
+            throw new IllegalArgumentException("Conta inválida.");
+        }
+    }
+
+    private String obterEmailConta(Assinatura.TipoConta tipoConta, Long contaId) {
+        validarConta(tipoConta, contaId);
+        if (tipoConta == Assinatura.TipoConta.EMPRESA) {
+            return obterEmpresa(contaId).getEmail();
+        }
+        Usuario entregador = entityManager.find(Usuario.class, contaId);
+        if (entregador == null || entregador.getEmail() == null || entregador.getEmail().isBlank()) {
+            throw new IllegalArgumentException("Entregador não encontrado ou sem e-mail cadastrado.");
+        }
+        return entregador.getEmail();
+    }
+
+    private Long bloquearConta(Assinatura.TipoConta tipoConta, Long contaId) {
+        validarConta(tipoConta, contaId);
+        if (tipoConta == Assinatura.TipoConta.EMPRESA) {
+            return obterEmpresaComBloqueio(contaId).getId();
+        }
+        Usuario entregador = entityManager.find(Usuario.class, contaId,
+                jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+        if (entregador == null) {
+            throw new IllegalArgumentException("Entregador não encontrado.");
+        }
+        return entregador.getId();
+    }
+
+    private void atribuirTitular(PagamentoAssinatura pagamento, Assinatura.TipoConta tipoConta, Long contaId) {
+        validarConta(tipoConta, contaId);
+        switch (tipoConta) {
+            case EMPRESA -> pagamento.setEmpresaId(contaId);
+            case ENTREGADOR -> pagamento.setEntregadorId(contaId);
+        }
+    }
+
+    private boolean pertenceAoTitular(PagamentoAssinatura pagamento, Assinatura.TipoConta tipoConta, Long contaId) {
+        validarConta(tipoConta, contaId);
+        return switch (tipoConta) {
+            case EMPRESA -> contaId.equals(pagamento.getEmpresaId()) && pagamento.getEntregadorId() == null;
+            case ENTREGADOR -> contaId.equals(pagamento.getEntregadorId()) && pagamento.getEmpresaId() == null;
+        };
     }
 
     private void validarChave(String chave) {
@@ -444,6 +713,11 @@ public class PagamentoAssinaturaService {
     }
 
     private void atualizarStatusEAtivar(PagamentoAssinatura pagamento, JsonNode resposta) {
+        registrarStatusPix(pagamento, resposta);
+        ativarPixAprovado(pagamento);
+    }
+
+    private void registrarStatusPix(PagamentoAssinatura pagamento, JsonNode resposta) {
         String id = texto(resposta, "id");
         if (id == null || !id.equals(pagamento.getMercadoPagoPagamentoId())) {
             throw new IllegalStateException("Identificador de pagamento inconsistente.");
@@ -488,9 +762,17 @@ public class PagamentoAssinaturaService {
             pagamento.setDataAprovacao(LocalDateTime.now(FUSO));
         }
         pagamentoRepository.saveAndFlush(pagamento);
+    }
 
-        if (status == PagamentoAssinatura.Status.APROVADO && pagamento.getDataVencimento() == null) {
-            assinaturaService.ativarPlanoPagoPorPix(pagamento.getEmpresaId(), pagamento.getId());
+    private void ativarPixAprovado(PagamentoAssinatura pagamento) {
+        if (pagamento.getStatus() == PagamentoAssinatura.Status.APROVADO && pagamento.getDataVencimento() == null) {
+            Assinatura.TipoConta tipoConta = pagamento.getTipoConta();
+            Long contaId = pagamento.getContaId();
+            if (tipoConta == Assinatura.TipoConta.EMPRESA) {
+                assinaturaService.ativarPlanoPagoPorPix(contaId, pagamento.getId());
+            } else {
+                assinaturaService.ativarPlanoPagoPorPix(tipoConta, contaId, pagamento.getId());
+            }
         }
     }
 
@@ -520,7 +802,19 @@ public class PagamentoAssinaturaService {
         dados.put("mercadoPagoPagamentoId", pagamento.getMercadoPagoPagamentoId());
         dados.put("planoAtivado", pagamento.getDataVencimento() != null);
         dados.put("vencimentoPlano", pagamento.getDataVencimento());
-        JsonNode transacao = resposta.path("point_of_interaction").path("transaction_data");
+        dados.put("tipoConta", pagamento.getTipoConta().name());
+        dados.put("dataCriacao", pagamento.getDataCriacao());
+        boolean consultaRealizada = resposta != null && !resposta.isMissingNode() && !resposta.isNull();
+        boolean possuiIdentificador = pagamento.getMercadoPagoPagamentoId() != null
+                && !pagamento.getMercadoPagoPagamentoId().isBlank();
+        dados.put("consultaMercadoPagoRealizada", consultaRealizada);
+        dados.put("buscaReferenciaRealizada", false);
+        dados.put("situacaoRecuperacao", consultaRealizada ? "CONSULTADA"
+                : possuiIdentificador ? "AGUARDANDO_CONSULTA" : "AGUARDANDO_IDENTIFICACAO");
+        dados.put("requerConciliacao", pixNaoResolvido(pagamento));
+        JsonNode transacao = consultaRealizada && pagamento.getStatus() == PagamentoAssinatura.Status.PENDENTE
+                ? resposta.path("point_of_interaction").path("transaction_data")
+                : MissingNode.getInstance();
         dados.put("pixCopiaECola", texto(transacao, "qr_code"));
         dados.put("pixQrCodeBase64", texto(transacao, "qr_code_base64"));
         dados.put("pixLink", texto(transacao, "ticket_url"));
