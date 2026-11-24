@@ -169,10 +169,15 @@ public class PagamentoAssinaturaService {
         }
 
         JsonNode valorExterno = externo.path("transaction_amount");
-        if (!valorExterno.isNumber() || valorExterno.decimalValue().compareTo(recorrente.getValor()) != 0
-                || !"BRL".equals(texto(externo, "currency_id"))
-                || !"credit_card".equals(texto(externo, "payment_type_id"))) {
-            throw new IllegalStateException("Dados da cobrança recorrente inconsistentes.");
+        if (!valorExterno.isNumber() || valorExterno.decimalValue().compareTo(recorrente.getValor()) != 0) {
+            throw new IllegalStateException("Valor da cobrança recorrente inconsistente.");
+        }
+        if (!"BRL".equals(texto(externo, "currency_id"))) {
+            throw new IllegalStateException("Moeda da cobrança recorrente inconsistente.");
+        }
+        String tipoPagamentoExterno = texto(externo, "payment_type_id");
+        if (!"credit_card".equals(tipoPagamentoExterno) && !"account_money".equals(tipoPagamentoExterno)) {
+            throw new IllegalStateException("Tipo de pagamento da cobrança recorrente não permitido.");
         }
 
         String statusExterno = texto(externo, "status");
