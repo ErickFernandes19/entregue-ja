@@ -1,4 +1,3 @@
-
 package com.entregueja.backend.service;
 
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -46,6 +45,13 @@ public class CadastroPendenteService {
             throw new IllegalArgumentException("Preencha todos os campos");
         }
 
+        String nomeNormalizado = nome.trim();
+        if (nomeNormalizado.length() < 2 || nomeNormalizado.length() > 150) {
+            throw new IllegalArgumentException(
+                    "O nome deve conter entre 2 e 150 caracteres"
+            );
+        }
+
         if (!senhaForte(senha)) {
             throw new IllegalArgumentException(
                     "A senha deve ter pelo menos 8 caracteres, incluindo letra maiúscula, minúscula, número e caractere especial"
@@ -62,7 +68,7 @@ public class CadastroPendenteService {
         LocalDateTime agora = LocalDateTime.now();
 
         CadastroPendente pendente = new CadastroPendente(
-                nome.trim(),
+                nomeNormalizado,
                 emailNormalizado,
                 passwordEncoder.encode(senha),
                 passwordEncoder.encode(codigo),

@@ -480,24 +480,6 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
                 ),
               ),
             ),
-            const SizedBox(height: 18),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(Icons.info_outline, color: theme.colorScheme.primary),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Text(
-                        'Os preços e limites são provisórios. A ativação do teste já está disponível, mas o bloqueio automático por franquia e a integração de pagamentos ainda estão em desenvolvimento.',
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
           ],
         ),
       ),

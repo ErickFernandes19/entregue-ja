@@ -1106,6 +1106,12 @@ public class EmpresaController {
         novoNome = novoNome.trim();
         novoEmail = novoEmail.trim().toLowerCase(Locale.ROOT);
 
+        if (novoNome.length() < 2 || novoNome.length() > 150) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "O nome deve conter entre 2 e 150 caracteres.")
+            );
+        }
+
         if (!emailValido(novoEmail)) {
             return ResponseEntity.badRequest().body(
                     Map.of("mensagem", "Informe um e-mail válido")
@@ -1175,3 +1181,4 @@ public class EmpresaController {
                 || senha.startsWith("$2y$");
     }
 }
+

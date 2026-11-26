@@ -316,7 +316,7 @@ class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
                     const SizedBox(width: 12),
                     const Expanded(
                       child: Text(
-                        'Entregas atribuídas por empresas vinculadas não exigem assinatura pessoal. A contratação dos planos pagos depende da habilitação do pagamento para entregadores.',
+                        'Entregas atribuídas por empresas vinculadas não exigem assinatura pessoal.',
                       ),
                     ),
                   ],

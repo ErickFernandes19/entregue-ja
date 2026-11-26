@@ -59,6 +59,11 @@ class _EditarEmpresaPerfilPageState extends State<EditarEmpresaPerfilPage> {
       return;
     }
 
+    if (nome.length < 2 || nome.length > 150) {
+      mostrarMensagem('O nome deve conter entre 2 e 150 caracteres.');
+      return;
+    }
+
     if (email.isEmpty) {
       mostrarMensagem('Informe o e-mail da empresa.');
       emailFocusNode.requestFocus();

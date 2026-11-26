@@ -56,6 +56,12 @@ class _EditarPerfilPageState extends State<EditarPerfilPage> {
       return;
     }
 
+    if (nome.length < 2 || nome.length > 150) {
+      mostrarMensagem('O nome deve conter entre 2 e 150 caracteres.');
+      nomeFocus.requestFocus();
+      return;
+    }
+
     if (email.isEmpty) {
       mostrarMensagem('Informe seu e-mail.');
       emailFocus.requestFocus();

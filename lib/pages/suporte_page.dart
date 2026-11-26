@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -56,18 +57,32 @@ class SuportePage extends StatelessWidget {
   }
 
   Future<void> abrirEmail(BuildContext context) async {
+    const assunto = 'Suporte - Entregue Já';
     const mensagem =
-        'Não foi possível abrir o aplicativo de e-mail. Envie sua mensagem '
+        'Não foi possível abrir o e-mail. Envie sua mensagem '
         'diretamente para $emailSuporte.';
 
     try {
-      final uri = Uri(
-        scheme: 'mailto',
-        path: emailSuporte,
-        query: 'subject=${Uri.encodeComponent('Suporte - Entregue Já')}',
-      );
+      final uri = kIsWeb
+          ? Uri.https('mail.google.com', '/mail/', {
+              'view': 'cm',
+              'fs': '1',
+              'to': emailSuporte,
+              'su': assunto,
+            })
+          : Uri(
+              scheme: 'mailto',
+              path: emailSuporte,
+              query: 'subject=${Uri.encodeComponent(assunto)}',
+            );
 
-      final abriu = await launchUrl(uri);
+      final abriu = await launchUrl(
+        uri,
+        mode: kIsWeb
+            ? LaunchMode.platformDefault
+            : LaunchMode.externalApplication,
+        webOnlyWindowName: kIsWeb ? '_blank' : null,
+      );
 
       if (!context.mounted) return;
 
@@ -208,8 +223,9 @@ class SuportePage extends StatelessWidget {
                   context: context,
                   pergunta: 'Como entrar em contato com o suporte?',
                   resposta:
-                      'Na tela de Suporte, toque em E-mail de suporte para abrir seu '
-                      'aplicativo de e-mail e enviar uma mensagem para '
+                      'Na tela de Suporte, toque em E-mail de suporte. No navegador, '
+                      'será aberto o Gmail; no aplicativo, será aberto o cliente de e-mail. '
+                      'Você também pode enviar uma mensagem diretamente para '
                       'entregueja1@gmail.com.',
                 ),
 

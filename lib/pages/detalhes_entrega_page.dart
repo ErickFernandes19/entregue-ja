@@ -38,6 +38,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
   static const Duration _validadeLocalizacao = Duration(seconds: 60);
   bool _falhaConsultaAcompanhamento = false;
   GoogleMapController? _mapaAcompanhamentoController;
+  BitmapDescriptor? _iconeEntregador;
   Map<String, dynamic>? _dadosAcompanhamento;
   Map<String, dynamic>? _localizacaoRecebida;
   bool _consultandoAcompanhamento = false;
@@ -311,6 +312,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
   void initState() {
     super.initState();
 
+    unawaited(_criarIconeEntregador());
     _dadosAcompanhamento = Map<String, dynamic>.from(widget.entrega);
     _timerAcompanhamento = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!mounted ||
@@ -329,6 +331,82 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
     _timerValidadeLocalizacao?.cancel();
     _mapaAcompanhamentoController = null;
     super.dispose();
+  }
+
+  Future<void> _criarIconeEntregador() async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    const size = 48.0;
+    canvas.scale(size / 128);
+    final sombra = Paint()..color = const Color(0x44000000);
+    canvas.drawCircle(const Offset(64, 68), 52, sombra);
+    canvas.drawCircle(
+      const Offset(64, 64),
+      49,
+      Paint()..color = const Color(0xFFFFFFFF),
+    );
+    canvas.drawCircle(
+      const Offset(64, 64),
+      43,
+      Paint()..color = const Color(0xFF1769AA),
+    );
+    final roda = Paint()..color = const Color(0xFF172333);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        const Rect.fromLTWH(54, 25, 20, 25),
+        const Radius.circular(9),
+      ),
+      roda,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        const Rect.fromLTWH(54, 79, 20, 24),
+        const Radius.circular(9),
+      ),
+      roda,
+    );
+    final corpo = Path()
+      ..moveTo(64, 28)
+      ..lineTo(79, 56)
+      ..lineTo(76, 83)
+      ..quadraticBezierTo(64, 93, 52, 83)
+      ..lineTo(49, 56)
+      ..close();
+    canvas.drawPath(corpo, Paint()..color = const Color(0xFFEAF5FF));
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        const Rect.fromLTWH(55, 52, 18, 27),
+        const Radius.circular(8),
+      ),
+      Paint()..color = const Color(0xFF183A57),
+    );
+    canvas.drawLine(
+      const Offset(44, 48),
+      const Offset(84, 48),
+      Paint()
+        ..color = const Color(0xFFFFFFFF)
+        ..strokeWidth = 5
+        ..strokeCap = StrokeCap.round,
+    );
+    final picture = recorder.endRecording();
+    try {
+      final image = await picture.toImage(size.toInt(), size.toInt());
+      try {
+        final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+        if (!mounted || bytes == null) return;
+        setState(() {
+          _iconeEntregador = BitmapDescriptor.bytes(bytes.buffer.asUint8List());
+        });
+      } finally {
+        image.dispose();
+      }
+    } catch (e) {
+      debugPrint(
+        'Não foi possível criar o ícone do entregador: ${e.runtimeType}',
+      );
+    } finally {
+      picture.dispose();
+    }
   }
 
   double? _numeroCoordenada(dynamic valor) {
@@ -494,9 +572,12 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
         Marker(
           markerId: const MarkerId('entregador'),
           position: entregador,
-          icon: BitmapDescriptor.defaultMarkerWithHue(
-            BitmapDescriptor.hueAzure,
-          ),
+          icon:
+              _iconeEntregador ??
+              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          anchor: _iconeEntregador != null
+              ? const Offset(0.5, 0.5)
+              : const Offset(0.5, 1.0),
           infoWindow: const InfoWindow(title: 'Localização do entregador'),
         ),
       );
