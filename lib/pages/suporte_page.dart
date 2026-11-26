@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
@@ -11,43 +12,72 @@ class SuportePage extends StatelessWidget {
 
   static const String emailSuporte = 'entregueja1@gmail.com';
 
+  void mostrarErro(BuildContext context, String mensagem) {
+    if (!context.mounted) return;
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensagem)));
+  }
+
   Future<void> voltarAoInicio(BuildContext context) async {
-    final empresa = await EmpresaService.empresaLogada();
+    try {
+      final empresa = await EmpresaService.empresaLogada();
 
-    if (!context.mounted) return;
+      if (!context.mounted) return;
 
-    if (empresa != null) {
-      context.go('/empresa/inicio');
-      return;
+      if (empresa != null) {
+        context.go('/empresa/inicio');
+        return;
+      }
+
+      final entregador = await AuthService.usuarioLogado();
+
+      if (!context.mounted) return;
+
+      if (entregador != null) {
+        context.go('/entregador/inicio');
+        return;
+      }
+
+      context.go('/selecionar');
+    } catch (e) {
+      if (!context.mounted) return;
+
+      mostrarErro(
+        context,
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível verificar sua sessão. Tente novamente.',
+        ),
+      );
     }
-
-    final entregador = await AuthService.usuarioLogado();
-
-    if (!context.mounted) return;
-
-    if (entregador != null) {
-      context.go('/entregador/inicio');
-      return;
-    }
-
-    context.go('/selecionar');
   }
 
   Future<void> abrirEmail(BuildContext context) async {
-    final uri = Uri(
-      scheme: 'mailto',
-      path: emailSuporte,
-      queryParameters: {'subject': 'Suporte - Entregue Já'},
-    );
+    const mensagem =
+        'Não foi possível abrir o aplicativo de e-mail. Envie sua mensagem '
+        'diretamente para $emailSuporte.';
 
-    final abriu = await launchUrl(uri);
-
-    if (!abriu && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Não foi possível abrir o aplicativo de e-mail.'),
-        ),
+    try {
+      final uri = Uri(
+        scheme: 'mailto',
+        path: emailSuporte,
+        query: 'subject=${Uri.encodeComponent('Suporte - Entregue Já')}',
       );
+
+      final abriu = await launchUrl(uri);
+
+      if (!context.mounted) return;
+
+      if (!abriu) {
+        mostrarErro(context, mensagem);
+      }
+    } catch (_) {
+      if (!context.mounted) return;
+
+      mostrarErro(context, mensagem);
     }
   }
 
@@ -188,10 +218,10 @@ class SuportePage extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.08),
+                    color: AppColors.primary.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(18),
                     border: Border.all(
-                      color: AppColors.primary.withOpacity(0.18),
+                      color: AppColors.primary.withValues(alpha: 0.18),
                     ),
                   ),
                   child: Row(
@@ -230,14 +260,14 @@ class SuportePage extends StatelessWidget {
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
-          color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
         ),
       ),
       child: ExpansionTile(
         shape: const Border(),
         collapsedShape: const Border(),
         leading: CircleAvatar(
-          backgroundColor: AppColors.primary.withOpacity(0.12),
+          backgroundColor: AppColors.primary.withValues(alpha: 0.12),
           child: const Icon(Icons.help_outline, color: AppColors.primary),
         ),
         title: Text(
@@ -281,11 +311,11 @@ class SuportePage extends StatelessWidget {
       decoration: BoxDecoration(
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withOpacity(0.18)),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(
-              theme.brightness == Brightness.dark ? 0.16 : 0.04,
+            color: Colors.black.withValues(
+              alpha: theme.brightness == Brightness.dark ? 0.16 : 0.04,
             ),
             blurRadius: 10,
             offset: const Offset(0, 4),
@@ -296,7 +326,7 @@ class SuportePage extends StatelessWidget {
         onTap: onTap,
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         leading: CircleAvatar(
-          backgroundColor: color.withOpacity(0.14),
+          backgroundColor: color.withValues(alpha: 0.14),
           child: Icon(icon, color: color),
         ),
         title: Text(

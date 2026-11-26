@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 
@@ -16,6 +17,12 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
 
   bool carregando = false;
   bool carregandoPendentes = true;
+  bool _consultandoPendentes = false;
+  bool _cancelandoSolicitacao = false;
+  String? _erroPendentes;
+  String? _empresaDaTela;
+
+  bool get _operacaoEmAndamento => carregando || _cancelandoSolicitacao;
 
   List<dynamic> pendentes = [];
 
@@ -25,111 +32,230 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
     carregarPendentes();
   }
 
-  Future<void> carregarPendentes() async {
-    final resultado = await EmpresaService.buscarEntregadoresPendentes();
-
+  void _mostrarMensagem(String mensagem, {bool erro = false}) {
     if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(mensagem),
+        backgroundColor: erro ? AppColors.error : null,
+      ),
+    );
+  }
 
-    setState(() {
-      pendentes = resultado;
-      carregandoPendentes = false;
-    });
+  Future<String> _validarSessao() async {
+    final empresa = await EmpresaService.empresaLogada();
+    if (empresa == null || empresa.trim().isEmpty) {
+      throw const ApiException(
+        'Sua sessão expirou. Entre novamente na sua conta.',
+        statusCode: 401,
+      );
+    }
+    if (_empresaDaTela != null && _empresaDaTela != empresa) {
+      throw const ApiException(
+        'Sua sessão mudou. Abra esta tela novamente.',
+        statusCode: 401,
+      );
+    }
+    _empresaDaTela = empresa;
+    return empresa;
+  }
+
+  void _tratarFalha(
+    Object erro,
+    String mensagemPadrao, {
+    bool consulta = false,
+  }) {
+    if (!mounted) return;
+    final mensagem = ApiService.mensagemErro(
+      erro,
+      mensagemPadrao: mensagemPadrao,
+    );
+    final semAcesso =
+        erro is ApiException &&
+        (erro.statusCode == 401 || (consulta && erro.statusCode == 403));
+    if (consulta || semAcesso) {
+      setState(() {
+        if (semAcesso) {
+          pendentes = [];
+        }
+        _erroPendentes = mensagem;
+      });
+    }
+    _mostrarMensagem(
+      consulta && pendentes.isNotEmpty
+          ? '$mensagem Exibindo as últimas solicitações disponíveis.'
+          : mensagem,
+      erro: true,
+    );
+  }
+
+  Future<void> carregarPendentes({bool aposOperacao = false}) async {
+    if (!mounted ||
+        _consultandoPendentes ||
+        (_operacaoEmAndamento && !aposOperacao)) {
+      return;
+    }
+    setState(() => _consultandoPendentes = true);
+    try {
+      await _validarSessao();
+      if (!mounted) return;
+      final resultado = await EmpresaService.buscarEntregadoresPendentes(
+        lancarErro: true,
+      );
+      if (!mounted) return;
+      await _validarSessao();
+      if (!mounted) return;
+
+      final lista = <Map<String, dynamic>>[];
+      for (final item in resultado) {
+        if (item is! Map) {
+          throw const FormatException('Solicitação inválida.');
+        }
+        final dados = Map<String, dynamic>.from(item);
+        final email = dados['email']?.toString().trim() ?? '';
+        if (email.isEmpty) {
+          throw const FormatException('E-mail do entregador ausente.');
+        }
+        lista.add(dados);
+      }
+      setState(() {
+        pendentes = lista;
+        _erroPendentes = null;
+      });
+    } catch (e) {
+      _tratarFalha(
+        e,
+        'Não foi possível carregar as solicitações pendentes. Tente novamente.',
+        consulta: true,
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _consultandoPendentes = false;
+          carregandoPendentes = false;
+        });
+      }
+    }
   }
 
   Future<void> cancelarSolicitacao(String entregadorEmail) async {
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Cancelar solicitação'),
-          content: const Text(
-            'Deseja realmente cancelar a solicitação de vínculo com este entregador?',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context, false);
-              },
-              child: const Text('Voltar'),
+    if (!mounted || _operacaoEmAndamento || _consultandoPendentes) return;
+    final email = entregadorEmail.trim();
+    if (email.isEmpty) {
+      _mostrarMensagem('E-mail do entregador não disponível.', erro: true);
+      return;
+    }
+    setState(() => _cancelandoSolicitacao = true);
+    try {
+      await _validarSessao();
+      if (!mounted) return;
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Cancelar solicitação'),
+            content: const Text(
+              'Deseja realmente cancelar a solicitação de vínculo com este entregador?',
             ),
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.pop(context, true);
-              },
-              icon: const Icon(Icons.close),
-              label: const Text('Cancelar solicitação'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error,
-                foregroundColor: Colors.white,
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context, false);
+                },
+                child: const Text('Voltar'),
               ),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmar != true) return;
-
-    final sucesso = await EmpresaService.cancelarSolicitacaoVinculo(
-      entregadorEmail,
-    );
-
-    if (!mounted) return;
-
-    if (sucesso) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Solicitação cancelada com sucesso')),
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.pop(context, true);
+                },
+                icon: const Icon(Icons.close),
+                label: const Text('Cancelar solicitação'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.error,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ],
+          );
+        },
       );
 
-      await carregarPendentes();
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Não foi possível cancelar a solicitação'),
-        ),
+      if (!mounted || confirmar != true) return;
+      await _validarSessao();
+      if (!mounted) return;
+
+      final sucesso = await EmpresaService.cancelarSolicitacaoVinculo(
+        email,
+        lancarErro: true,
       );
+      if (!mounted) return;
+      await _validarSessao();
+      if (!mounted) return;
+      if (!sucesso) {
+        throw const ApiException('Não foi possível cancelar a solicitação.');
+      }
+      setState(() {
+        pendentes = pendentes.where((item) {
+          return item['email']?.toString().trim().toLowerCase() !=
+              email.toLowerCase();
+        }).toList();
+      });
+      _mostrarMensagem('Solicitação cancelada com sucesso');
+      await carregarPendentes(aposOperacao: true);
+    } catch (e) {
+      _tratarFalha(
+        e,
+        'Não foi possível cancelar a solicitação. Tente novamente.',
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _cancelandoSolicitacao = false);
+      }
     }
   }
 
   Future<void> vincularEntregador() async {
-    if (carregando) return;
-
+    if (!mounted || _operacaoEmAndamento || _consultandoPendentes) return;
     FocusScope.of(context).unfocus();
-
-    final entregadorEmail = emailController.text.trim();
-
+    final entregadorEmail = emailController.text.trim().toLowerCase();
     if (entregadorEmail.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Digite o e-mail do entregador')),
-      );
-
+      _mostrarMensagem('Digite o e-mail do entregador', erro: true);
+      return;
+    }
+    if (entregadorEmail.length > 254 ||
+        !RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(entregadorEmail)) {
+      _mostrarMensagem('Informe um e-mail válido.', erro: true);
       return;
     }
 
-    setState(() {
-      carregando = true;
-    });
-
-    final sucesso = await EmpresaService.vincularEntregador(entregadorEmail);
-
-    if (!mounted) return;
-
-    setState(() {
-      carregando = false;
-    });
-
-    if (sucesso) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Solicitação enviada ao entregador')),
+    setState(() => carregando = true);
+    try {
+      await _validarSessao();
+      if (!mounted) return;
+      final sucesso = await EmpresaService.vincularEntregador(
+        entregadorEmail,
+        lancarErro: true,
       );
-
+      if (!mounted) return;
+      await _validarSessao();
+      if (!mounted) return;
+      if (!sucesso) {
+        throw const ApiException('Não foi possível enviar a solicitação.');
+      }
+      _mostrarMensagem('Solicitação enviada ao entregador');
       emailController.clear();
-
-      await carregarPendentes();
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Não foi possível enviar a solicitação')),
+      await carregarPendentes(aposOperacao: true);
+    } catch (e) {
+      _tratarFalha(
+        e,
+        'Não foi possível enviar a solicitação. Tente novamente.',
       );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
     }
   }
 
@@ -145,11 +271,11 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
       decoration: BoxDecoration(
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.warning.withOpacity(0.25)),
+        border: Border.all(color: AppColors.warning.withValues(alpha: 0.25)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(
-              theme.brightness == Brightness.dark ? 0.16 : 0.04,
+            color: Colors.black.withValues(
+              alpha: theme.brightness == Brightness.dark ? 0.16 : 0.04,
             ),
             blurRadius: 10,
             offset: const Offset(0, 4),
@@ -162,7 +288,7 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
             children: [
               CircleAvatar(
                 radius: 23,
-                backgroundColor: AppColors.warning.withOpacity(0.14),
+                backgroundColor: AppColors.warning.withValues(alpha: 0.14),
                 child: const Icon(Icons.schedule, color: AppColors.warning),
               ),
               const SizedBox(width: 12),
@@ -194,7 +320,7 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
                         vertical: 4,
                       ),
                       decoration: BoxDecoration(
-                        color: AppColors.warning.withOpacity(0.12),
+                        color: AppColors.warning.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: const Text(
@@ -215,7 +341,8 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
-              onPressed: email.isEmpty
+              onPressed:
+                  email.isEmpty || _operacaoEmAndamento || _consultandoPendentes
                   ? null
                   : () async {
                       await cancelarSolicitacao(email);
@@ -251,9 +378,11 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
         leading: IconButton(
           tooltip: 'Voltar ao início',
           icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            context.go('/empresa/inicio');
-          },
+          onPressed: _operacaoEmAndamento
+              ? null
+              : () {
+                  context.go('/empresa/inicio');
+                },
         ),
         title: const Text('Vincular Entregador'),
         centerTitle: true,
@@ -276,12 +405,14 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
                 color: theme.cardColor,
                 borderRadius: BorderRadius.circular(22),
                 border: Border.all(
-                  color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                  color: theme.colorScheme.outlineVariant.withValues(
+                    alpha: 0.35,
+                  ),
                 ),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(
-                      theme.brightness == Brightness.dark ? 0.16 : 0.05,
+                    color: Colors.black.withValues(
+                      alpha: theme.brightness == Brightness.dark ? 0.16 : 0.05,
                     ),
                     blurRadius: 12,
                     offset: const Offset(0, 5),
@@ -310,7 +441,7 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
                     keyboardType: TextInputType.emailAddress,
                     textInputAction: TextInputAction.done,
                     autocorrect: false,
-                    enabled: !carregando,
+                    enabled: !_operacaoEmAndamento,
                     onTapOutside: (_) => FocusScope.of(context).unfocus(),
                     onSubmitted: (_) => vincularEntregador(),
                     style: TextStyle(color: theme.colorScheme.onSurface),
@@ -325,7 +456,9 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
                     width: double.infinity,
                     height: 50,
                     child: ElevatedButton.icon(
-                      onPressed: carregando ? null : vincularEntregador,
+                      onPressed: _operacaoEmAndamento || _consultandoPendentes
+                          ? null
+                          : vincularEntregador,
                       icon: carregando
                           ? const SizedBox(
                               width: 18,
@@ -368,7 +501,7 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
                       vertical: 5,
                     ),
                     decoration: BoxDecoration(
-                      color: AppColors.warning.withOpacity(0.12),
+                      color: AppColors.warning.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
@@ -394,7 +527,9 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
                   color: theme.cardColor,
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
-                    color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                    color: theme.colorScheme.outlineVariant.withValues(
+                      alpha: 0.35,
+                    ),
                   ),
                 ),
                 child: Column(
@@ -406,7 +541,9 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      'Nenhum vínculo pendente',
+                      _erroPendentes == null
+                          ? 'Nenhum vínculo pendente'
+                          : 'Não foi possível carregar os vínculos',
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
                         color: theme.colorScheme.onSurface,
@@ -414,7 +551,9 @@ class _VincularEntregadorPageState extends State<VincularEntregadorPage> {
                     ),
                     const SizedBox(height: 5),
                     Text(
-                      'As solicitações enviadas aparecerão aqui.',
+                      _erroPendentes == null
+                          ? 'As solicitações enviadas aparecerão aqui.'
+                          : '$_erroPendentes Puxe para baixo para atualizar.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: theme.colorScheme.onSurfaceVariant,

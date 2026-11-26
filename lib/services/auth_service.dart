@@ -9,12 +9,76 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api_config.dart';
+import 'api_service.dart';
 
 class AuthService {
+  static const Duration _tempoLimite = Duration(seconds: 20);
+  static const Duration _tempoLimiteUpload = Duration(seconds: 60);
+
+  static const ApiException _sessaoExpirada = ApiException(
+    'Sua sessão expirou. Entre novamente na sua conta.',
+    statusCode: 401,
+  );
+
+  static T _tratarFalha<T>(
+    Object erro,
+    T retorno, {
+    required bool lancarErro,
+    required String mensagemPadrao,
+  }) {
+    debugPrint('$mensagemPadrao (${erro.runtimeType})');
+    if (lancarErro) {
+      if (erro is ApiException) throw erro;
+      throw ApiException(
+        ApiService.mensagemErro(erro, mensagemPadrao: mensagemPadrao),
+      );
+    }
+    return retorno;
+  }
+
+  static String _corpo(http.Response response) =>
+      utf8.decode(response.bodyBytes, allowMalformed: true);
+
+  static void _validarResposta(http.Response response) {
+    if (response.statusCode != 200) {
+      throw ApiService.erroHttp(response.statusCode, _corpo(response));
+    }
+  }
+
+  static Map<String, dynamic> _decodificarMapa(String corpo) {
+    final dados = jsonDecode(corpo);
+    if (dados is Map<String, dynamic>) return dados;
+    throw const FormatException('Resposta inválida do servidor.');
+  }
+
+  static String _mensagemPublica(http.Response response) {
+    if (response.statusCode == 401) {
+      return 'Não foi possível validar a solicitação. Confira os dados informados.';
+    }
+    return ApiService.erroHttp(response.statusCode, _corpo(response)).mensagem;
+  }
+
+  static String _mensagemSucesso(http.Response response, String padrao) {
+    try {
+      final dados = jsonDecode(_corpo(response));
+      if (dados is Map && dados['mensagem'] is String) {
+        final mensagem = (dados['mensagem'] as String).trim();
+        if (mensagem.isNotEmpty && mensagem.length <= 300) return mensagem;
+      }
+    } on FormatException {
+      return padrao;
+    }
+    return padrao;
+  }
+
   static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
   static StreamSubscription<String>? _tokenSubscription;
   static Future<void> _filaFcm = Future<void>.value();
-  static bool _encerrandoSessao = false;
+  static final ValueNotifier<bool> _estadoEncerramento = ValueNotifier(false);
+
+  static ValueListenable<bool> get encerrandoSessao => _estadoEncerramento;
+
+  static bool get _encerrandoSessao => _estadoEncerramento.value;
 
   static Future<void> _enfileirarFcm(Future<void> Function() operacao) {
     final proxima = _filaFcm.then((_) => operacao());
@@ -172,7 +236,11 @@ class AuthService {
     }
   }
 
-  static Future<Map<String, dynamic>?> login(String email, String senha) async {
+  static Future<Map<String, dynamic>?> login(
+    String email,
+    String senha, {
+    bool lancarErro = false,
+  }) async {
     try {
       debugPrint('Tentando login...');
 
@@ -182,22 +250,21 @@ class AuthService {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'email': email, 'senha': senha}),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(_tempoLimite);
 
       debugPrint('Status: ${response.statusCode}');
 
       if (response.statusCode == 200) {
-        final data = Map<String, dynamic>.from(jsonDecode(response.body));
+        final data = _decodificarMapa(_corpo(response));
 
         final token = data['token']?.toString();
 
         if (token == null || token.isEmpty) {
-          debugPrint('Login sem token JWT retornado pelo backend.');
-          return null;
+          throw const FormatException('Token ausente na resposta.');
         }
 
         await _secureStorage.write(key: 'jwt_token', value: token);
-        _encerrandoSessao = false;
+        _estadoEncerramento.value = false;
         unawaited(inicializarRegistroFcm());
 
         debugPrint('Login realizado e token armazenado.');
@@ -205,64 +272,90 @@ class AuthService {
         return data;
       }
 
-      return null;
+      if (response.statusCode == 401) {
+        throw const ApiException('E-mail ou senha inválidos.', statusCode: 401);
+      }
+      throw ApiService.erroHttp(response.statusCode, _corpo(response));
     } catch (e) {
-      debugPrint('Erro login: $e');
-      return null;
+      return _tratarFalha<Map<String, dynamic>?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível entrar na conta.',
+      );
     }
   }
 
-  static Future<Map<String, dynamic>?> buscarVinculoPendente() async {
+  static Future<Map<String, dynamic>?> buscarVinculoPendente({
+    bool lancarErro = false,
+  }) async {
     try {
       final email = await usuarioLogado();
 
-      if (email == null) return null;
+      if (email == null) throw _sessaoExpirada;
 
-      final response = await http.get(
-        Uri.parse(
-          '${ApiConfig.auth}/${Uri.encodeComponent(email)}/vinculo-pendente',
-        ),
-        headers: await headersAutenticados(),
-      );
+      final response = await http
+          .get(
+            Uri.parse(
+              '${ApiConfig.auth}/${Uri.encodeComponent(email)}/vinculo-pendente',
+            ),
+            headers: await headersAutenticados(),
+          )
+          .timeout(_tempoLimite);
 
       if (response.statusCode == 200) {
-        return Map<String, dynamic>.from(jsonDecode(response.body));
+        return _decodificarMapa(_corpo(response));
       }
 
-      return null;
+      throw ApiService.erroHttp(response.statusCode, _corpo(response));
     } catch (e) {
-      debugPrint('Erro ao buscar vínculo pendente: $e');
-      return null;
+      return _tratarFalha<Map<String, dynamic>?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível consultar a solicitação de vínculo.',
+      );
     }
   }
 
-  static Future<Map<String, dynamic>?> buscarPerfil() async {
+  static Future<Map<String, dynamic>?> buscarPerfil({
+    bool lancarErro = false,
+  }) async {
     try {
       final email = await usuarioLogado();
 
-      if (email == null) return null;
+      if (email == null) throw _sessaoExpirada;
 
-      final response = await http.get(
-        Uri.parse('${ApiConfig.auth}/${Uri.encodeComponent(email)}/perfil'),
-        headers: await headersAutenticados(),
-      );
+      final response = await http
+          .get(
+            Uri.parse('${ApiConfig.auth}/${Uri.encodeComponent(email)}/perfil'),
+            headers: await headersAutenticados(),
+          )
+          .timeout(_tempoLimite);
 
       if (response.statusCode == 200) {
-        return Map<String, dynamic>.from(jsonDecode(response.body));
+        return _decodificarMapa(_corpo(response));
       }
 
-      return null;
+      throw ApiService.erroHttp(response.statusCode, _corpo(response));
     } catch (e) {
-      debugPrint('Erro ao buscar perfil: $e');
-      return null;
+      return _tratarFalha<Map<String, dynamic>?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível carregar o perfil.',
+      );
     }
   }
 
-  static Future<String?> atualizarFotoPerfil(String caminhoArquivo) async {
+  static Future<String?> atualizarFotoPerfil(
+    String caminhoArquivo, {
+    bool lancarErro = false,
+  }) async {
     try {
       final email = await usuarioLogado();
 
-      if (email == null) return null;
+      if (email == null) throw _sessaoExpirada;
 
       final request = http.MultipartRequest(
         'PUT',
@@ -271,24 +364,25 @@ class AuthService {
 
       final token = await obterToken();
 
-      if (token != null && token.isNotEmpty) {
-        request.headers['Authorization'] = 'Bearer $token';
-      }
+      if (token == null || token.isEmpty) throw _sessaoExpirada;
+      request.headers['Authorization'] = 'Bearer $token';
 
       request.files.add(
         await http.MultipartFile.fromPath('foto', caminhoArquivo),
       );
 
-      final response = await request.send();
-      final body = await response.stream.bytesToString();
+      final response = await request.send().timeout(_tempoLimiteUpload);
+      final body = await response.stream
+          .bytesToString(utf8)
+          .timeout(_tempoLimiteUpload);
 
       if (response.statusCode == 200) {
-        final data = Map<String, dynamic>.from(jsonDecode(body));
+        final data = _decodificarMapa(body);
 
         final foto = data['foto']?.toString();
 
         if (foto == null || foto.isEmpty) {
-          return null;
+          throw const FormatException('Foto ausente na resposta.');
         }
 
         final prefs = await SharedPreferences.getInstance();
@@ -298,29 +392,31 @@ class AuthService {
         return foto;
       }
 
-      debugPrint('Erro foto status: ${response.statusCode}');
-
-      return null;
+      throw ApiService.erroHttp(response.statusCode, body);
     } catch (e) {
-      debugPrint('Erro ao enviar foto: $e');
-      return null;
+      return _tratarFalha<String?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível atualizar a foto do perfil.',
+      );
     }
   }
 
   static Future<String?> atualizarFotoPerfilBytes({
     required Uint8List bytes,
     required String nomeArquivo,
+    bool lancarErro = false,
   }) async {
     try {
       final email = await usuarioLogado();
       final token = await obterToken();
 
-      if (email == null ||
-          email.isEmpty ||
-          token == null ||
-          token.isEmpty ||
-          bytes.isEmpty) {
-        return null;
+      if (email == null || email.isEmpty || token == null || token.isEmpty) {
+        throw _sessaoExpirada;
+      }
+      if (bytes.isEmpty) {
+        throw const ApiException('Selecione uma foto válida.');
       }
 
       final request = http.MultipartRequest(
@@ -333,27 +429,32 @@ class AuthService {
         http.MultipartFile.fromBytes('foto', bytes, filename: nomeArquivo),
       );
 
-      final response = await request.send();
-      final body = await response.stream.bytesToString();
+      final response = await request.send().timeout(_tempoLimiteUpload);
+      final body = await response.stream
+          .bytesToString(utf8)
+          .timeout(_tempoLimiteUpload);
 
       if (response.statusCode == 200) {
-        final data = Map<String, dynamic>.from(jsonDecode(body));
+        final data = _decodificarMapa(body);
         final foto = data['foto']?.toString();
 
-        if (foto == null || foto.isEmpty) return null;
+        if (foto == null || foto.isEmpty) {
+          throw const FormatException('Foto ausente na resposta.');
+        }
 
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('usuario_foto', foto);
         return foto;
       }
 
-      debugPrint(
-        'Erro ao enviar foto por bytes. Status: ${response.statusCode}. Resposta: $body',
-      );
-      return null;
+      throw ApiService.erroHttp(response.statusCode, body);
     } catch (e) {
-      debugPrint('Erro ao enviar foto por bytes: $e');
-      return null;
+      return _tratarFalha<String?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível atualizar a foto do perfil.',
+      );
     }
   }
 
@@ -363,94 +464,209 @@ class AuthService {
     return prefs.getString('usuario_foto');
   }
 
-  static Future<bool> aceitarVinculo() async {
+  static Future<bool> aceitarVinculo({bool lancarErro = false}) async {
     try {
       final email = await usuarioLogado();
 
-      if (email == null) return false;
+      if (email == null) throw _sessaoExpirada;
 
-      final response = await http.put(
-        Uri.parse(
-          '${ApiConfig.auth}/${Uri.encodeComponent(email)}/aceitar-vinculo',
-        ),
-        headers: await headersAutenticados(),
-      );
+      final response = await http
+          .put(
+            Uri.parse(
+              '${ApiConfig.auth}/${Uri.encodeComponent(email)}/aceitar-vinculo',
+            ),
+            headers: await headersAutenticados(),
+          )
+          .timeout(_tempoLimite);
 
-      return response.statusCode == 200;
+      _validarResposta(response);
+      return true;
     } catch (e) {
-      debugPrint('Erro ao aceitar vínculo: $e');
-      return false;
+      return _tratarFalha<bool>(
+        e,
+        false,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível aceitar o vínculo.',
+      );
     }
   }
 
-  static Future<bool> recusarVinculo() async {
+  static Future<bool> recusarVinculo({bool lancarErro = false}) async {
     try {
       final email = await usuarioLogado();
 
-      if (email == null) return false;
+      if (email == null) throw _sessaoExpirada;
 
-      final response = await http.put(
-        Uri.parse(
-          '${ApiConfig.auth}/${Uri.encodeComponent(email)}/recusar-vinculo',
-        ),
-        headers: await headersAutenticados(),
-      );
+      final response = await http
+          .put(
+            Uri.parse(
+              '${ApiConfig.auth}/${Uri.encodeComponent(email)}/recusar-vinculo',
+            ),
+            headers: await headersAutenticados(),
+          )
+          .timeout(_tempoLimite);
 
-      return response.statusCode == 200;
+      _validarResposta(response);
+      return true;
     } catch (e) {
-      debugPrint('Erro ao recusar vínculo: $e');
-      return false;
+      return _tratarFalha<bool>(
+        e,
+        false,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível recusar o vínculo.',
+      );
     }
   }
 
-  static Future<Map<String, dynamic>?> buscarEmpresaVinculada() async {
+  static Future<Map<String, dynamic>> desvincularEmpresa({
+    required String empresaEmail,
+  }) async {
+    final empresa = empresaEmail.trim();
+    if (empresa.isEmpty) {
+      return {
+        'sucesso': false,
+        'mensagem':
+            'Não foi possível identificar a empresa vinculada. Atualize o perfil.',
+      };
+    }
+
     try {
+      final token = await obterToken();
       final email = await usuarioLogado();
-
-      if (email == null) return null;
-
-      final response = await http.get(
-        Uri.parse(
-          '${ApiConfig.auth}/${Uri.encodeComponent(email)}/empresa-vinculada',
-        ),
-        headers: await headersAutenticados(),
-      );
-
-      if (response.statusCode == 200) {
-        return Map<String, dynamic>.from(jsonDecode(response.body));
+      if (email == null ||
+          token == null ||
+          token.isEmpty ||
+          _encerrandoSessao ||
+          await obterToken() != token) {
+        return {
+          'sucesso': false,
+          'mensagem': 'Sua sessão não está disponível. Faça login novamente.',
+        };
       }
 
-      return null;
+      final response = await http
+          .put(
+            Uri.parse(
+              '${ApiConfig.auth}/${Uri.encodeComponent(email)}/desvincular',
+            ),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({'empresaEmail': empresa}),
+          )
+          .timeout(const Duration(seconds: 20));
+
+      if (_encerrandoSessao || await obterToken() != token) {
+        return {
+          'sucesso': false,
+          'mensagem':
+              'Sua sessão foi alterada. Atualize o perfil para consultar o vínculo.',
+        };
+      }
+
+      final status = response.statusCode;
+      final sucesso = status == 200;
+      String mensagem = switch (status) {
+        200 => 'Vínculo encerrado com sucesso.',
+        400 => 'Não foi possível validar a solicitação. Atualize o perfil.',
+        401 => 'Sua sessão expirou. Faça login novamente.',
+        403 => 'Você não tem permissão para encerrar este vínculo.',
+        404 => 'Vínculo não encontrado. Atualize o perfil.',
+        409 =>
+          'Não foi possível encerrar o vínculo. Verifique suas entregas e atualize o perfil.',
+        _ =>
+          'Não foi possível confirmar o encerramento do vínculo. Atualize o perfil antes de tentar novamente.',
+      };
+
+      if (sucesso) {
+        mensagem = _mensagemSucesso(response, mensagem);
+      } else if (status == 400 || status == 403 || status == 409) {
+        mensagem = ApiService.erroHttp(status, _corpo(response)).mensagem;
+      }
+
+      return {'sucesso': sucesso, 'mensagem': mensagem, 'statusCode': status};
+    } on TimeoutException {
+      return {
+        'sucesso': false,
+        'mensagem':
+            'O servidor demorou para responder. Atualize o perfil para verificar se o vínculo foi encerrado.',
+      };
     } catch (e) {
-      debugPrint('Erro ao buscar empresa vinculada: $e');
-      return null;
+      debugPrint('Erro ao desvincular empresa: $e');
+      return {
+        'sucesso': false,
+        'mensagem':
+            'Não foi possível confirmar o encerramento do vínculo. Verifique sua conexão e atualize o perfil.',
+      };
+    }
+  }
+
+  static Future<Map<String, dynamic>?> buscarEmpresaVinculada({
+    bool lancarErro = false,
+  }) async {
+    try {
+      final email = await usuarioLogado();
+
+      if (email == null) throw _sessaoExpirada;
+
+      final response = await http
+          .get(
+            Uri.parse(
+              '${ApiConfig.auth}/${Uri.encodeComponent(email)}/empresa-vinculada',
+            ),
+            headers: await headersAutenticados(),
+          )
+          .timeout(_tempoLimite);
+
+      if (response.statusCode == 200) {
+        return _decodificarMapa(_corpo(response));
+      }
+
+      throw ApiService.erroHttp(response.statusCode, _corpo(response));
+    } catch (e) {
+      return _tratarFalha<Map<String, dynamic>?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível consultar a empresa vinculada.',
+      );
     }
   }
 
   static Future<bool> atualizarConfiguracoesVeiculo({
     required String veiculo,
     required String capacidadeCarga,
+    bool lancarErro = false,
   }) async {
     try {
       final email = await usuarioLogado();
 
-      if (email == null) return false;
+      if (email == null) throw _sessaoExpirada;
 
-      final response = await http.put(
-        Uri.parse(
-          '${ApiConfig.auth}/${Uri.encodeComponent(email)}/configuracoes-veiculo',
-        ),
-        headers: await headersAutenticados(),
-        body: jsonEncode({
-          'veiculo': veiculo,
-          'capacidadeCarga': capacidadeCarga,
-        }),
-      );
+      final response = await http
+          .put(
+            Uri.parse(
+              '${ApiConfig.auth}/${Uri.encodeComponent(email)}/configuracoes-veiculo',
+            ),
+            headers: await headersAutenticados(),
+            body: jsonEncode({
+              'veiculo': veiculo,
+              'capacidadeCarga': capacidadeCarga,
+            }),
+          )
+          .timeout(_tempoLimite);
 
-      return response.statusCode == 200;
+      _validarResposta(response);
+      return true;
     } catch (e) {
-      debugPrint('Erro ao atualizar configurações do veículo: $e');
-      return false;
+      return _tratarFalha<bool>(
+        e,
+        false,
+        lancarErro: lancarErro,
+        mensagemPadrao:
+            'Não foi possível atualizar as configurações do veículo.',
+      );
     }
   }
 
@@ -468,34 +684,18 @@ class AuthService {
           .timeout(const Duration(seconds: 15));
 
       final sucesso = response.statusCode >= 200 && response.statusCode < 300;
-      String mensagem = sucesso
-          ? 'Operação realizada com sucesso.'
-          : 'Não foi possível concluir a solicitação.';
-
-      try {
-        final resposta = jsonDecode(utf8.decode(response.bodyBytes));
-        if (resposta is Map) {
-          final mensagemServidor = resposta['mensagem'] ?? resposta['message'];
-          if (mensagemServidor is String &&
-              mensagemServidor.trim().isNotEmpty) {
-            mensagem = mensagemServidor.trim();
-          }
-        }
-      } catch (_) {}
-
-      debugPrint('Cadastro $endpoint status: ${response.statusCode}');
-
+      final mensagem = sucesso
+          ? _mensagemSucesso(response, 'Solicitação realizada com sucesso.')
+          : _mensagemPublica(response);
       return {'sucesso': sucesso, 'mensagem': mensagem};
-    } on TimeoutException {
-      return {
-        'sucesso': false,
-        'mensagem': 'O servidor demorou para responder. Tente novamente.',
-      };
     } catch (e) {
-      debugPrint('Erro na operação de cadastro $endpoint: $e');
+      debugPrint('Erro no cadastro ($endpoint): ${e.runtimeType}');
       return {
         'sucesso': false,
-        'mensagem': 'Não foi possível conectar ao servidor. Tente novamente.',
+        'mensagem': ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível concluir a solicitação.',
+        ),
       };
     }
   }
@@ -559,26 +759,19 @@ class AuthService {
             .timeout(const Duration(seconds: 15));
       }
 
-      String mensagem = response.statusCode == 200
-          ? 'Operação realizada com sucesso'
-          : 'Não foi possível concluir a solicitação';
-
-      try {
-        final resposta = jsonDecode(response.body);
-        if (resposta is Map && resposta['mensagem'] is String) {
-          mensagem = resposta['mensagem'] as String;
-        }
-      } catch (_) {}
-
-      return {
-        'sucesso': response.statusCode >= 200 && response.statusCode < 300,
-        'mensagem': mensagem,
-      };
+      final sucesso = response.statusCode >= 200 && response.statusCode < 300;
+      final mensagem = sucesso
+          ? _mensagemSucesso(response, 'Operação realizada com sucesso.')
+          : _mensagemPublica(response);
+      return {'sucesso': sucesso, 'mensagem': mensagem};
     } catch (e) {
-      debugPrint('Erro na recuperação de senha: $e');
+      debugPrint('Erro na recuperação de senha: ${e.runtimeType}');
       return {
         'sucesso': false,
-        'mensagem': 'Não foi possível conectar ao servidor. Tente novamente.',
+        'mensagem': ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível concluir a recuperação de senha.',
+        ),
       };
     }
   }
@@ -614,41 +807,46 @@ class AuthService {
   static Future<Map<String, dynamic>?> atualizarPerfil({
     required String nome,
     required String email,
+    bool lancarErro = false,
   }) async {
     try {
       final emailAtual = await usuarioLogado();
 
-      if (emailAtual == null) return null;
+      if (emailAtual == null) throw _sessaoExpirada;
 
       final emailAtualUrl = Uri.encodeComponent(emailAtual);
 
-      final response = await http.put(
-        Uri.parse('${ApiConfig.auth}/$emailAtualUrl/perfil'),
-        headers: await headersAutenticados(),
-        body: jsonEncode({'nome': nome, 'email': email}),
-      );
+      final response = await http
+          .put(
+            Uri.parse('${ApiConfig.auth}/$emailAtualUrl/perfil'),
+            headers: await headersAutenticados(),
+            body: jsonEncode({'nome': nome, 'email': email}),
+          )
+          .timeout(_tempoLimite);
 
       debugPrint('Atualizar perfil status: ${response.statusCode}');
 
-      if (response.statusCode != 200) {
-        return null;
-      }
+      _validarResposta(response);
 
-      final data = Map<String, dynamic>.from(jsonDecode(response.body));
+      final data = _decodificarMapa(_corpo(response));
 
       final novoNome = data['nome']?.toString();
       final novoEmail = data['email']?.toString();
 
       if (novoNome == null || novoEmail == null) {
-        return null;
+        throw const FormatException('Perfil incompleto na resposta.');
       }
 
       await salvarUsuario(novoEmail, novoNome);
 
       return data;
     } catch (e) {
-      debugPrint('Erro ao atualizar perfil: $e');
-      return null;
+      return _tratarFalha<Map<String, dynamic>?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível atualizar o perfil.',
+      );
     }
   }
 
@@ -693,6 +891,8 @@ class AuthService {
   }
 
   static Future<String?> usuarioLogado() async {
+    if (_encerrandoSessao) return null;
+
     final prefs = await SharedPreferences.getInstance();
     final email = prefs.getString('usuario_logado');
 
@@ -700,7 +900,10 @@ class AuthService {
 
     try {
       final token = await obterToken();
-      if (token == null || token.isEmpty || !_tokenJwtValido(token)) {
+      if (_encerrandoSessao ||
+          token == null ||
+          token.isEmpty ||
+          !_tokenJwtValido(token)) {
         return null;
       }
 
@@ -712,17 +915,20 @@ class AuthService {
   }
 
   static Future<void> logout() async {
-    _encerrandoSessao = true;
-    await _tokenSubscription?.cancel();
-    _tokenSubscription = null;
-    await _filaFcm;
-    await _removerDispositivoFcm();
-    await _secureStorage.delete(key: 'jwt_token');
+    _estadoEncerramento.value = true;
+    try {
+      await _tokenSubscription?.cancel();
+      await _filaFcm;
+      await _removerDispositivoFcm();
+    } finally {
+      _tokenSubscription = null;
+      await _secureStorage.delete(key: 'jwt_token');
 
-    final prefs = await SharedPreferences.getInstance();
+      final prefs = await SharedPreferences.getInstance();
 
-    await prefs.remove('usuario_logado');
-    await prefs.remove('usuario_nome');
-    await prefs.remove('usuario_foto');
+      await prefs.remove('usuario_logado');
+      await prefs.remove('usuario_nome');
+      await prefs.remove('usuario_foto');
+    }
   }
 }

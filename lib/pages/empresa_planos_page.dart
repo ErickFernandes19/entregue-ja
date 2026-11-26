@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/assinatura_service.dart';
+import '../services/empresa_service.dart';
 
 class EmpresaPlanosPage extends StatefulWidget {
   const EmpresaPlanosPage({super.key});
@@ -17,6 +19,10 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
   bool _testeAtivo = false;
   bool _testeUtilizado = false;
   bool _ativandoTeste = false;
+  bool _consultando = false;
+  bool _navegando = false;
+  bool _confirmandoTeste = false;
+  String? _tokenConsulta;
   DateTime? _fimTeste;
 
   @override
@@ -25,61 +31,176 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
     _carregarAssinatura();
   }
 
-  Future<void> _carregarAssinatura() async {
+  bool get _ocupado =>
+      _carregando || _navegando || _confirmandoTeste || _ativandoTeste;
+
+  Future<String> _obterSessao() async {
+    final email = await EmpresaService.empresaLogada();
+    final token = await EmpresaService.obterTokenEmpresa();
+    if (email == null || token == null || token.trim().isEmpty) {
+      throw const ApiException(
+        'Sua sessão expirou. Entre novamente na sua conta.',
+        statusCode: 401,
+      );
+    }
+    return token;
+  }
+
+  Future<void> _conferirSessao(String token) async {
+    if (await _obterSessao() != token) {
+      throw const ApiException(
+        'Sua sessão foi alterada. Atualize os dados da assinatura.',
+        statusCode: 401,
+      );
+    }
+  }
+
+  String _mensagemErro(Object erro, String mensagemPadrao) {
+    if (erro is AssinaturaException) {
+      return erro.mensagem;
+    }
+    return ApiService.mensagemErro(erro, mensagemPadrao: mensagemPadrao);
+  }
+
+  void _mostrarMensagem(String mensagem) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(mensagem)));
+  }
+
+  void _limparAssinatura() {
+    _tokenConsulta = null;
+    _planoAtual = null;
+    _testeAtivo = false;
+    _testeUtilizado = false;
+    _fimTeste = null;
+  }
+
+  Future<void> _carregarAssinatura({bool duranteOperacao = false}) async {
+    if (!mounted ||
+        _consultando ||
+        (!duranteOperacao &&
+            (_navegando || _confirmandoTeste || _ativandoTeste))) {
+      return;
+    }
     setState(() {
+      _consultando = true;
       _carregando = true;
       _erro = null;
     });
 
     try {
+      final token = await _obterSessao();
+      if (!mounted) return;
+      if (_tokenConsulta != null && _tokenConsulta != token) {
+        setState(_limparAssinatura);
+      }
       final assinatura = await AssinaturaService.buscarAtual();
+      await _conferirSessao(token);
+      if (!mounted) return;
       final historico = await AssinaturaService.buscarHistorico();
+      await _conferirSessao(token);
       if (!mounted) return;
 
-      final ativa = assinatura?['status']?.toString().toUpperCase() == 'ATIVA';
+      final status = assinatura?['status']?.toString().toUpperCase();
+      final plano = assinatura?['plano']?.toString().toUpperCase();
+      final ativa = status == 'ATIVA';
+      if (assinatura != null && (status == null || status.trim().isEmpty)) {
+        throw const FormatException('Status da assinatura inválido');
+      }
+      if (ativa &&
+          !const {'GRATUITO', 'ESSENCIAL', 'PROFISSIONAL'}.contains(plano)) {
+        throw const FormatException('Plano ativo inválido');
+      }
       final testeAtivo = ativa && assinatura?['testeGratuito'] == true;
       final fimTeste = DateTime.tryParse(
         assinatura?['dataVencimento']?.toString() ?? '',
       );
+      final testeUtilizado =
+          testeAtivo || historico.any((item) => item['testeGratuito'] == true);
 
       setState(() {
-        _planoAtual = ativa
-            ? assinatura!['plano']?.toString().toUpperCase()
-            : null;
+        _tokenConsulta = token;
+        _planoAtual = ativa ? plano : null;
         _testeAtivo = testeAtivo;
-        _testeUtilizado = historico.any(
-          (item) => item['testeGratuito'] == true,
-        );
+        _testeUtilizado = testeUtilizado;
         _fimTeste = testeAtivo ? fimTeste : null;
-        _carregando = false;
       });
-    } on AssinaturaException catch (e) {
+    } catch (e) {
       if (!mounted) return;
       setState(() {
-        _erro = e.mensagem;
-        _carregando = false;
+        if (e is ApiException && e.statusCode == 401) {
+          _limparAssinatura();
+        }
+        _erro = _mensagemErro(e, 'Não foi possível consultar sua assinatura.');
       });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _erro = 'Não foi possível consultar sua assinatura.';
-        _carregando = false;
-      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _consultando = false;
+          _carregando = false;
+        });
+      }
     }
   }
 
   Future<void> _abrirGerenciamento() async {
-    await context.push('/empresa/assinatura/gerenciamento');
-    if (mounted) await _carregarAssinatura();
+    if (_ocupado || !mounted) return;
+    setState(() => _navegando = true);
+    try {
+      await _obterSessao();
+      if (!mounted) return;
+      await context.push('/empresa/assinatura/gerenciamento');
+      if (mounted) {
+        await _carregarAssinatura(duranteOperacao: true);
+      }
+    } catch (e) {
+      _mostrarMensagem(
+        _mensagemErro(
+          e,
+          'Não foi possível abrir o gerenciamento da assinatura.',
+        ),
+      );
+      if (mounted && e is ApiException && e.statusCode == 401) {
+        await _carregarAssinatura(duranteOperacao: true);
+      }
+    } finally {
+      if (mounted) setState(() => _navegando = false);
+    }
   }
 
   Future<void> _abrirPagamento(String nome, String preco) async {
-    await context.push(
-      '/empresa/pagamento',
-      extra: <String, dynamic>{'plano': nome, 'precoMensal': preco},
-    );
-
-    if (mounted) await _carregarAssinatura();
+    if (!mounted || _ocupado || _erro != null || _tokenConsulta == null) {
+      return;
+    }
+    final plano = nome.toUpperCase();
+    if (!const {'ESSENCIAL', 'PROFISSIONAL'}.contains(plano) ||
+        plano == _planoAtual) {
+      return;
+    }
+    final token = _tokenConsulta!;
+    setState(() => _navegando = true);
+    try {
+      await _conferirSessao(token);
+      if (!mounted) return;
+      await context.push(
+        '/empresa/pagamento',
+        extra: <String, dynamic>{'plano': nome, 'precoMensal': preco},
+      );
+      if (mounted) {
+        await _carregarAssinatura(duranteOperacao: true);
+      }
+    } catch (e) {
+      _mostrarMensagem(
+        _mensagemErro(e, 'Não foi possível abrir a tela de pagamento.'),
+      );
+      if (mounted && e is ApiException && e.statusCode == 401) {
+        await _carregarAssinatura(duranteOperacao: true);
+      }
+    } finally {
+      if (mounted) setState(() => _navegando = false);
+    }
   }
 
   String _formatarData(DateTime data) {
@@ -89,66 +210,78 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
   }
 
   Future<void> _iniciarTeste() async {
-    if (_carregando ||
-        _ativandoTeste ||
+    if (!mounted ||
+        _ocupado ||
+        _erro != null ||
+        _tokenConsulta == null ||
         _testeUtilizado ||
         _planoAtual != 'GRATUITO') {
       return;
     }
 
-    final confirmado = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Ativar teste gratuito?'),
-        content: const Text(
-          'Você terá acesso ao Essencial por 14 dias, sem cobrança. '
-          'O teste pode ser utilizado apenas uma vez por empresa. '
-          'Ao terminar, sua empresa retornará ao plano Gratuito '
-          'se não houver contratação de um plano pago.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Ativar 14 dias'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmado != true || !mounted) return;
-
-    setState(() => _ativandoTeste = true);
-
+    final token = _tokenConsulta!;
+    setState(() => _confirmandoTeste = true);
     try {
+      await _conferirSessao(token);
+      if (!mounted) return;
+      final confirmado = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Ativar teste gratuito?'),
+          content: const Text(
+            'Você terá acesso ao Essencial por 14 dias, sem cobrança. '
+            'O teste pode ser utilizado apenas uma vez por empresa. '
+            'Ao terminar, sua empresa retornará ao plano Gratuito '
+            'se não houver contratação de um plano pago.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Ativar 14 dias'),
+            ),
+          ],
+        ),
+      );
+      if (confirmado != true || !mounted) return;
+      await _conferirSessao(token);
+      if (!mounted) return;
+      setState(() => _ativandoTeste = true);
       await AssinaturaService.iniciarTesteEssencial();
       if (!mounted) return;
-      await _carregarAssinatura();
+      await _conferirSessao(token);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Teste Essencial ativado com sucesso!')),
-      );
-    } on AssinaturaException catch (e) {
+      await _carregarAssinatura(duranteOperacao: true);
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(e.mensagem)));
-      await _carregarAssinatura();
-    } catch (_) {
+      if (_erro == null &&
+          _tokenConsulta == token &&
+          _planoAtual == 'ESSENCIAL' &&
+          _testeAtivo) {
+        _mostrarMensagem('Teste Essencial ativado com sucesso!');
+      } else {
+        _mostrarMensagem(
+          'Não foi possível confirmar a ativação. Consulte sua assinatura antes de tentar novamente.',
+        );
+      }
+    } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Não foi possível confirmar a ativação. Consulte sua assinatura.',
-          ),
+      _mostrarMensagem(
+        _mensagemErro(
+          e,
+          'Não foi possível confirmar a ativação. Consulte sua assinatura antes de tentar novamente.',
         ),
       );
-      await _carregarAssinatura();
+      await _carregarAssinatura(duranteOperacao: true);
     } finally {
-      if (mounted) setState(() => _ativandoTeste = false);
+      if (mounted) {
+        setState(() {
+          _ativandoTeste = false;
+          _confirmandoTeste = false;
+        });
+      }
     }
   }
 
@@ -162,9 +295,7 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
         centerTitle: true,
         actions: [
           IconButton(
-            onPressed: _carregando || _ativandoTeste
-                ? null
-                : _carregarAssinatura,
+            onPressed: _ocupado ? null : _carregarAssinatura,
             tooltip: 'Atualizar assinatura',
             icon: const Icon(Icons.refresh),
           ),
@@ -193,7 +324,7 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
             SizedBox(
               width: double.infinity,
               child: FilledButton.tonalIcon(
-                onPressed: _ativandoTeste ? null : _abrirGerenciamento,
+                onPressed: _ocupado ? null : _abrirGerenciamento,
                 icon: const Icon(Icons.manage_accounts_outlined),
                 label: const Text('Gerenciar assinatura'),
               ),
@@ -214,7 +345,7 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
                       Text(_erro!),
                       const SizedBox(height: 8),
                       TextButton.icon(
-                        onPressed: _carregarAssinatura,
+                        onPressed: _ocupado ? null : _carregarAssinatura,
                         icon: const Icon(Icons.refresh),
                         label: const Text('Tentar novamente'),
                       ),
@@ -239,7 +370,7 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
               entregasPorMes: 100,
               gratuito: true,
               planoAtual: _planoAtual == 'GRATUITO',
-              verificando: _carregando || _ativandoTeste || _erro != null,
+              verificando: _ocupado || _erro != null,
             ),
             const SizedBox(height: 14),
             _CartaoPlano(
@@ -250,7 +381,7 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
               destaque: true,
               planoAtual: _planoAtual == 'ESSENCIAL',
               emTeste: _testeAtivo,
-              verificando: _carregando || _ativandoTeste || _erro != null,
+              verificando: _ocupado || _erro != null,
               onEscolher: () => _abrirPagamento('Essencial', 'R\$ 39,90'),
             ),
             const SizedBox(height: 14),
@@ -260,7 +391,7 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
               entregadores: 10,
               entregasPorMes: 5000,
               planoAtual: _planoAtual == 'PROFISSIONAL',
-              verificando: _carregando || _ativandoTeste || _erro != null,
+              verificando: _ocupado || _erro != null,
               onEscolher: () => _abrirPagamento('Profissional', 'R\$ 79,90'),
             ),
             const SizedBox(height: 18),
@@ -313,9 +444,8 @@ class _EmpresaPlanosPageState extends State<EmpresaPlanosPage> {
                       width: double.infinity,
                       child: OutlinedButton.icon(
                         onPressed:
-                            _carregando ||
+                            _ocupado ||
                                 _erro != null ||
-                                _ativandoTeste ||
                                 _testeUtilizado ||
                                 _planoAtual != 'GRATUITO'
                             ? null

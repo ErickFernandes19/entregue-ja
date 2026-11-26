@@ -1,33 +1,58 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 
 import '../config/api_config.dart';
+import 'api_service.dart';
 import 'auth_service.dart';
 import 'empresa_service.dart';
 
-class EntregaQrException implements Exception {
-  final String mensagem;
-  final int? statusCode;
-
-  const EntregaQrException(this.mensagem, {this.statusCode});
-
-  @override
-  String toString() => mensagem;
+class EntregaQrException extends ApiException {
+  const EntregaQrException(super.mensagem, {super.statusCode});
 }
 
 class EntregaService {
+  static const Duration _tempoLimite = Duration(seconds: 20);
+  static const Duration _tempoLimiteUpload = Duration(seconds: 60);
+
   static Future<Map<String, String>> _headersAutenticados({
     bool empresa = false,
   }) async {
-    if (empresa) {
-      return EmpresaService.headersAutenticados();
+    final headers = empresa
+        ? await EmpresaService.headersAutenticados()
+        : await AuthService.headersAutenticados();
+    if ((headers['Authorization'] ?? '').trim().isEmpty) {
+      throw const ApiException(
+        'Sua sessão expirou. Entre novamente na sua conta.',
+        statusCode: 401,
+      );
     }
+    return headers;
+  }
 
-    return AuthService.headersAutenticados();
+  static ApiException _converterErro(Object erro, String mensagemPadrao) {
+    if (erro is ApiException) return erro;
+    return ApiException(
+      ApiService.mensagemErro(erro, mensagemPadrao: mensagemPadrao),
+    );
+  }
+
+  static T? _tratarFalha<T>(
+    Object erro, {
+    required bool lancarErro,
+    required String mensagemPadrao,
+  }) {
+    debugPrint('$mensagemPadrao (${erro.runtimeType})');
+    if (lancarErro) throw _converterErro(erro, mensagemPadrao);
+    return null;
+  }
+
+  static Map<String, dynamic> _decodificarMapa(String corpo) {
+    final dados = jsonDecode(corpo);
+    if (dados is Map<String, dynamic>) return dados;
+    throw const FormatException('Resposta inválida do servidor.');
   }
 
   static MediaType _tipoImagem(String nomeArquivo) {
@@ -71,130 +96,78 @@ class EntregaService {
     required String idEntrega,
     required String referencia,
     bool empresa = false,
+    bool lancarErro = false,
   }) async {
     try {
       final url = urlComprovante(idEntrega: idEntrega, referencia: referencia);
-
       if (url.isEmpty) {
-        return null;
+        throw const ApiException('Nenhum comprovante está disponível.');
       }
-
       final headers = await _headersAutenticados(empresa: empresa);
-
-      final response = await http.get(Uri.parse(url), headers: headers);
-
+      final response = await http
+          .get(Uri.parse(url), headers: headers)
+          .timeout(_tempoLimite);
       if (response.statusCode == 200) {
+        if (response.bodyBytes.isEmpty) {
+          throw const ApiException('O comprovante está vazio.');
+        }
         return response.bodyBytes;
       }
-
-      debugPrint(
-        'Erro ao buscar comprovante. '
-        'Status: ${response.statusCode}',
+      throw ApiService.erroHttp(
+        response.statusCode,
+        utf8.decode(response.bodyBytes, allowMalformed: true),
       );
-
-      return null;
     } catch (e) {
-      debugPrint('Erro ao buscar comprovante: $e');
-      return null;
+      return _tratarFalha<Uint8List>(
+        e,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível carregar o comprovante.',
+      );
     }
   }
 
-  static Future<Map<String, dynamic>?> buscarEntrega(String id) async {
-    try {
-      final headers = await AuthService.headersAutenticados();
-
-      final response = await http.get(
-        Uri.parse('${ApiConfig.entregas}/${Uri.encodeComponent(id)}'),
-        headers: headers,
-      );
-
-      if (response.statusCode == 200) {
-        final dados = jsonDecode(response.body);
-
-        if (dados is Map<String, dynamic>) {
-          return dados;
-        }
-
-        debugPrint('Resposta inesperada ao buscar entrega.');
-
-        return null;
-      }
-
-      if (response.statusCode == 401) {
-        debugPrint('Erro 401: sessão expirada ou token inválido.');
-        return null;
-      }
-
-      if (response.statusCode == 403) {
-        debugPrint('Erro 403: acesso à entrega não autorizado.');
-        return null;
-      }
-
-      if (response.statusCode == 404) {
-        debugPrint('Erro 404: entrega não encontrada.');
-        return null;
-      }
-
-      debugPrint(
-        'Erro ao buscar entrega. '
-        'Status: ${response.statusCode}',
-      );
-
-      return null;
-    } catch (e) {
-      debugPrint('Erro ao buscar entrega: $e');
-      return null;
-    }
-  }
-
-  static String _mensagemErroQr(
-    http.Response response, {
-    required bool assumir,
-  }) {
-    final padrao = switch (response.statusCode) {
-      400 => 'Esta entrega não está disponível para atribuição.',
-      401 => 'Sua sessão expirou. Entre novamente no aplicativo.',
-      403 => 'Você não tem permissão para acessar esta entrega.',
-      404 => 'Entrega não encontrada.',
-      409 => 'Esta entrega já foi assumida ou não está mais disponível.',
-      _ =>
-        assumir
-            ? 'Não foi possível assumir a entrega. Tente novamente.'
-            : 'Não foi possível consultar o QR Code. Tente novamente.',
-    };
-
-    try {
-      final dados = jsonDecode(response.body);
-      if (dados is Map && dados['mensagem'] is String) {
-        final mensagem = (dados['mensagem'] as String).trim();
-        if (mensagem.isNotEmpty) {
-          return mensagem;
-        }
-      }
-    } catch (_) {}
-
-    return padrao;
-  }
-
-  static Future<Map<String, dynamic>> _respostaQr(
-    http.Response response, {
-    required bool assumir,
+  static Future<Map<String, dynamic>?> buscarEntrega(
+    String id, {
+    bool lancarErro = false,
   }) async {
-    if (response.statusCode != 200) {
-      throw EntregaQrException(
-        _mensagemErroQr(response, assumir: assumir),
-        statusCode: response.statusCode,
+    try {
+      final headers = await _headersAutenticados();
+      final response = await http
+          .get(
+            Uri.parse('${ApiConfig.entregas}/${Uri.encodeComponent(id)}'),
+            headers: headers,
+          )
+          .timeout(_tempoLimite);
+      final corpo = utf8.decode(response.bodyBytes, allowMalformed: true);
+      if (response.statusCode == 200) return _decodificarMapa(corpo);
+      throw ApiService.erroHttp(response.statusCode, corpo);
+    } catch (e) {
+      return _tratarFalha<Map<String, dynamic>>(
+        e,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível consultar a entrega.',
       );
     }
+  }
 
-    try {
-      final dados = jsonDecode(response.body);
-      if (dados is Map<String, dynamic>) {
-        return dados;
-      }
-    } catch (_) {}
-
-    throw const EntregaQrException('O servidor retornou dados inválidos.');
+  static Map<String, dynamic> _respostaQr(http.Response response) {
+    final corpo = utf8.decode(response.bodyBytes, allowMalformed: true);
+    if (response.statusCode != 200) {
+      final erro = ApiService.erroHttp(response.statusCode, corpo);
+      final padrao = ApiService.erroHttp(response.statusCode, '').mensagem;
+      final mensagem = erro.mensagem != padrao
+          ? erro.mensagem
+          : switch (response.statusCode) {
+              400 => 'Esta entrega não está disponível para atribuição.',
+              403 => 'Você não tem permissão para acessar esta entrega.',
+              404 => 'Entrega não encontrada.',
+              409 =>
+                'Esta entrega já foi assumida ou não está mais disponível.',
+              _ => erro.mensagem,
+            };
+      throw EntregaQrException(mensagem, statusCode: erro.statusCode);
+    }
+    return _decodificarMapa(corpo);
   }
 
   static Future<Map<String, dynamic>> consultarEntregaQr(String id) async {
@@ -203,21 +176,24 @@ class EntregaService {
     }
 
     try {
-      final headers = await AuthService.headersAutenticados();
-      final response = await http.get(
-        Uri.parse(
-          '${ApiConfig.entregas}/${Uri.encodeComponent(id.trim())}/consultar-qr',
-        ),
-        headers: headers,
-      );
-      return await _respostaQr(response, assumir: false);
+      final headers = await _headersAutenticados();
+      final response = await http
+          .get(
+            Uri.parse(
+              '${ApiConfig.entregas}/${Uri.encodeComponent(id.trim())}/consultar-qr',
+            ),
+            headers: headers,
+          )
+          .timeout(_tempoLimite);
+      return _respostaQr(response);
     } on EntregaQrException {
       rethrow;
     } catch (e) {
-      debugPrint('Erro ao consultar QR Code: $e');
-      throw const EntregaQrException(
-        'Falha de conexão ao consultar a entrega.',
+      final erro = _converterErro(
+        e,
+        'Não foi possível consultar o QR Code. Tente novamente.',
       );
+      throw EntregaQrException(erro.mensagem, statusCode: erro.statusCode);
     }
   }
 
@@ -227,19 +203,24 @@ class EntregaService {
     }
 
     try {
-      final headers = await AuthService.headersAutenticados();
-      final response = await http.put(
-        Uri.parse(
-          '${ApiConfig.entregas}/${Uri.encodeComponent(id.trim())}/assumir-qr',
-        ),
-        headers: headers,
-      );
-      return await _respostaQr(response, assumir: true);
+      final headers = await _headersAutenticados();
+      final response = await http
+          .put(
+            Uri.parse(
+              '${ApiConfig.entregas}/${Uri.encodeComponent(id.trim())}/assumir-qr',
+            ),
+            headers: headers,
+          )
+          .timeout(_tempoLimite);
+      return _respostaQr(response);
     } on EntregaQrException {
       rethrow;
     } catch (e) {
-      debugPrint('Erro ao assumir entrega pelo QR Code: $e');
-      throw const EntregaQrException('Falha de conexão ao assumir a entrega.');
+      final erro = _converterErro(
+        e,
+        'Não foi possível assumir a entrega. Tente novamente.',
+      );
+      throw EntregaQrException(erro.mensagem, statusCode: erro.statusCode);
     }
   }
 
@@ -250,14 +231,14 @@ class EntregaService {
     required double latitude,
     required double longitude,
     String? observacao,
+    bool lancarErro = false,
   }) async {
     try {
       if (fotoBytes.isEmpty) {
-        debugPrint('Foto do comprovante está vazia.');
-        return null;
+        throw const ApiException('Tire uma foto para comprovar a entrega.');
       }
 
-      final headers = await AuthService.headersAutenticados();
+      final headers = await _headersAutenticados();
 
       final request = http.MultipartRequest(
         'PUT',
@@ -270,8 +251,10 @@ class EntregaService {
       final autorizacao = headers['Authorization'];
 
       if (autorizacao == null || autorizacao.isEmpty) {
-        debugPrint('Token do entregador não encontrado.');
-        return null;
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
       }
 
       request.headers['Authorization'] = autorizacao;
@@ -292,29 +275,20 @@ class EntregaService {
         ),
       );
 
-      final response = await request.send();
-      final corpo = await response.stream.bytesToString();
+      final response = await request.send().timeout(_tempoLimiteUpload);
+      final bytes = await response.stream.toBytes().timeout(_tempoLimiteUpload);
+      final corpo = utf8.decode(bytes, allowMalformed: true);
 
       if (response.statusCode == 200) {
-        final dados = jsonDecode(corpo);
-
-        if (dados is Map<String, dynamic>) {
-          return dados;
-        }
-
-        return null;
+        return _decodificarMapa(corpo);
       }
-
-      debugPrint(
-        'Erro ao concluir entrega. '
-        'Status: ${response.statusCode}. '
-        'Resposta: $corpo',
-      );
-
-      return null;
+      throw ApiService.erroHttp(response.statusCode, corpo);
     } catch (e) {
-      debugPrint('Erro ao concluir entrega: $e');
-      return null;
+      return _tratarFalha<Map<String, dynamic>>(
+        e,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível concluir a entrega.',
+      );
     }
   }
 
@@ -326,16 +300,18 @@ class EntregaService {
     required String justificativa,
     required double latitude,
     required double longitude,
+    bool lancarErro = false,
   }) async {
     try {
       if (fotoBytes.isEmpty ||
           motivo.trim().isEmpty ||
           justificativa.trim().isEmpty) {
-        debugPrint('Dados obrigatórios da não entrega ausentes.');
-        return null;
+        throw const ApiException(
+          'Informe o motivo, a justificativa e tire uma foto da tentativa.',
+        );
       }
 
-      final headers = await AuthService.headersAutenticados();
+      final headers = await _headersAutenticados();
 
       final request = http.MultipartRequest(
         'PUT',
@@ -348,8 +324,10 @@ class EntregaService {
       final autorizacao = headers['Authorization'];
 
       if (autorizacao == null || autorizacao.isEmpty) {
-        debugPrint('Token do entregador não encontrado.');
-        return null;
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
       }
 
       request.headers['Authorization'] = autorizacao;
@@ -368,29 +346,20 @@ class EntregaService {
         ),
       );
 
-      final response = await request.send();
-      final corpo = await response.stream.bytesToString();
+      final response = await request.send().timeout(_tempoLimiteUpload);
+      final bytes = await response.stream.toBytes().timeout(_tempoLimiteUpload);
+      final corpo = utf8.decode(bytes, allowMalformed: true);
 
       if (response.statusCode == 200) {
-        final dados = jsonDecode(corpo);
-
-        if (dados is Map<String, dynamic>) {
-          return dados;
-        }
-
-        return null;
+        return _decodificarMapa(corpo);
       }
-
-      debugPrint(
-        'Erro ao registrar não entrega. '
-        'Status: ${response.statusCode}. '
-        'Resposta: $corpo',
-      );
-
-      return null;
+      throw ApiService.erroHttp(response.statusCode, corpo);
     } catch (e) {
-      debugPrint('Erro ao registrar não entrega: $e');
-      return null;
+      return _tratarFalha<Map<String, dynamic>>(
+        e,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível registrar a tentativa de entrega.',
+      );
     }
   }
 }

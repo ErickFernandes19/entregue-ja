@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
 
@@ -19,42 +20,59 @@ class _LoginPageState extends State<LoginPage> {
   bool mostrarSenha = false;
 
   Future<void> entrar() async {
+    if (carregando) return;
+
     final email = emailController.text.trim();
     final senha = senhaController.text.trim();
 
     if (email.isEmpty || senha.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Preencha e-mail e senha')));
+      mostrarMensagem('Preencha e-mail e senha.');
       return;
     }
 
-    setState(() {
-      carregando = true;
-    });
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() => carregando = true);
 
-    final usuario = await AuthService.login(email, senha);
+    try {
+      final usuario = await AuthService.login(email, senha, lancarErro: true);
+      if (!mounted) return;
 
-    if (!mounted) return;
+      final emailUsuario = usuario?['email'];
+      final nomeUsuario = usuario?['nome'];
+      if (emailUsuario is! String ||
+          emailUsuario.trim().isEmpty ||
+          nomeUsuario is! String) {
+        throw const FormatException('Dados do usuário inválidos.');
+      }
 
-    setState(() {
-      carregando = false;
-    });
-
-    if (usuario != null) {
-      await AuthService.salvarUsuario(usuario['email'], usuario['nome']);
-
+      await AuthService.salvarUsuario(emailUsuario, nomeUsuario);
       if (!mounted) return;
 
       context.go('/entregador/inicio');
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('E-mail ou senha inválidos')),
+    } catch (e) {
+      if (!mounted) return;
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível entrar na conta. Tente novamente.',
+        ),
       );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
     }
   }
 
+  void mostrarMensagem(String mensagem) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensagem)));
+  }
+
   void voltarParaSelecao() {
+    if (carregando) return;
     context.go('/selecionar');
   }
 
@@ -76,6 +94,7 @@ class _LoginPageState extends State<LoginPage> {
 
     return TextField(
       controller: controller,
+      enabled: !carregando,
       obscureText: senha && !mostrarSenha,
       keyboardType: keyboardType,
       style: TextStyle(color: theme.colorScheme.onSurface),
@@ -119,11 +138,11 @@ class _LoginPageState extends State<LoginPage> {
                 top: 8,
                 left: 8,
                 child: Material(
-                  color: Colors.white.withOpacity(0.16),
+                  color: Colors.white.withValues(alpha: 0.16),
                   shape: const CircleBorder(),
                   child: IconButton(
                     tooltip: 'Voltar',
-                    onPressed: voltarParaSelecao,
+                    onPressed: carregando ? null : voltarParaSelecao,
                     icon: const Icon(Icons.arrow_back, color: Colors.white),
                   ),
                 ),
@@ -150,7 +169,7 @@ class _LoginPageState extends State<LoginPage> {
                             Container(
                               padding: const EdgeInsets.all(20),
                               decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.18),
+                                color: Colors.white.withValues(alpha: 0.18),
                                 shape: BoxShape.circle,
                               ),
                               child: const Icon(
@@ -190,12 +209,12 @@ class _LoginPageState extends State<LoginPage> {
                                 borderRadius: BorderRadius.circular(26),
                                 border: Border.all(
                                   color: theme.colorScheme.outlineVariant
-                                      .withOpacity(0.35),
+                                      .withValues(alpha: 0.35),
                                 ),
                                 boxShadow: [
                                   BoxShadow(
-                                    color: Colors.black.withOpacity(
-                                      theme.brightness == Brightness.dark
+                                    color: Colors.black.withValues(
+                                      alpha: theme.brightness == Brightness.dark
                                           ? 0.28
                                           : 0.12,
                                     ),
@@ -308,9 +327,13 @@ class _LoginPageState extends State<LoginPage> {
                                         ),
                                       ),
                                       TextButton(
-                                        onPressed: () {
-                                          context.push('/entregador/cadastro');
-                                        },
+                                        onPressed: carregando
+                                            ? null
+                                            : () {
+                                                context.push(
+                                                  '/entregador/cadastro',
+                                                );
+                                              },
                                         child: const Text('Criar conta'),
                                       ),
                                     ],

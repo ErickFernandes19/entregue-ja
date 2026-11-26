@@ -495,6 +495,35 @@ public class EntregaController {
             return ResponseEntity.status(403).build();
         }
 
+        Long empresaId = entrega.getEmpresa() == null ? null : entrega.getEmpresa().getId();
+        Long entregadorId = obterIdAutenticado("ENTREGADOR");
+
+        if (empresaId != null) {
+            Empresa empresa = entityManager.find(Empresa.class, empresaId, LockModeType.PESSIMISTIC_WRITE);
+            if (empresa == null) {
+                return ResponseEntity.notFound().build();
+            }
+
+            Usuario entregador = entrega.getEntregador();
+            entityManager.refresh(entregador, LockModeType.PESSIMISTIC_WRITE);
+            if (entregador.getEmpresa() == null
+                    || !empresaId.equals(entregador.getEmpresa().getId())) {
+                return ResponseEntity.status(409).body(
+                        Map.of("mensagem", "Não é possível iniciar uma nova tentativa após o encerramento do vínculo com esta empresa")
+                );
+            }
+        }
+
+        entityManager.refresh(entrega, LockModeType.PESSIMISTIC_WRITE);
+        if (!podeAtualizarStatus(entrega)
+                || !entregadorId.equals(entrega.getEntregador().getId())
+                || !java.util.Objects.equals(empresaId,
+                entrega.getEmpresa() == null ? null : entrega.getEmpresa().getId())) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Os dados da entrega foram alterados. Atualize a lista e tente novamente.")
+            );
+        }
+
         if (!"NAO_ENTREGUE".equals(entrega.getStatus())) {
             return ResponseEntity.badRequest().body(
                     Map.of("mensagem", "A entrega não está aguardando nova tentativa")
@@ -724,7 +753,7 @@ public class EntregaController {
             @PathVariable Long id,
             @RequestBody Map<String, Object> dados
     ) {
-        var entregaOptional = entregaRepository.findById(id);
+        var entregaOptional = entregaRepository.buscarPorIdComBloqueio(id);
         if (entregaOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -750,7 +779,8 @@ public class EntregaController {
 
         Double latitude = ((Number) dados.get("latitude")).doubleValue();
         Double longitude = ((Number) dados.get("longitude")).doubleValue();
-        if (!coordenadasValidas(latitude, longitude)) {
+        if (!coordenadasValidas(latitude, longitude)
+                || (latitude == 0.0 && longitude == 0.0)) {
             return ResponseEntity.badRequest().body(
                     Map.of("mensagem", "Coordenadas inválidas")
             );
@@ -761,7 +791,9 @@ public class EntregaController {
         entrega.setDataAtualizacaoLocalizacao(LocalDateTime.now(ZoneId.of("America/Sao_Paulo")));
         entregaRepository.save(entrega);
 
-        return ResponseEntity.ok(dadosLocalizacao(entrega));
+        return ResponseEntity.ok()
+                .header("Cache-Control", "private, no-store")
+                .body(dadosLocalizacao(entrega));
     }
 
     @GetMapping("/{id}/localizacao")
@@ -772,11 +804,14 @@ public class EntregaController {
         }
 
         Entrega entrega = entregaOptional.get();
-        if (!podeVisualizar(entrega)) {
+        if (entrega.getEmpresa() == null
+                || !empresaAutorizada(entrega.getEmpresa().getId())) {
             return ResponseEntity.status(403).build();
         }
 
-        return ResponseEntity.ok(dadosLocalizacao(entrega));
+        return ResponseEntity.ok()
+                .header("Cache-Control", "private, no-store")
+                .body(dadosLocalizacao(entrega));
     }
 
     private void limparLocalizacaoEntregador(Entrega entrega) {
@@ -792,7 +827,11 @@ public class EntregaController {
         boolean emRota = "EM_ROTA".equals(entrega.getStatus());
         dados.put("latitude", emRota ? entrega.getLatitudeEntregador() : null);
         dados.put("longitude", emRota ? entrega.getLongitudeEntregador() : null);
-        dados.put("dataAtualizacao", emRota ? entrega.getDataAtualizacaoLocalizacao() : null);
+        LocalDateTime dataAtualizacao = entrega.getDataAtualizacaoLocalizacao();
+        dados.put("dataAtualizacao", emRota && dataAtualizacao != null
+                ? dataAtualizacao.atZone(ZoneId.of("America/Sao_Paulo"))
+                .toOffsetDateTime().toString()
+                : null);
         return dados;
     }
 
@@ -888,12 +927,32 @@ public class EntregaController {
             return ResponseEntity.status(403).build();
         }
 
+        Usuario entregador = entregadorOptional.get();
+        if (entregador.getEmpresa() == null) {
+            return ResponseEntity.status(403).body(
+                    Map.of("mensagem", "Você não possui uma empresa vinculada")
+            );
+        }
+
+        Long empresaId = entregador.getEmpresa().getId();
+        Empresa empresa = entityManager.find(Empresa.class, empresaId, LockModeType.PESSIMISTIC_WRITE);
+        if (empresa == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        entityManager.refresh(entregador, LockModeType.PESSIMISTIC_WRITE);
+        if (entregador.getEmpresa() == null
+                || !empresaId.equals(entregador.getEmpresa().getId())) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Seu vínculo foi alterado. Atualize o perfil e tente novamente.")
+            );
+        }
+
         var entregaOptional = entregaRepository.buscarPorIdComBloqueio(id);
         if (entregaOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
 
-        var entregador = entregadorOptional.get();
         var entrega = entregaOptional.get();
 
         if (entregador.getEmpresa() == null
@@ -1037,6 +1096,38 @@ public class EntregaController {
             @PathVariable Long id,
             @RequestBody Map<String, String> dados
     ) {
+        Long empresaId = obterIdAutenticado("EMPRESA");
+        if (empresaId == null) {
+            return ResponseEntity.status(403).build();
+        }
+
+        Empresa empresa = entityManager.find(Empresa.class, empresaId, LockModeType.PESSIMISTIC_WRITE);
+        if (empresa == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String entregadorEmail = dados == null ? null : dados.get("entregadorEmail");
+
+        if (entregadorEmail == null || entregadorEmail.isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe o e-mail do entregador")
+            );
+        }
+
+        var entregadorOptional = usuarioRepository.findByEmail(entregadorEmail.trim());
+
+        if (entregadorOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        var entregador = entregadorOptional.get();
+        entityManager.refresh(entregador, LockModeType.PESSIMISTIC_WRITE);
+        if (!entregador.getEmail().equalsIgnoreCase(entregadorEmail.trim())) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Os dados do entregador foram alterados. Atualize a lista e tente novamente.")
+            );
+        }
+
         var entregaOptional = entregaRepository.buscarPorIdComBloqueio(id);
 
         if (entregaOptional.isEmpty()) {
@@ -1063,21 +1154,6 @@ public class EntregaController {
             );
         }
 
-        String entregadorEmail = dados.get("entregadorEmail");
-
-        if (entregadorEmail == null || entregadorEmail.isBlank()) {
-            return ResponseEntity.badRequest().body(
-                    Map.of("mensagem", "Informe o e-mail do entregador")
-            );
-        }
-
-        var entregadorOptional = usuarioRepository.findByEmail(entregadorEmail.trim());
-
-        if (entregadorOptional.isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
-
-        var entregador = entregadorOptional.get();
 
         if (entregador.getEmpresa() == null
                 || !entrega.getEmpresa().getId().equals(
@@ -1142,6 +1218,12 @@ public class EntregaController {
         }
 
         Usuario entregador = entregadorOptional.get();
+        entityManager.refresh(entregador, LockModeType.PESSIMISTIC_WRITE);
+        if (!entregador.getEmail().equalsIgnoreCase(entregadorEmail)) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Os dados do entregador foram alterados. Atualize a lista e tente novamente.")
+            );
+        }
 
         if (entregador.getEmpresa() == null
                 || !empresa.getId().equals(entregador.getEmpresa().getId())) {
@@ -1227,12 +1309,13 @@ public class EntregaController {
     }
 
     @PutMapping("/{id}")
+    @Transactional
     public ResponseEntity<?> editarEntrega(
             @PathVariable Long id,
             @RequestBody Entrega dadosAtualizados
     ) {
         var entregaOptional =
-                entregaRepository.findById(id);
+                entregaRepository.buscarPorIdComBloqueio(id);
 
         if (entregaOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
@@ -1253,9 +1336,6 @@ public class EntregaController {
             );
         }
 
-        entrega.setCliente(
-                dadosAtualizados.getCliente()
-        );
         String novoEndereco = dadosAtualizados.getEndereco();
 
         if (novoEndereco == null || novoEndereco.isBlank()) {
@@ -1274,10 +1354,13 @@ public class EntregaController {
             entrega.setLongitude(null);
         }
 
-        entrega.setEndereco(novoEndereco);
-        entrega.setComplemento(
-                dadosAtualizados.getComplemento()
+        entrega.setCliente(
+                dadosAtualizados.getCliente()
         );
+        entrega.setEndereco(novoEndereco);
+        if (dadosAtualizados.getComplemento() != null) {
+            entrega.setComplemento(dadosAtualizados.getComplemento());
+        }
         entrega.setValor(
                 dadosAtualizados.getValor()
         );
@@ -1292,11 +1375,12 @@ public class EntregaController {
     }
 
     @DeleteMapping("/{id}")
+    @Transactional
     public ResponseEntity<?> cancelarEntrega(
             @PathVariable Long id
     ) {
         var entregaOptional =
-                entregaRepository.findById(id);
+                entregaRepository.buscarPorIdComBloqueio(id);
 
         if (entregaOptional.isEmpty()) {
             return ResponseEntity.notFound().build();
@@ -1368,11 +1452,12 @@ public class EntregaController {
     }
 
     @PutMapping("/{id}/em-rota")
+    @Transactional
     public ResponseEntity<?> marcarEmRota(
             @PathVariable Long id
     ) {
         var entregaOptional =
-                entregaRepository.findById(id);
+                entregaRepository.buscarPorIdComBloqueio(id);
 
         if (entregaOptional.isEmpty()) {
             return ResponseEntity.notFound().build();

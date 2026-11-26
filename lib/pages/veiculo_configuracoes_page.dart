@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../services/configuracoes_service.dart';
 import '../theme/app_colors.dart';
@@ -21,6 +22,12 @@ class _VeiculoConfiguracoesPageState extends State<VeiculoConfiguracoesPage> {
   final capacidadeController = TextEditingController();
 
   bool salvando = false;
+  bool carregando = true;
+  String? erroCarregamento;
+  String? erroSincronizacao;
+  int versaoCarregamento = 0;
+
+  bool get bloqueado => salvando || carregando || erroCarregamento != null;
 
   final Map<String, String> capacidadesPadrao = {
     'Moto': '20',
@@ -39,26 +46,72 @@ class _VeiculoConfiguracoesPageState extends State<VeiculoConfiguracoesPage> {
     carregarConfiguracoes();
   }
 
-  Future<void> carregarConfiguracoes() async {
-    final veiculo = await ConfiguracoesService.buscarVeiculo();
-    final capacidade = await ConfiguracoesService.buscarCapacidade();
-    final consumo = await ConfiguracoesService.buscarConsumoMedio();
-    final preco = await ConfiguracoesService.buscarPrecoCombustivel();
-
+  void mostrarMensagem(String mensagem, {bool sucesso = false}) {
     if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(mensagem),
+          backgroundColor: sucesso ? AppColors.success : null,
+        ),
+      );
+  }
+
+  Future<void> carregarConfiguracoes() async {
+    if (salvando) return;
 
     setState(() {
-      veiculoSelecionado = veiculo ?? 'Moto';
-
-      capacidadeController.text =
-          capacidade ?? capacidadesPadrao[veiculoSelecionado] ?? '20';
-
-      consumoController.text = consumo ?? '';
-      precoController.text = preco ?? '';
+      carregando = true;
+      erroCarregamento = null;
     });
+
+    try {
+      final veiculo = await ConfiguracoesService.buscarVeiculo();
+      final capacidade = await ConfiguracoesService.buscarCapacidade();
+      final consumo = await ConfiguracoesService.buscarConsumoMedio();
+      final preco = await ConfiguracoesService.buscarPrecoCombustivel();
+
+      if (!mounted) return;
+
+      final veiculoConhecido =
+          veiculo == null || capacidadesPadrao.containsKey(veiculo);
+
+      setState(() {
+        veiculoSelecionado = veiculoConhecido ? veiculo ?? 'Moto' : 'Moto';
+        capacidadeController.text =
+            capacidade ?? capacidadesPadrao[veiculoSelecionado] ?? '20';
+        consumoController.text = consumo ?? '';
+        precoController.text = preco ?? '';
+        versaoCarregamento++;
+      });
+
+      if (!veiculoConhecido) {
+        mostrarMensagem(
+          'O tipo de veículo salvo não é reconhecido. Confira o veículo e '
+          'a capacidade antes de salvar.',
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        erroCarregamento = ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível carregar as configurações do veículo. '
+              'Tente novamente.',
+        );
+      });
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
+    }
   }
 
   void atualizarCapacidade(String veiculo) {
+    if (bloqueado) return;
+
     setState(() {
       veiculoSelecionado = veiculo;
 
@@ -70,100 +123,112 @@ class _VeiculoConfiguracoesPageState extends State<VeiculoConfiguracoesPage> {
   }
 
   double? converterDecimal(String valor) {
-    return double.tryParse(valor.trim().replaceAll(',', '.'));
+    final numero = double.tryParse(valor.trim().replaceAll(',', '.'));
+    if (numero == null || !numero.isFinite || numero <= 0) return null;
+    return numero;
   }
 
   Future<void> salvarConfiguracoes() async {
-    if (salvando) return;
+    if (bloqueado) return;
+
+    FocusScope.of(context).unfocus();
 
     final capacidadeTexto = capacidadeController.text.trim();
-
     final consumoTexto = consumoController.text.trim();
-
     final precoTexto = precoController.text.trim();
 
-    final capacidade = double.tryParse(capacidadeTexto.replaceAll(',', '.'));
-
-    if (capacidade == null || capacidade <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Informe uma capacidade de carga válida')),
+    final capacidade = converterDecimal(capacidadeTexto);
+    if (capacidade == null) {
+      mostrarMensagem(
+        'Informe uma capacidade de carga válida, maior que zero.',
       );
       return;
     }
 
     final consumo = converterDecimal(consumoTexto);
-
-    if (consumoTexto.isNotEmpty && (consumo == null || consumo <= 0)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Informe um consumo médio válido')),
-      );
+    if (consumoTexto.isNotEmpty && consumo == null) {
+      mostrarMensagem('Informe um consumo médio válido, maior que zero.');
       return;
     }
 
     final preco = converterDecimal(precoTexto);
-
-    if (precoTexto.isNotEmpty && (preco == null || preco <= 0)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Informe um preço de combustível válido')),
+    if (precoTexto.isNotEmpty && preco == null) {
+      mostrarMensagem(
+        'Informe um preço de combustível válido, maior que zero.',
       );
       return;
     }
-
-    setState(() {
-      salvando = true;
-    });
 
     final capacidadeNormalizada = capacidade.toStringAsFixed(
       capacidade % 1 == 0 ? 0 : 2,
     );
 
-    final consumoNormalizado = consumo == null ? '' : consumo.toString();
-
-    final precoNormalizado = preco == null ? '' : preco.toString();
-
-    await ConfiguracoesService.salvarConfiguracoes(
-      veiculo: veiculoSelecionado,
-      capacidade: capacidadeNormalizada,
-      consumoMedio: consumoNormalizado,
-      precoCombustivel: precoNormalizado,
-    );
-
-    final sucessoBackend = await AuthService.atualizarConfiguracoesVeiculo(
-      veiculo: veiculoSelecionado,
-      capacidadeCarga: capacidadeNormalizada,
-    );
-
-    if (!mounted) return;
-
-    setState(() {
-      salvando = false;
-
-      capacidadeController.text = capacidadeNormalizada;
-
-      consumoController.text = consumoNormalizado;
-
-      precoController.text = precoNormalizado;
-    });
-
-    if (!sucessoBackend) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'As configurações foram salvas no aparelho, '
-            'mas não foi possível atualizar o servidor.',
-          ),
-        ),
-      );
-
+    if (converterDecimal(capacidadeNormalizada) == null) {
+      mostrarMensagem('Informe uma capacidade de carga de pelo menos 0,01 kg.');
       return;
     }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Configurações salvas com sucesso'),
-        backgroundColor: AppColors.success,
-      ),
-    );
+    final consumoNormalizado = consumo?.toString() ?? '';
+    final precoNormalizado = preco?.toString() ?? '';
+    final veiculo = veiculoSelecionado;
+    var salvamentoLocalConcluido = false;
+
+    setState(() => salvando = true);
+
+    try {
+      await ConfiguracoesService.salvarConfiguracoes(
+        veiculo: veiculo,
+        capacidade: capacidadeNormalizada,
+        consumoMedio: consumoNormalizado,
+        precoCombustivel: precoNormalizado,
+      );
+      salvamentoLocalConcluido = true;
+
+      final sucessoBackend = await AuthService.atualizarConfiguracoesVeiculo(
+        veiculo: veiculo,
+        capacidadeCarga: capacidadeNormalizada,
+        lancarErro: true,
+      );
+
+      if (!sucessoBackend) {
+        throw const ApiException(
+          'Não foi possível atualizar as configurações do veículo no servidor.',
+        );
+      }
+
+      if (!mounted) return;
+
+      setState(() {
+        erroSincronizacao = null;
+        capacidadeController.text = capacidadeNormalizada;
+        consumoController.text = consumoNormalizado;
+        precoController.text = precoNormalizado;
+      });
+      mostrarMensagem('Configurações salvas com sucesso!', sucesso: true);
+    } catch (e) {
+      if (!mounted) return;
+
+      final mensagem = ApiService.mensagemErro(
+        e,
+        mensagemPadrao: salvamentoLocalConcluido
+            ? 'Não foi possível atualizar o servidor. Tente salvar novamente.'
+            : 'Não foi possível concluir o salvamento no aparelho. Tente novamente.',
+      );
+
+      if (salvamentoLocalConcluido) {
+        final aviso =
+            'As configurações foram salvas no aparelho, mas a '
+            'sincronização com o servidor não foi confirmada. $mensagem';
+        setState(() => erroSincronizacao = aviso);
+        mostrarMensagem(aviso);
+      } else {
+        mostrarMensagem(mensagem);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => salvando = false);
+      }
+    }
   }
 
   String textoVeiculo(String veiculo) {
@@ -186,12 +251,12 @@ class _VeiculoConfiguracoesPageState extends State<VeiculoConfiguracoesPage> {
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(22),
         border: Border.all(
-          color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(
-              theme.brightness == Brightness.dark ? 0.16 : 0.05,
+            color: Colors.black.withValues(
+              alpha: theme.brightness == Brightness.dark ? 0.16 : 0.05,
             ),
             blurRadius: 12,
             offset: const Offset(0, 5),
@@ -203,7 +268,7 @@ class _VeiculoConfiguracoesPageState extends State<VeiculoConfiguracoesPage> {
           Row(
             children: [
               CircleAvatar(
-                backgroundColor: AppColors.primary.withOpacity(0.14),
+                backgroundColor: AppColors.primary.withValues(alpha: 0.14),
                 child: Icon(icon, color: AppColors.primary),
               ),
               const SizedBox(width: 10),
@@ -236,7 +301,7 @@ class _VeiculoConfiguracoesPageState extends State<VeiculoConfiguracoesPage> {
 
     return TextField(
       controller: controller,
-      enabled: !salvando,
+      enabled: !bloqueado,
       keyboardType: keyboardType,
       style: TextStyle(color: theme.colorScheme.onSurface),
       decoration: InputDecoration(
@@ -260,114 +325,142 @@ class _VeiculoConfiguracoesPageState extends State<VeiculoConfiguracoesPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            context.go('/entregador/inicio');
-          },
+    return PopScope(
+      canPop: !salvando,
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: salvando
+                ? null
+                : () {
+                    context.go('/entregador/inicio');
+                  },
+          ),
+          title: const Text('Veículo e Combustível'),
+          centerTitle: true,
         ),
-        title: const Text('Veículo e Combustível'),
-        centerTitle: true,
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(18),
-        children: [
-          secao(
-            titulo: 'Veículo',
-            icon: Icons.directions_car,
-            children: [
-              DropdownButtonFormField<String>(
-                value: veiculoSelecionado,
-                dropdownColor: theme.cardColor,
-                style: TextStyle(color: theme.colorScheme.onSurface),
-                decoration: const InputDecoration(
-                  prefixIcon: Icon(Icons.directions_car),
-                  labelText: 'Tipo de veículo',
-                ),
-                items: capacidadesPadrao.keys.map((veiculo) {
-                  return DropdownMenuItem<String>(
-                    value: veiculo,
-                    child: Text(textoVeiculo(veiculo)),
-                  );
-                }).toList(),
-                onChanged: salvando
-                    ? null
-                    : (valor) {
-                        if (valor == null) return;
-
-                        atualizarCapacidade(valor);
-                      },
-              ),
-
+        body: ListView(
+          padding: const EdgeInsets.all(18),
+          children: [
+            if (carregando) ...[
+              const LinearProgressIndicator(),
               const SizedBox(height: 16),
-
-              campo(
-                controller: capacidadeController,
-                label: 'Capacidade de carga',
-                hint: 'Ex: 20',
-                icon: Icons.inventory_2,
-                suffixText: 'kg',
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
-              ),
             ],
-          ),
-
-          secao(
-            titulo: 'Combustível',
-            icon: Icons.local_gas_station,
-            children: [
-              campo(
-                controller: consumoController,
-                label: 'Consumo médio',
-                hint: 'Ex: 35',
-                icon: Icons.local_gas_station,
-                suffixText: 'km/l',
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
+            if (erroCarregamento != null) ...[
+              Text(
+                erroCarregamento!,
+                style: TextStyle(color: theme.colorScheme.error),
               ),
-
+              TextButton(
+                onPressed: carregando ? null : carregarConfiguracoes,
+                child: const Text('Tentar novamente'),
+              ),
+              const SizedBox(height: 12),
+            ],
+            if (erroSincronizacao != null) ...[
+              Text(
+                erroSincronizacao!,
+                style: TextStyle(color: theme.colorScheme.error),
+              ),
               const SizedBox(height: 16),
-
-              campo(
-                controller: precoController,
-                label: 'Preço do combustível',
-                hint: 'Ex: 6,29',
-                icon: Icons.attach_money,
-                suffixText: 'R\$/L',
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
-              ),
             ],
-          ),
+            secao(
+              titulo: 'Veículo',
+              icon: Icons.directions_car,
+              children: [
+                DropdownButtonFormField<String>(
+                  key: ValueKey(versaoCarregamento),
+                  initialValue: veiculoSelecionado,
+                  dropdownColor: theme.cardColor,
+                  style: TextStyle(color: theme.colorScheme.onSurface),
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.directions_car),
+                    labelText: 'Tipo de veículo',
+                  ),
+                  items: capacidadesPadrao.keys.map((veiculo) {
+                    return DropdownMenuItem<String>(
+                      value: veiculo,
+                      child: Text(textoVeiculo(veiculo)),
+                    );
+                  }).toList(),
+                  onChanged: bloqueado
+                      ? null
+                      : (valor) {
+                          if (valor == null) return;
 
-          SizedBox(
-            height: 54,
-            child: ElevatedButton.icon(
-              onPressed: salvando ? null : salvarConfiguracoes,
-              icon: salvando
-                  ? const SizedBox(
-                      width: 21,
-                      height: 21,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Icon(Icons.save),
-              label: Text(salvando ? 'Salvando...' : 'Salvar Configurações'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: Colors.white,
+                          atualizarCapacidade(valor);
+                        },
+                ),
+
+                const SizedBox(height: 16),
+
+                campo(
+                  controller: capacidadeController,
+                  label: 'Capacidade de carga',
+                  hint: 'Ex: 20',
+                  icon: Icons.inventory_2,
+                  suffixText: 'kg',
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                ),
+              ],
+            ),
+
+            secao(
+              titulo: 'Combustível',
+              icon: Icons.local_gas_station,
+              children: [
+                campo(
+                  controller: consumoController,
+                  label: 'Consumo médio',
+                  hint: 'Ex: 35',
+                  icon: Icons.local_gas_station,
+                  suffixText: 'km/l',
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                campo(
+                  controller: precoController,
+                  label: 'Preço do combustível',
+                  hint: 'Ex: 6,29',
+                  icon: Icons.attach_money,
+                  suffixText: 'R\$/L',
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                ),
+              ],
+            ),
+
+            SizedBox(
+              height: 54,
+              child: ElevatedButton.icon(
+                onPressed: bloqueado ? null : salvarConfiguracoes,
+                icon: salvando
+                    ? const SizedBox(
+                        width: 21,
+                        height: 21,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.save),
+                label: Text(salvando ? 'Salvando...' : 'Salvar Configurações'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

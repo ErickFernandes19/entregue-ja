@@ -1,12 +1,14 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../config/api_config.dart';
 import '../services/auth_service.dart';
+import '../services/api_service.dart';
 import '../theme/app_colors.dart';
 
 class PerfilPage extends StatefulWidget {
@@ -22,8 +24,15 @@ class _PerfilPageState extends State<PerfilPage> {
   String? fotoUrl;
   Uint8List? fotoBytes;
   bool carregandoFoto = false;
+  bool carregandoPerfil = false;
+  String? erroPerfil;
+  String? erroVinculo;
+  String? erroFoto;
   int versaoFoto = 0;
   Map<String, dynamic>? empresaVinculada;
+  bool carregandoVinculo = true;
+  bool desvinculando = false;
+  int versaoVinculo = 0;
 
   final ImagePicker picker = ImagePicker();
   bool enviandoFoto = false;
@@ -44,128 +53,319 @@ class _PerfilPageState extends State<PerfilPage> {
     carregarDadosUsuario();
   }
 
-  Future<void> carregarDadosUsuario() async {
-    final perfil = await AuthService.buscarPerfil();
-    final empresa = await AuthService.buscarEmpresaVinculada();
-
+  void mostrarMensagem(String mensagem, {bool sucesso = false}) {
     if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(mensagem),
+          backgroundColor: sucesso ? AppColors.success : AppColors.error,
+        ),
+      );
+  }
 
-    final foto = perfil?['foto']?.toString() ?? '';
-    final referencia = resolverFoto(foto);
+  Future<void> carregarDadosUsuario() async {
+    if (!mounted || carregandoPerfil || desvinculando || enviandoFoto) return;
+    setState(() {
+      carregandoPerfil = true;
+      erroPerfil = null;
+    });
+    final consultaVinculo = atualizarVinculo();
+    try {
+      final perfil = await AuthService.buscarPerfil(lancarErro: true);
+      if (!mounted) return;
+      if (perfil == null) {
+        throw const ApiException('Não foi possível carregar o perfil.');
+      }
+      final referencia = resolverFoto(perfil['foto']?.toString());
+      setState(() {
+        nome = perfil['nome']?.toString() ?? 'Entregador';
+        email = perfil['email']?.toString() ?? '';
+      });
+      await carregarFotoAutenticada(referencia);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        erroPerfil = ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível carregar o perfil. Tente novamente.',
+        );
+        if (e is ApiException && (e.statusCode == 401 || e.statusCode == 403)) {
+          nome = 'Entregador';
+          email = '';
+          fotoUrl = null;
+          fotoBytes = null;
+          erroFoto = null;
+          versaoFoto++;
+          carregandoFoto = false;
+        }
+      });
+    } finally {
+      await consultaVinculo;
+      if (mounted) setState(() => carregandoPerfil = false);
+    }
+  }
+
+  Future<void> atualizarVinculo() async {
+    if (!mounted) return;
+    final requisicao = ++versaoVinculo;
+    setState(() {
+      carregandoVinculo = true;
+      erroVinculo = null;
+    });
+    try {
+      final empresa = await AuthService.buscarEmpresaVinculada(
+        lancarErro: true,
+      );
+      if (empresa == null || empresa['vinculado'] is! bool) {
+        throw const FormatException('Resposta de vínculo inválida.');
+      }
+      if (!mounted || requisicao != versaoVinculo) return;
+      setState(() => empresaVinculada = empresa);
+    } catch (e) {
+      if (!mounted || requisicao != versaoVinculo) return;
+      setState(() {
+        erroVinculo = ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível consultar a empresa vinculada.',
+        );
+        if (e is ApiException && (e.statusCode == 401 || e.statusCode == 403)) {
+          empresaVinculada = null;
+        }
+      });
+    } finally {
+      if (mounted && requisicao == versaoVinculo) {
+        setState(() => carregandoVinculo = false);
+      }
+    }
+  }
+
+  Future<void> desvincularEmpresa() async {
+    if (desvinculando ||
+        carregandoVinculo ||
+        carregandoPerfil ||
+        enviandoFoto ||
+        erroVinculo != null ||
+        erroPerfil != null ||
+        empresaVinculada?['vinculado'] != true) {
+      return;
+    }
+
+    final nomeEmpresa = empresaVinculada?['nome']?.toString() ?? 'a empresa';
+    final emailEmpresa = empresaVinculada?['email']?.toString().trim() ?? '';
+    if (emailEmpresa.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Não foi possível identificar a empresa. Atualize o vínculo.',
+          ),
+        ),
+      );
+      await atualizarVinculo();
+      return;
+    }
 
     setState(() {
-      nome = perfil?['nome'] ?? 'Entregador';
-      email = perfil?['email'] ?? '';
-      empresaVinculada = empresa;
+      desvinculando = true;
     });
 
-    await carregarFotoAutenticada(referencia);
+    try {
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Desvincular empresa'),
+          content: Text(
+            'Deseja encerrar seu vínculo com $nomeEmpresa? '
+            'Você voltará a atuar como entregador autônomo e seu histórico '
+            'será preservado. Entregas pendentes ou em rota desta empresa '
+            'impedem a desvinculação.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.error,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Desvincular'),
+            ),
+          ],
+        ),
+      );
+
+      if (!mounted || confirmar != true) return;
+
+      final resultado = await AuthService.desvincularEmpresa(
+        empresaEmail: emailEmpresa,
+      );
+      if (!mounted) return;
+
+      final sucesso = resultado['sucesso'] == true;
+      final mensagem =
+          resultado['mensagem']?.toString() ??
+          'Não foi possível confirmar o encerramento do vínculo.';
+
+      if (sucesso) {
+        ++versaoVinculo;
+        setState(() {
+          empresaVinculada = {'vinculado': false};
+          erroVinculo = null;
+          carregandoVinculo = false;
+        });
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(mensagem),
+          backgroundColor: sucesso ? AppColors.success : AppColors.error,
+        ),
+      );
+
+      if (!sucesso) await atualizarVinculo();
+    } catch (e) {
+      if (!mounted) return;
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível confirmar o encerramento do vínculo. Atualize o perfil.',
+        ),
+      );
+      await atualizarVinculo();
+    } finally {
+      if (mounted) {
+        setState(() {
+          desvinculando = false;
+        });
+      }
+    }
   }
 
   Future<void> carregarFotoAutenticada(String? url) async {
+    if (!mounted) return;
     final requisicao = ++versaoFoto;
-
     if (url == null) {
-      if (!mounted) return;
       setState(() {
         fotoUrl = null;
         fotoBytes = null;
+        erroFoto = null;
         carregandoFoto = false;
       });
       return;
     }
-
-    if (!mounted) return;
     setState(() {
+      if (fotoUrl != url) fotoBytes = null;
       fotoUrl = url;
+      erroFoto = null;
       carregandoFoto = true;
     });
-
     try {
-      final token = await AuthService.obterToken();
+      final uri = Uri.parse(url);
+      final apiUri = Uri.parse(ApiConfig.auth);
+      final headers = uri.origin == apiUri.origin
+          ? await AuthService.headersAutenticados()
+          : <String, String>{};
       final response = await http
-          .get(
-            Uri.parse(url),
-            headers: {
-              if (token != null && token.isNotEmpty)
-                'Authorization': 'Bearer $token',
-            },
-          )
+          .get(uri, headers: headers)
           .timeout(const Duration(seconds: 20));
-
       if (response.statusCode != 200) {
-        debugPrint('Erro ao carregar foto: HTTP ${response.statusCode}');
-        return;
+        throw ApiService.erroHttp(response.statusCode, response.body);
       }
-
+      if (response.bodyBytes.isEmpty) {
+        throw const ApiException('A foto do perfil está indisponível.');
+      }
+      if (!mounted || requisicao != versaoFoto) return;
+      setState(() => fotoBytes = response.bodyBytes);
+    } catch (e) {
       if (!mounted || requisicao != versaoFoto) return;
       setState(() {
-        fotoBytes = response.bodyBytes;
+        erroFoto = ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível carregar a foto do perfil.',
+        );
+        if (e is ApiException && (e.statusCode == 401 || e.statusCode == 403)) {
+          fotoBytes = null;
+        }
       });
-    } catch (e) {
-      debugPrint('Erro ao carregar foto do entregador: $e');
     } finally {
       if (mounted && requisicao == versaoFoto) {
-        setState(() {
-          carregandoFoto = false;
-        });
+        setState(() => carregandoFoto = false);
       }
     }
   }
 
   Future<void> escolherFoto(ImageSource source) async {
-    if (enviandoFoto) return;
-
+    if (!mounted ||
+        enviandoFoto ||
+        carregandoPerfil ||
+        desvinculando ||
+        erroPerfil != null) {
+      return;
+    }
+    setState(() => enviandoFoto = true);
     try {
       final imagem = await picker.pickImage(source: source, imageQuality: 70);
       if (imagem == null || !mounted) return;
-
-      setState(() {
-        enviandoFoto = true;
-      });
-
       final bytes = await imagem.readAsBytes();
+      if (!mounted) return;
+      if (bytes.isEmpty) {
+        throw const ApiException('Selecione uma foto válida.');
+      }
       final foto = await AuthService.atualizarFotoPerfilBytes(
         bytes: bytes,
         nomeArquivo: imagem.name,
+        lancarErro: true,
       );
-
       if (!mounted) return;
-
-      if (foto == null) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Erro ao atualizar foto')));
-        return;
-      }
-
       final url = resolverFoto(foto);
-      if (!mounted) return;
-      setState(() {
-        fotoBytes = bytes;
-      });
-      await carregarFotoAutenticada(url);
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Foto atualizada com sucesso')),
-      );
-    } catch (e) {
-      debugPrint('Erro ao selecionar ou atualizar foto: $e');
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Erro ao atualizar foto')));
-    } finally {
-      if (mounted) {
-        setState(() {
-          enviandoFoto = false;
-        });
+      if (url == null) {
+        throw const FormatException('Referência da foto ausente.');
       }
+      ++versaoFoto;
+      setState(() {
+        fotoUrl = url;
+        fotoBytes = bytes;
+        erroFoto = null;
+        carregandoFoto = false;
+      });
+      mostrarMensagem('Foto atualizada com sucesso.', sucesso: true);
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      final codigo = e.code.toLowerCase();
+      if (codigo.contains('access_denied') || codigo.contains('restricted')) {
+        mostrarMensagem(
+          source == ImageSource.camera
+              ? 'Permita o acesso à câmera nas configurações do dispositivo.'
+              : 'Permita o acesso às fotos nas configurações do dispositivo.',
+        );
+      } else {
+        mostrarMensagem('Não foi possível acessar a imagem. Tente novamente.');
+      }
+    } catch (e) {
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível atualizar a foto do perfil.',
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => enviandoFoto = false);
     }
   }
 
   Future<void> abrirOpcoesFoto() async {
+    if (enviandoFoto ||
+        carregandoPerfil ||
+        desvinculando ||
+        erroPerfil != null) {
+      return;
+    }
     await showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -195,7 +395,7 @@ class _PerfilPageState extends State<PerfilPage> {
                 ),
                 ListTile(
                   leading: CircleAvatar(
-                    backgroundColor: AppColors.primary.withOpacity(0.15),
+                    backgroundColor: AppColors.primary.withValues(alpha: 0.15),
                     child: const Icon(
                       Icons.photo_camera,
                       color: AppColors.primary,
@@ -212,7 +412,7 @@ class _PerfilPageState extends State<PerfilPage> {
                 ),
                 ListTile(
                   leading: CircleAvatar(
-                    backgroundColor: AppColors.primary.withOpacity(0.15),
+                    backgroundColor: AppColors.primary.withValues(alpha: 0.15),
                     child: const Icon(
                       Icons.photo_library,
                       color: AppColors.primary,
@@ -236,6 +436,12 @@ class _PerfilPageState extends State<PerfilPage> {
   }
 
   Future<void> editarPerfil() async {
+    if (carregandoPerfil ||
+        enviandoFoto ||
+        desvinculando ||
+        erroPerfil != null) {
+      return;
+    }
     await context.push(
       '/entregador/perfil/editar',
       extra: {'nome': nome, 'email': email},
@@ -250,7 +456,13 @@ class _PerfilPageState extends State<PerfilPage> {
 
     return Center(
       child: GestureDetector(
-        onTap: enviandoFoto ? null : abrirOpcoesFoto,
+        onTap:
+            enviandoFoto ||
+                carregandoPerfil ||
+                desvinculando ||
+                erroPerfil != null
+            ? null
+            : abrirOpcoesFoto,
         child: Stack(
           alignment: Alignment.bottomRight,
           children: [
@@ -263,8 +475,8 @@ class _PerfilPageState extends State<PerfilPage> {
                 ),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(
-                      theme.brightness == Brightness.dark ? 0.30 : 0.16,
+                    color: Colors.black.withValues(
+                      alpha: theme.brightness == Brightness.dark ? 0.30 : 0.16,
                     ),
                     blurRadius: 16,
                     offset: const Offset(0, 6),
@@ -332,12 +544,12 @@ class _PerfilPageState extends State<PerfilPage> {
       decoration: BoxDecoration(
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withOpacity(0.18)),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
       ),
       child: ListTile(
         onTap: onTap,
         leading: CircleAvatar(
-          backgroundColor: color.withOpacity(0.15),
+          backgroundColor: color.withValues(alpha: 0.15),
           child: Icon(icon, color: color),
         ),
         title: Text(
@@ -362,6 +574,26 @@ class _PerfilPageState extends State<PerfilPage> {
   }
 
   Widget cardEmpresaVinculada() {
+    if (carregandoVinculo) {
+      return cardInfo(
+        icon: Icons.business,
+        titulo: 'Empresa vinculada',
+        valor: 'Consultando vínculo...',
+        color: AppColors.primary,
+      );
+    }
+
+    if (erroVinculo != null || empresaVinculada?['vinculado'] is! bool) {
+      return cardInfo(
+        icon: Icons.refresh,
+        titulo: 'Empresa vinculada',
+        valor:
+            '${erroVinculo ?? 'Não foi possível consultar o vínculo.'} Toque para tentar novamente.',
+        color: AppColors.warning,
+        onTap: desvinculando || carregandoPerfil ? null : atualizarVinculo,
+      );
+    }
+
     final vinculado = empresaVinculada?['vinculado'] == true;
 
     if (!vinculado) {
@@ -409,7 +641,28 @@ class _PerfilPageState extends State<PerfilPage> {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
+          if (carregandoPerfil) const LinearProgressIndicator(),
+          if (erroPerfil != null)
+            cardInfo(
+              icon: Icons.refresh,
+              titulo: 'Atualizar perfil',
+              valor: erroPerfil!,
+              color: AppColors.warning,
+              onTap: carregandoPerfil ? null : carregarDadosUsuario,
+            ),
           avatarPerfil(),
+          if (erroFoto != null)
+            TextButton.icon(
+              onPressed:
+                  carregandoFoto ||
+                      enviandoFoto ||
+                      carregandoPerfil ||
+                      erroPerfil != null
+                  ? null
+                  : () => carregarFotoAutenticada(fotoUrl),
+              icon: const Icon(Icons.refresh),
+              label: Text('${erroFoto!} Tentar novamente'),
+            ),
 
           const SizedBox(height: 20),
 
@@ -444,6 +697,40 @@ class _PerfilPageState extends State<PerfilPage> {
 
           cardEmpresaVinculada(),
 
+          if (empresaVinculada?['vinculado'] == true &&
+              !carregandoVinculo &&
+              erroVinculo == null) ...[
+            SizedBox(
+              height: 52,
+              child: OutlinedButton.icon(
+                onPressed:
+                    desvinculando ||
+                        carregandoPerfil ||
+                        enviandoFoto ||
+                        erroPerfil != null
+                    ? null
+                    : desvincularEmpresa,
+                icon: desvinculando
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.link_off),
+                label: Text(
+                  desvinculando
+                      ? 'Encerrando vínculo...'
+                      : 'Desvincular empresa',
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.error,
+                  side: BorderSide(color: AppColors.error),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+
           cardInfo(
             icon: Icons.person,
             titulo: 'Nome',
@@ -463,7 +750,13 @@ class _PerfilPageState extends State<PerfilPage> {
           SizedBox(
             height: 52,
             child: ElevatedButton.icon(
-              onPressed: editarPerfil,
+              onPressed:
+                  desvinculando ||
+                      carregandoPerfil ||
+                      enviandoFoto ||
+                      erroPerfil != null
+                  ? null
+                  : editarPerfil,
               icon: const Icon(Icons.edit),
               label: const Text('Editar Perfil'),
               style: ElevatedButton.styleFrom(
@@ -478,7 +771,13 @@ class _PerfilPageState extends State<PerfilPage> {
           SizedBox(
             height: 52,
             child: OutlinedButton.icon(
-              onPressed: abrirOpcoesFoto,
+              onPressed:
+                  desvinculando ||
+                      carregandoPerfil ||
+                      enviandoFoto ||
+                      erroPerfil != null
+                  ? null
+                  : abrirOpcoesFoto,
               icon: const Icon(Icons.photo_camera),
               label: const Text('Alterar Foto'),
               style: OutlinedButton.styleFrom(

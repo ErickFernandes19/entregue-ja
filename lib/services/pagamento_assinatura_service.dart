@@ -4,113 +4,295 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../config/api_config.dart';
+import 'api_service.dart';
 import 'auth_service.dart';
 import 'empresa_service.dart';
 
 enum TipoContaPagamento { empresa, entregador }
 
-class PagamentoAssinaturaException implements Exception {
-  final String mensagem;
-  final int? statusCode;
+class PagamentoAssinaturaException extends ApiException {
+  const PagamentoAssinaturaException(super.mensagem, {super.statusCode});
+}
 
-  const PagamentoAssinaturaException(this.mensagem, {this.statusCode});
+class _SessaoPagamento {
+  final TipoContaPagamento tipoConta;
+  final String token;
+  final String email;
 
-  @override
-  String toString() => mensagem;
+  const _SessaoPagamento(this.tipoConta, this.token, this.email);
+
+  Map<String, String> get headers => {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'Authorization': 'Bearer $token',
+  };
+
+  String get tipoEsperado =>
+      tipoConta == TipoContaPagamento.empresa ? 'EMPRESA' : 'ENTREGADOR';
 }
 
 class PagamentoAssinaturaService {
+  static const _tempoLimite = Duration(seconds: 30);
+  static final _operacoesEmAndamento = <TipoContaPagamento>{};
+
   static Uri get _urlBase =>
       Uri.parse('${ApiConfig.baseUrl}/pagamentos/assinaturas');
 
-  static Future<Map<String, String>> _headersAutenticados(
-    TipoContaPagamento tipoConta,
-  ) async {
+  static Future<String?> _obterToken(TipoContaPagamento tipoConta) async {
     final token = switch (tipoConta) {
       TipoContaPagamento.empresa => await EmpresaService.obterTokenEmpresa(),
       TipoContaPagamento.entregador => await AuthService.obterToken(),
     };
+    final valor = token?.trim();
+    return valor == null || valor.isEmpty ? null : valor;
+  }
 
-    if (token == null || token.trim().isEmpty) {
-      throw PagamentoAssinaturaException(
-        tipoConta == TipoContaPagamento.empresa
-            ? 'Faça login como empresa para realizar pagamentos.'
-            : 'Faça login como entregador para realizar pagamentos.',
-        statusCode: 401,
-      );
-    }
-
-    return {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Authorization': 'Bearer ${token.trim()}',
+  static Future<String?> _obterEmail(TipoContaPagamento tipoConta) {
+    return switch (tipoConta) {
+      TipoContaPagamento.empresa => EmpresaService.empresaLogada(),
+      TipoContaPagamento.entregador => AuthService.usuarioLogado(),
     };
   }
 
-  static void _validarStatus(http.Response response) {
-    switch (response.statusCode) {
-      case 200:
-      case 201:
-        return;
-      case 400:
-        throw const PagamentoAssinaturaException(
-          'Os dados enviados para o pagamento são inválidos.',
-          statusCode: 400,
-        );
-      case 401:
-        throw const PagamentoAssinaturaException(
-          'Sua sessão expirou. Faça login novamente.',
+  static Future<_SessaoPagamento> _obterSessao(
+    TipoContaPagamento tipoConta,
+  ) async {
+    try {
+      final token = await _obterToken(tipoConta);
+      final email = await _obterEmail(tipoConta);
+      if (token == null || email == null || email.trim().isEmpty) {
+        throw PagamentoAssinaturaException(
+          tipoConta == TipoContaPagamento.empresa
+              ? 'Sua sessão empresarial expirou ou não está disponível. Faça login novamente.'
+              : 'Sua sessão de entregador expirou ou não está disponível. Faça login novamente.',
           statusCode: 401,
         );
-      case 403:
+      }
+      if (await _obterToken(tipoConta) != token) {
         throw const PagamentoAssinaturaException(
-          'Sua conta não possui permissão para realizar esta operação.',
-          statusCode: 403,
+          'Sua sessão foi alterada. Faça login novamente.',
+          statusCode: 401,
         );
-      case 404:
-        throw const PagamentoAssinaturaException(
-          'Pagamento ou assinatura não encontrado.',
-          statusCode: 404,
-        );
-      case 409:
-        throw const PagamentoAssinaturaException(
-          'Não foi possível concluir a operação devido a um conflito. Verifique suas cobranças e assinaturas existentes antes de tentar novamente.',
-          statusCode: 409,
-        );
-      case 502:
-        throw const PagamentoAssinaturaException(
-          'O Mercado Pago não conseguiu confirmar a operação. Verifique a situação da cobrança ou assinatura antes de tentar novamente.',
-          statusCode: 502,
-        );
-      default:
-        throw PagamentoAssinaturaException(
-          'Erro ao processar pagamento (HTTP ${response.statusCode}).',
-          statusCode: response.statusCode,
-        );
+      }
+      return _SessaoPagamento(tipoConta, token, email.trim().toLowerCase());
+    } on PagamentoAssinaturaException {
+      rethrow;
+    } catch (_) {
+      throw const PagamentoAssinaturaException(
+        'Não foi possível verificar sua sessão. Confira seu acesso antes de continuar.',
+      );
     }
   }
 
-  static dynamic _decodificarResposta(http.Response response) {
-    _validarStatus(response);
+  static Future<void> _conferirSessao(_SessaoPagamento sessao) async {
+    final atual = await _obterSessao(sessao.tipoConta);
+    if (atual.token != sessao.token || atual.email != sessao.email) {
+      throw const PagamentoAssinaturaException(
+        'Sua sessão foi alterada. Atualize os dados da conta.',
+        statusCode: 401,
+      );
+    }
+  }
 
+  static String _validarPlano(String plano) {
+    final valor = plano.trim().toUpperCase();
+    if (valor != 'ESSENCIAL' && valor != 'PROFISSIONAL') {
+      throw const PagamentoAssinaturaException(
+        'Selecione um plano pago válido.',
+        statusCode: 400,
+      );
+    }
+    return valor;
+  }
+
+  static void _validarChave(String chave) {
+    if (chave.trim().isEmpty || RegExp(r'[\x00-\x1F\x7F]').hasMatch(chave)) {
+      throw const PagamentoAssinaturaException(
+        'A identificação da tentativa de pagamento é inválida. Consulte suas cobranças antes de continuar.',
+        statusCode: 400,
+      );
+    }
+  }
+
+  static void _validarId(int id) {
+    if (id <= 0) {
+      throw const PagamentoAssinaturaException(
+        'O identificador do pagamento ou da assinatura é inválido.',
+        statusCode: 400,
+      );
+    }
+  }
+
+  static String _orientacao(bool pix) => pix
+      ? 'Consulte suas cobranças ou recupere a tentativa com a mesma chave antes de gerar outra cobrança.'
+      : 'Consulte suas assinaturas antes de repetir a operação.';
+
+  static void _validarStatus(
+    http.Response response, {
+    required bool mutacao,
+    required bool pix,
+  }) {
+    final status = response.statusCode;
+    if (status == 200 || status == 201) return;
+
+    final erro = ApiService.erroHttp(
+      status,
+      utf8.decode(response.bodyBytes, allowMalformed: true),
+    );
+    var mensagem = erro.mensagem;
+    if (status == 502) {
+      mensagem = 'O Mercado Pago não conseguiu confirmar a operação.';
+    } else if (mensagem == ApiService.erroHttp(status, '').mensagem) {
+      mensagem = switch (status) {
+        400 => 'Os dados enviados para o pagamento são inválidos.',
+        404 => 'Pagamento ou assinatura não encontrado.',
+        409 => 'A operação não pôde ser concluída devido a um conflito.',
+        _ => mensagem,
+      };
+    }
+    if (mutacao &&
+        (status >= 500 ||
+            status == 408 ||
+            status == 409 ||
+            status == 429 ||
+            (status >= 200 && status < 400))) {
+      mensagem = '$mensagem ${_orientacao(pix)}';
+    }
+    throw PagamentoAssinaturaException(mensagem, statusCode: status);
+  }
+
+  static Future<T> _executar<T>({
+    required TipoContaPagamento tipoConta,
+    required String caminho,
+    required T Function(dynamic dados, _SessaoPagamento sessao) interpretar,
+    required String mensagemConsulta,
+    bool mutacao = false,
+    bool pix = false,
+    Map<String, dynamic>? corpo,
+    Map<String, String>? headersExtras,
+  }) async {
+    if (mutacao && !_operacoesEmAndamento.add(tipoConta)) {
+      throw const PagamentoAssinaturaException(
+        'Já existe uma operação financeira em andamento. Confira seu resultado antes de iniciar outra.',
+        statusCode: 409,
+      );
+    }
+
+    http.Client? client;
+    var enviada = false;
     try {
-      return jsonDecode(utf8.decode(response.bodyBytes));
-    } on FormatException {
-      throw const PagamentoAssinaturaException(
-        'O servidor retornou dados inválidos.',
+      final sessao = await _obterSessao(tipoConta);
+      final request =
+          http.Request(
+              mutacao ? 'POST' : 'GET',
+              Uri.parse('$_urlBase/$caminho'),
+            )
+            ..headers.addAll(sessao.headers)
+            ..followRedirects = false;
+      if (headersExtras != null) {
+        request.headers.addAll(headersExtras);
+      }
+      if (corpo != null) {
+        request.body = jsonEncode(corpo);
+      }
+
+      await _conferirSessao(sessao);
+      final conexao = http.Client();
+      client = conexao;
+      enviada = true;
+      final response = await conexao
+          .send(request)
+          .then(http.Response.fromStream)
+          .timeout(_tempoLimite);
+      try {
+        await _conferirSessao(sessao);
+      } on PagamentoAssinaturaException catch (e) {
+        throw PagamentoAssinaturaException(
+          mutacao
+              ? '${e.mensagem} O resultado da operação não pôde ser confirmado nesta sessão.'
+              : e.mensagem,
+          statusCode: e.statusCode,
+        );
+      }
+      _validarStatus(response, mutacao: mutacao, pix: pix);
+      final dados = jsonDecode(utf8.decode(response.bodyBytes));
+      try {
+        return interpretar(dados, sessao);
+      } on PagamentoAssinaturaException catch (e) {
+        throw PagamentoAssinaturaException(
+          mutacao ? '${e.mensagem} ${_orientacao(pix)}' : e.mensagem,
+          statusCode: e.statusCode,
+        );
+      }
+    } on PagamentoAssinaturaException {
+      rethrow;
+    } on TimeoutException {
+      throw PagamentoAssinaturaException(
+        mutacao && enviada
+            ? 'O servidor demorou para responder. A operação pode ter sido realizada. ${_orientacao(pix)}'
+            : 'O servidor demorou para responder. $mensagemConsulta',
       );
+    } on http.ClientException {
+      throw PagamentoAssinaturaException(
+        mutacao && enviada
+            ? 'Falha de conexão. A operação pode ter sido realizada. ${_orientacao(pix)}'
+            : 'Não foi possível conectar ao servidor. Verifique sua conexão. $mensagemConsulta',
+      );
+    } on FormatException {
+      throw PagamentoAssinaturaException(
+        mutacao && enviada
+            ? 'O servidor retornou dados inválidos. O resultado não pôde ser confirmado. ${_orientacao(pix)}'
+            : 'O servidor retornou dados inválidos. $mensagemConsulta',
+      );
+    } catch (e) {
+      throw PagamentoAssinaturaException(
+        mutacao && enviada
+            ? 'Não foi possível confirmar o resultado da operação. ${_orientacao(pix)}'
+            : ApiService.mensagemErro(e, mensagemPadrao: mensagemConsulta),
+        statusCode: e is ApiException ? e.statusCode : null,
+      );
+    } finally {
+      client?.close();
+      if (mutacao) {
+        _operacoesEmAndamento.remove(tipoConta);
+      }
     }
   }
 
-  static Map<String, dynamic> _processarResposta(http.Response response) {
-    final dados = _decodificarResposta(response);
-
+  static Map<String, dynamic> _validarRegistro(
+    dynamic dados,
+    _SessaoPagamento sessao, {
+    required String campoId,
+    int? idEsperado,
+    String? planoEsperado,
+  }) {
     if (dados is! Map<String, dynamic>) {
+      throw const FormatException('Formato de resposta inválido.');
+    }
+    final id = dados[campoId];
+    final tipo = dados['tipoConta'];
+    final plano = dados['plano'];
+    final status = dados['status'];
+    final valor = dados['valor'];
+    if (id is! int || id <= 0 || (idEsperado != null && id != idEsperado)) {
       throw const PagamentoAssinaturaException(
-        'Formato de resposta do pagamento inválido.',
+        'O servidor retornou um identificador incompatível com a operação.',
       );
     }
-
+    if (tipo != null && tipo != sessao.tipoEsperado) {
+      throw const PagamentoAssinaturaException(
+        'O servidor retornou dados de um perfil diferente do solicitado.',
+      );
+    }
+    if (status is! String ||
+        status.trim().isEmpty ||
+        (plano != null && plano != 'ESSENCIAL' && plano != 'PROFISSIONAL') ||
+        (planoEsperado != null && plano != null && plano != planoEsperado) ||
+        (valor != null && (valor is! num || !valor.isFinite || valor <= 0))) {
+      throw const PagamentoAssinaturaException(
+        'Não foi possível validar os dados do pagamento ou da assinatura.',
+      );
+    }
     return dados;
   }
 
@@ -119,121 +301,83 @@ class PagamentoAssinaturaService {
     required String chaveIdempotencia,
     TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
   }) async {
-    final headers = await _headersAutenticados(tipoConta);
-
-    try {
-      final response = await http
-          .post(
-            Uri.parse('$_urlBase/pix'),
-            headers: headers,
-            body: jsonEncode({
-              'plano': plano.toUpperCase(),
-              'chaveIdempotencia': chaveIdempotencia,
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
-
-      return _processarResposta(response);
-    } on TimeoutException {
-      throw const PagamentoAssinaturaException(
-        'O servidor demorou para responder. A cobrança pode ter sido criada. Consulte o pagamento ou recupere a tentativa com a mesma chave antes de gerar outra cobrança.',
-      );
-    } on http.ClientException {
-      throw const PagamentoAssinaturaException(
-        'Falha de conexão. A cobrança pode ter sido criada. Recupere a tentativa com a mesma chave antes de gerar outra cobrança.',
-      );
-    }
+    final planoValidado = _validarPlano(plano);
+    _validarChave(chaveIdempotencia);
+    return _executar(
+      tipoConta: tipoConta,
+      caminho: 'pix',
+      mutacao: true,
+      pix: true,
+      mensagemConsulta: 'Não foi possível solicitar a cobrança Pix.',
+      corpo: {'plano': planoValidado, 'chaveIdempotencia': chaveIdempotencia},
+      interpretar: (dados, sessao) => _validarRegistro(
+        dados,
+        sessao,
+        campoId: 'pagamentoId',
+        planoEsperado: planoValidado,
+      ),
+    );
   }
 
   static Future<Map<String, dynamic>> consultarPix({
     required int pagamentoId,
     TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
   }) async {
-    final headers = await _headersAutenticados(tipoConta);
-
-    try {
-      final response = await http
-          .get(Uri.parse('$_urlBase/pix/$pagamentoId'), headers: headers)
-          .timeout(const Duration(seconds: 30));
-
-      return _processarResposta(response);
-    } on TimeoutException {
-      throw const PagamentoAssinaturaException(
-        'O servidor demorou para responder ao consultar o pagamento.',
-      );
-    } on http.ClientException {
-      throw const PagamentoAssinaturaException(
-        'Não foi possível consultar o pagamento. Verifique sua conexão.',
-      );
-    }
+    _validarId(pagamentoId);
+    return _executar(
+      tipoConta: tipoConta,
+      caminho: 'pix/$pagamentoId',
+      pix: true,
+      mensagemConsulta:
+          'Não foi possível consultar o pagamento. Tente novamente.',
+      interpretar: (dados, sessao) => _validarRegistro(
+        dados,
+        sessao,
+        campoId: 'pagamentoId',
+        idEsperado: pagamentoId,
+      ),
+    );
   }
 
   static Future<List<Map<String, dynamic>>> listarPixPendentes({
     required TipoContaPagamento tipoConta,
-  }) async {
-    final headers = await _headersAutenticados(tipoConta);
-    final tipoEsperado = switch (tipoConta) {
-      TipoContaPagamento.empresa => 'EMPRESA',
-      TipoContaPagamento.entregador => 'ENTREGADOR',
-    };
-
-    try {
-      final response = await http
-          .get(Uri.parse('$_urlBase/pix/pendentes'), headers: headers)
-          .timeout(const Duration(seconds: 30));
-
-      final dados = _decodificarResposta(response);
-
-      if (dados is! List) {
-        throw const PagamentoAssinaturaException(
-          'Formato da lista de cobranças Pix inválido.',
-        );
-      }
-
-      final pagamentos = <Map<String, dynamic>>[];
-      final identificadores = <int>{};
-
-      for (final item in dados) {
-        if (item is! Map<String, dynamic>) {
-          throw const PagamentoAssinaturaException(
-            'O servidor retornou uma cobrança Pix inválida.',
-          );
+  }) {
+    return _executar(
+      tipoConta: tipoConta,
+      caminho: 'pix/pendentes',
+      pix: true,
+      mensagemConsulta:
+          'Não foi possível listar as cobranças Pix. Consulte novamente antes de gerar outra cobrança.',
+      interpretar: (dados, sessao) {
+        if (dados is! List) {
+          throw const FormatException('Formato de lista inválido.');
         }
-
-        final id = item['pagamentoId'];
-        final plano = item['plano'];
-        final valor = item['valor'];
-        final status = item['status'];
-
-        if (id is! int ||
-            id <= 0 ||
-            !identificadores.add(id) ||
-            item['tipoConta'] != tipoEsperado ||
-            (plano != 'ESSENCIAL' && plano != 'PROFISSIONAL') ||
-            valor is! num ||
-            !valor.isFinite ||
-            valor <= 0 ||
-            (status != 'PENDENTE' && status != 'APROVADO') ||
-            item['planoAtivado'] != false ||
-            item['requerConciliacao'] != true) {
-          throw const PagamentoAssinaturaException(
-            'Não foi possível validar as cobranças Pix pendentes com segurança.',
-          );
+        final pagamentos = <Map<String, dynamic>>[];
+        final identificadores = <int>{};
+        for (final dado in dados) {
+          final item = _validarRegistro(dado, sessao, campoId: 'pagamentoId');
+          final id = item['pagamentoId'] as int;
+          final plano = item['plano'];
+          final valor = item['valor'];
+          final status = item['status'];
+          if (!identificadores.add(id) ||
+              item['tipoConta'] != sessao.tipoEsperado ||
+              (plano != 'ESSENCIAL' && plano != 'PROFISSIONAL') ||
+              valor is! num ||
+              !valor.isFinite ||
+              valor <= 0 ||
+              (status != 'PENDENTE' && status != 'APROVADO') ||
+              item['planoAtivado'] != false ||
+              item['requerConciliacao'] != true) {
+            throw const PagamentoAssinaturaException(
+              'Não foi possível validar as cobranças Pix pendentes com segurança. Consulte novamente antes de gerar outra cobrança.',
+            );
+          }
+          pagamentos.add(item);
         }
-
-        pagamentos.add(item);
-      }
-
-      return pagamentos;
-    } on TimeoutException {
-      throw const PagamentoAssinaturaException(
-        'O servidor demorou para listar as cobranças Pix. Tente consultar novamente antes de gerar outra cobrança.',
-      );
-    } on http.ClientException {
-      throw const PagamentoAssinaturaException(
-        'Não foi possível listar as cobranças Pix. Verifique sua conexão antes de gerar outra cobrança.',
-      );
-    }
+        return pagamentos;
+      },
+    );
   }
 
   static Future<Map<String, dynamic>> criarAssinaturaRecorrente({
@@ -242,130 +386,96 @@ class PagamentoAssinaturaService {
     required String emailPagador,
     TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
   }) async {
+    final planoValidado = _validarPlano(plano);
+    _validarChave(chaveIdempotencia);
     final email = emailPagador.trim();
-
     if (email.isEmpty ||
         email.length > 254 ||
         !RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email)) {
       throw const PagamentoAssinaturaException(
         'Informe um e-mail válido para o responsável pelo pagamento.',
+        statusCode: 400,
       );
     }
-
-    final headers = await _headersAutenticados(tipoConta);
-    headers['X-Idempotency-Key'] = chaveIdempotencia;
-
-    try {
-      final response = await http
-          .post(
-            Uri.parse('$_urlBase/recorrentes'),
-            headers: headers,
-            body: jsonEncode({
-              'plano': plano.toUpperCase(),
-              'emailPagador': email,
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
-
-      return _processarResposta(response);
-    } on TimeoutException {
-      throw const PagamentoAssinaturaException(
-        'A solicitação demorou para responder. A assinatura pode ter sido criada. Consulte suas assinaturas antes de tentar novamente.',
-      );
-    } on http.ClientException {
-      throw const PagamentoAssinaturaException(
-        'Falha de conexão. A assinatura pode ter sido criada. Consulte suas assinaturas antes de tentar novamente.',
-      );
-    }
+    return _executar(
+      tipoConta: tipoConta,
+      caminho: 'recorrentes',
+      mutacao: true,
+      mensagemConsulta: 'Não foi possível solicitar a assinatura recorrente.',
+      headersExtras: {'X-Idempotency-Key': chaveIdempotencia},
+      corpo: {'plano': planoValidado, 'emailPagador': email},
+      interpretar: (dados, sessao) => _validarRegistro(
+        dados,
+        sessao,
+        campoId: 'assinaturaId',
+        planoEsperado: planoValidado,
+      ),
+    );
   }
 
   static Future<Map<String, dynamic>> consultarAssinaturaRecorrente({
     required int assinaturaId,
     TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
   }) async {
-    final headers = await _headersAutenticados(tipoConta);
-
-    try {
-      final response = await http
-          .get(
-            Uri.parse('$_urlBase/recorrentes/$assinaturaId'),
-            headers: headers,
-          )
-          .timeout(const Duration(seconds: 30));
-
-      return _processarResposta(response);
-    } on TimeoutException {
-      throw const PagamentoAssinaturaException(
-        'O servidor demorou para responder ao consultar a assinatura.',
-      );
-    } on http.ClientException {
-      throw const PagamentoAssinaturaException(
-        'Não foi possível consultar a assinatura. Verifique sua conexão.',
-      );
-    }
+    _validarId(assinaturaId);
+    return _executar(
+      tipoConta: tipoConta,
+      caminho: 'recorrentes/$assinaturaId',
+      mensagemConsulta:
+          'Não foi possível consultar a assinatura. Tente novamente.',
+      interpretar: (dados, sessao) => _validarRegistro(
+        dados,
+        sessao,
+        campoId: 'assinaturaId',
+        idEsperado: assinaturaId,
+      ),
+    );
   }
 
   static Future<List<Map<String, dynamic>>> listarAssinaturasRecorrentes({
     TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
-  }) async {
-    final headers = await _headersAutenticados(tipoConta);
-
-    try {
-      final response = await http
-          .get(Uri.parse('$_urlBase/recorrentes'), headers: headers)
-          .timeout(const Duration(seconds: 30));
-
-      final dados = _decodificarResposta(response);
-
-      if (dados is! List) {
-        throw const PagamentoAssinaturaException(
-          'Formato da lista de assinaturas inválido.',
-        );
-      }
-
-      return dados.map((item) {
-        if (item is! Map<String, dynamic>) {
-          throw const PagamentoAssinaturaException(
-            'O servidor retornou uma assinatura inválida.',
-          );
+  }) {
+    return _executar(
+      tipoConta: tipoConta,
+      caminho: 'recorrentes',
+      mensagemConsulta:
+          'Não foi possível listar as assinaturas. Consulte novamente.',
+      interpretar: (dados, sessao) {
+        if (dados is! List) {
+          throw const FormatException('Formato de lista inválido.');
         }
-
-        return item;
-      }).toList();
-    } on TimeoutException {
-      throw const PagamentoAssinaturaException(
-        'O servidor demorou para listar as assinaturas.',
-      );
-    } on http.ClientException {
-      throw const PagamentoAssinaturaException(
-        'Não foi possível listar as assinaturas. Verifique sua conexão.',
-      );
-    }
+        final assinaturas = <Map<String, dynamic>>[];
+        final identificadores = <int>{};
+        for (final dado in dados) {
+          final item = _validarRegistro(dado, sessao, campoId: 'assinaturaId');
+          if (!identificadores.add(item['assinaturaId'] as int)) {
+            throw const PagamentoAssinaturaException(
+              'O servidor retornou assinaturas duplicadas. Atualize os dados antes de continuar.',
+            );
+          }
+          assinaturas.add(item);
+        }
+        return assinaturas;
+      },
+    );
   }
 
   static Future<Map<String, dynamic>> cancelarAssinaturaRecorrente({
     required int assinaturaId,
     TipoContaPagamento tipoConta = TipoContaPagamento.empresa,
   }) async {
-    final headers = await _headersAutenticados(tipoConta);
-
-    try {
-      final response = await http
-          .post(
-            Uri.parse('$_urlBase/recorrentes/$assinaturaId/cancelar'),
-            headers: headers,
-          )
-          .timeout(const Duration(seconds: 30));
-
-      return _processarResposta(response);
-    } on TimeoutException {
-      throw const PagamentoAssinaturaException(
-        'O cancelamento pode ter sido solicitado. Consulte a assinatura para confirmar o status.',
-      );
-    } on http.ClientException {
-      throw const PagamentoAssinaturaException(
-        'Falha de conexão. Consulte a assinatura para confirmar se o cancelamento ocorreu.',
-      );
-    }
+    _validarId(assinaturaId);
+    return _executar(
+      tipoConta: tipoConta,
+      caminho: 'recorrentes/$assinaturaId/cancelar',
+      mutacao: true,
+      mensagemConsulta: 'Não foi possível solicitar o cancelamento.',
+      interpretar: (dados, sessao) => _validarRegistro(
+        dados,
+        sessao,
+        campoId: 'assinaturaId',
+        idEsperado: assinaturaId,
+      ),
+    );
   }
 }

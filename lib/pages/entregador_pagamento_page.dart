@@ -7,6 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../services/api_service.dart';
 import '../services/assinatura_service.dart';
 import '../services/auth_service.dart';
 import '../services/pagamento_assinatura_service.dart';
@@ -54,7 +55,7 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
 
   final _emailController = TextEditingController();
   _FormaPagamentoEntregador _forma = _FormaPagamentoEntregador.pix;
-  bool _ocupado = true;
+  bool _ocupado = false;
   bool _pronto = false;
   String? _erro;
   String? _token;
@@ -95,6 +96,7 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
               _planoAtivo?['plano'] != _planoApi));
   bool get _podeCriar =>
       !_contratacaoBloqueada &&
+      _erro == null &&
       _pronto &&
       !_ocupado &&
       !_multiplasRecorrentes &&
@@ -131,51 +133,85 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
       email.length <= 254 &&
       RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email);
 
+  void _invalidarSessao() {
+    if (!mounted) return;
+    setState(() {
+      _pronto = false;
+      _pix = null;
+      _pixPendentes = [];
+      _pixVerificado = false;
+      _recorrente = null;
+      _planoAtivo = null;
+      _tentativa = null;
+      _multiplasRecorrentes = false;
+      _emailController.clear();
+    });
+  }
+
   Future<void> _validarSessao() async {
+    if (!mounted) {
+      throw const PagamentoAssinaturaException('A tela foi encerrada.');
+    }
+    final email = await AuthService.usuarioLogado();
     final tokenAtual = await AuthService.obterToken();
-    if (!mounted || _token == null || tokenAtual != _token) {
-      if (mounted) {
-        setState(() {
-          _pronto = false;
-          _pix = null;
-          _pixPendentes = [];
-          _pixVerificado = false;
-          _recorrente = null;
-          _planoAtivo = null;
-          _tentativa = null;
-          _emailController.clear();
-        });
-      }
+    if (!mounted || email == null || _token == null || tokenAtual != _token) {
+      _invalidarSessao();
       throw const PagamentoAssinaturaException(
-        'A sessão mudou. Volte aos planos e entre novamente.',
+        'Sua sessão expirou ou mudou. Volte aos planos e faça login novamente.',
+        statusCode: 401,
       );
     }
   }
 
-  Future<void> _inicializar() async {
-    if (mounted) {
-      setState(() {
-        _ocupado = true;
-        _pronto = false;
-        _pixVerificado = false;
-        _erro = null;
-      });
+  void _tratarFalha(Object e) {
+    if (!mounted) return;
+    if (e is ApiException && (e.statusCode == 401 || e.statusCode == 403)) {
+      _invalidarSessao();
     }
+    setState(() {
+      _erro = _mensagem(e);
+      _pixVerificado = false;
+    });
+  }
+
+  Future<void> _inicializar() async {
+    if (!mounted || _ocupado) return;
+    setState(() {
+      _ocupado = true;
+      _pronto = false;
+      _pixVerificado = false;
+      _erro = null;
+    });
     try {
       final token = await AuthService.obterToken();
-      if (token == null) {
-        throw const PagamentoAssinaturaException('Faça login como entregador.');
+      if (token == null || await AuthService.usuarioLogado() == null) {
+        throw const PagamentoAssinaturaException(
+          'Faça login como entregador.',
+          statusCode: 401,
+        );
       }
       final partes = token.split('.');
       if (partes.length != 3) {
-        throw const FormatException();
+        throw const PagamentoAssinaturaException(
+          'Sessão do entregador inválida. Faça login novamente.',
+          statusCode: 401,
+        );
       }
-      final payload = jsonDecode(
-        utf8.decode(base64Url.decode(base64Url.normalize(partes[1]))),
-      );
+      final dynamic payload;
+      try {
+        payload = jsonDecode(
+          utf8.decode(base64Url.decode(base64Url.normalize(partes[1]))),
+        );
+      } on FormatException {
+        throw const PagamentoAssinaturaException(
+          'Sessão do entregador inválida. Faça login novamente.',
+          statusCode: 401,
+        );
+      }
       if (payload is! Map<String, dynamic> || payload['tipo'] != 'ENTREGADOR') {
         throw const PagamentoAssinaturaException(
           'Sessão do entregador inválida.',
+          statusCode: 401,
         );
       }
       final id = int.tryParse(payload['sub']?.toString() ?? '');
@@ -186,11 +222,13 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
           exp <= DateTime.now().millisecondsSinceEpoch ~/ 1000) {
         throw const PagamentoAssinaturaException(
           'Sessão expirada. Faça login novamente.',
+          statusCode: 401,
         );
       }
       if (_token != null && _token != token) {
         throw const PagamentoAssinaturaException(
           'A sessão mudou. Reabra esta tela.',
+          statusCode: 401,
         );
       }
       if (!mounted) {
@@ -203,9 +241,14 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
       await _validarSessao();
       final registro = prefs.getString(_chaveLocal!);
       if (registro != null) {
-        final dados = jsonDecode(registro);
-        if (dados is! Map<String, dynamic> ||
-            !_planos.containsKey(dados['plano']) ||
+        final registroDecodificado = _decodificarTentativa(registro);
+        if (registroDecodificado is! Map<String, dynamic>) {
+          throw const PagamentoAssinaturaException(
+            'Tentativa anterior inválida. Verifique a cobrança antes de continuar.',
+          );
+        }
+        final dados = registroDecodificado;
+        if (!_planos.containsKey(dados['plano']) ||
             !const {'pix', 'cartao'}.contains(dados['forma']) ||
             dados['chave'] is! String ||
             !RegExp(
@@ -230,22 +273,13 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
         _tentativa = null;
       }
       await _recuperarRecorrentes();
-      try {
-        await _recuperarPix();
-      } catch (e) {
-        if (!_pixVerificado) {
-          rethrow;
-        }
-        _erro = _mensagem(e);
-      }
+      await _recuperarPix();
       await _consultarPlano();
       if (mounted) {
         setState(() => _pronto = true);
       }
     } catch (e) {
-      if (mounted) {
-        setState(() => _erro = _mensagem(e));
-      }
+      _tratarFalha(e);
     } finally {
       if (mounted) {
         setState(() => _ocupado = false);
@@ -254,10 +288,21 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
   }
 
   String _mensagem(Object e) {
-    if (e is PagamentoAssinaturaException || e is AssinaturaException) {
-      return e.toString();
+    return ApiService.mensagemErro(
+      e,
+      mensagemPadrao:
+          'Não foi possível concluir a operação. Verifique sua sessão e a cobrança anterior antes de tentar novamente.',
+    );
+  }
+
+  dynamic _decodificarTentativa(String registro) {
+    try {
+      return jsonDecode(registro);
+    } on FormatException {
+      throw const PagamentoAssinaturaException(
+        'A tentativa salva está inválida. Consulte a cobrança anterior antes de continuar.',
+      );
     }
-    return 'Não foi possível concluir a operação. Verifique sua sessão e a cobrança anterior antes de tentar novamente.';
   }
 
   int? _id(dynamic valor) => valor is int && valor > 0 ? valor : null;
@@ -269,7 +314,7 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
     await _validarSessao();
     final existente = prefs.getString(_chaveLocal!);
     if (existente != null) {
-      final anterior = jsonDecode(existente);
+      final anterior = _decodificarTentativa(existente);
       if (anterior is! Map || anterior['chave'] != dados['chave']) {
         throw const PagamentoAssinaturaException(
           'Existe outra tentativa salva. Reabra a tela antes de continuar.',
@@ -300,7 +345,7 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
     await _validarSessao();
     final registro = prefs.getString(_chaveLocal!);
     if (registro != null) {
-      final dados = jsonDecode(registro);
+      final dados = _decodificarTentativa(registro);
       if (dados is! Map || dados['chave'] != tentativa['chave']) {
         throw const PagamentoAssinaturaException(
           'Outra tentativa está salva. Reabra a tela.',
@@ -312,11 +357,12 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
         );
       }
     }
+    await _validarSessao();
     _tentativa = null;
   }
 
   Future<void> _executar(Future<void> Function() acao) async {
-    if (_ocupado || !_pronto) {
+    if (!mounted || _ocupado || !_pronto) {
       return;
     }
     setState(() {
@@ -327,9 +373,7 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
       await _validarSessao();
       await acao();
     } catch (e) {
-      if (mounted) {
-        setState(() => _erro = _mensagem(e));
-      }
+      _tratarFalha(e);
     } finally {
       if (mounted) {
         setState(() => _ocupado = false);
@@ -343,6 +387,22 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
       tipoConta: TipoContaAssinatura.entregador,
     );
     await _validarSessao();
+    if (dados != null &&
+        (!const {
+              'GRATUITO',
+              'ESSENCIAL',
+              'PROFISSIONAL',
+            }.contains(dados['plano']) ||
+            !const {
+              'ATIVA',
+              'PENDENTE',
+              'CANCELADA',
+              'EXPIRADA',
+            }.contains(dados['status']))) {
+      throw const PagamentoAssinaturaException(
+        'Não foi possível validar o plano atual. Consulte sua assinatura antes de continuar.',
+      );
+    }
     _planoAtivo = dados;
   }
 
@@ -352,9 +412,16 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
 
   void _validarRecorrente(Map<String, dynamic> dados, {int? esperado}) {
     final id = _id(dados['assinaturaId']);
+    final plano = dados['plano'];
+    final valor = dados['valorMensal'];
+    final valorEsperado = plano == 'ESSENCIAL' ? 9.90 : 19.90;
     if (id == null ||
         (esperado != null && id != esperado) ||
-        !_planos.containsKey(dados['plano']) ||
+        (dados['tipoConta'] != null && dados['tipoConta'] != 'ENTREGADOR') ||
+        !_planos.containsKey(plano) ||
+        valor is! num ||
+        !valor.isFinite ||
+        (valor - valorEsperado).abs() > 0.000001 ||
         !_statusRecorrente.contains(dados['status']) ||
         !_estadosCriacao.contains(dados['estadoCriacao'])) {
       throw const PagamentoAssinaturaException(
@@ -369,11 +436,16 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
       tipoConta: _tipo,
     );
     await _validarSessao();
+    final identificadores = <int>{};
     for (final dados in lista) {
       _validarRecorrente(dados);
+      if (!identificadores.add(_id(dados['assinaturaId'])!)) {
+        throw const PagamentoAssinaturaException(
+          'A lista de assinaturas contém identificadores duplicados.',
+        );
+      }
     }
     final abertas = lista.where(_aberta).toList();
-    _multiplasRecorrentes = abertas.length > 1;
     final tentativa = _tentativa;
     final idSalvo = tentativa?['forma'] == 'cartao'
         ? _id(tentativa?['id'])
@@ -387,6 +459,25 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
         }
       }
     }
+    if (idSalvo != null) {
+      selecionada ??=
+          await PagamentoAssinaturaService.consultarAssinaturaRecorrente(
+            assinaturaId: idSalvo,
+            tipoConta: _tipo,
+          );
+      await _validarSessao();
+      _validarRecorrente(selecionada, esperado: idSalvo);
+      if (selecionada['plano'] != tentativa?['plano']) {
+        throw const PagamentoAssinaturaException(
+          'A assinatura não corresponde ao plano da tentativa salva.',
+        );
+      }
+      if (_aberta(selecionada) &&
+          !abertas.any((item) => item['assinaturaId'] == idSalvo)) {
+        abertas.add(selecionada);
+      }
+    }
+    _multiplasRecorrentes = abertas.length > 1;
     selecionada ??= abertas.isEmpty ? null : abertas.first;
     _recorrente = selecionada;
     if (selecionada != null && tentativa?['forma'] != 'pix') {
@@ -397,6 +488,9 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
         selecionada['assinaturaId'] == idSalvo &&
         !_aberta(selecionada)) {
       await _limparTentativa();
+      if (abertas.isNotEmpty) {
+        _recorrente = abertas.first;
+      }
     }
   }
 
@@ -551,7 +645,9 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
   });
 
   Future<void> _criarOuRetomarPix() => _executar(() async {
+    await _recuperarRecorrentes();
     await _recuperarPix(consultar: false);
+    await _consultarPlano();
     if (_tentativa == null) {
       if (_pixPendentes.isNotEmpty ||
           _recorrenteAberta ||
@@ -559,13 +655,17 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
           _contratacaoBloqueada ||
           !_planos.containsKey(_planoApi) ||
           _pix != null) {
-        return;
+        throw const PagamentoAssinaturaException(
+          'Existe uma cobrança, assinatura ou plano que impede uma nova contratação. Consulte os dados antes de continuar.',
+        );
       }
       await _salvar({'forma': 'pix', 'plano': _planoApi, 'chave': _uuid()});
     }
     final tentativa = _tentativa!;
     if (tentativa['forma'] != 'pix') {
-      return;
+      throw const PagamentoAssinaturaException(
+        'Existe uma tentativa por cartão. Consulte-a antes de gerar um Pix.',
+      );
     }
     if (_id(tentativa['id']) != null) {
       await _consultarPixInterno(pagamentoId: _id(tentativa['id'])!);
@@ -591,15 +691,21 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
   });
 
   Future<void> _criarOuRetomarCartao() => _executar(() async {
+    await _recuperarRecorrentes();
     await _recuperarPix(consultar: false);
+    await _consultarPlano();
     if (_multiplasRecorrentes || _pixPendentes.isNotEmpty || _pix != null) {
-      return;
+      throw const PagamentoAssinaturaException(
+        'Consulte as cobranças ou assinaturas existentes antes de continuar.',
+      );
     }
     if (_tentativa == null) {
       if (_contratacaoBloqueada ||
           _recorrenteAberta ||
           !_planos.containsKey(_planoApi)) {
-        return;
+        throw const PagamentoAssinaturaException(
+          'O plano atual ou uma assinatura existente impede uma nova contratação.',
+        );
       }
       final email = _emailController.text.trim();
       if (!_emailValido(email)) {
@@ -616,11 +722,18 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
     }
     final tentativa = _tentativa!;
     if (tentativa['forma'] != 'cartao') {
-      return;
+      throw const PagamentoAssinaturaException(
+        'Existe uma tentativa por Pix. Consulte-a antes de contratar por cartão.',
+      );
     }
     if (_id(tentativa['id']) != null) {
       await _consultarRecorrenteInterno(_id(tentativa['id'])!);
       return;
+    }
+    if (_recorrenteAberta && _recorrente?['plano'] != tentativa['plano']) {
+      throw const PagamentoAssinaturaException(
+        'Existe uma assinatura de outro plano em andamento. Consulte o gerenciamento antes de retomar a tentativa.',
+      );
     }
     await _validarSessao();
     final dados = await PagamentoAssinaturaService.criarAssinaturaRecorrente(
@@ -652,6 +765,13 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
         );
     await _validarSessao();
     _validarRecorrente(dados, esperado: id);
+    if (_tentativa?['forma'] == 'cartao' &&
+        _tentativa?['id'] == id &&
+        _tentativa?['plano'] != dados['plano']) {
+      throw const PagamentoAssinaturaException(
+        'A assinatura consultada não corresponde à tentativa salva.',
+      );
+    }
     _recorrente = dados;
     if (!_aberta(dados) &&
         _tentativa?['forma'] == 'cartao' &&
@@ -671,11 +791,25 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
   });
 
   Future<void> _abrirMercadoPago() => _executar(() async {
+    final id = _id(_recorrente?['assinaturaId']);
+    await _recuperarRecorrentes();
     await _recuperarPix(consultar: false);
-    if (_pixPendentes.isNotEmpty ||
+    await _consultarPlano();
+    if (id != null && _recorrente?['assinaturaId'] == id) {
+      await _consultarRecorrenteInterno(id);
+    }
+    if (id == null ||
+        _recorrente?['assinaturaId'] != id ||
+        _pixPendentes.isNotEmpty ||
+        _multiplasRecorrentes ||
+        (_tentativa != null &&
+            (_tentativa?['forma'] != 'cartao' ||
+                _tentativa?['id'] != _recorrente?['assinaturaId'])) ||
         _recorrente?['status'] != 'PENDENTE' ||
         _recorrente?['estadoCriacao'] != 'CONFIRMADA') {
-      return;
+      throw const PagamentoAssinaturaException(
+        'Não foi possível confirmar a autorização desta assinatura. Atualize os dados antes de continuar.',
+      );
     }
     final uri = Uri.tryParse(_recorrente?['urlAutorizacao']?.toString() ?? '');
     if (uri == null ||
@@ -690,6 +824,7 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
         'O endereço de autorização do Mercado Pago é inválido.',
       );
     }
+    await _validarSessao();
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       throw const PagamentoAssinaturaException(
         'Não foi possível abrir o Mercado Pago.',
@@ -698,16 +833,26 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
   });
 
   Future<void> _copiarPix() => _executar(() async {
+    final id = _id(_pix?['pagamentoId']);
+    await _recuperarRecorrentes();
+    await _recuperarPix();
+    await _consultarPlano();
     final codigo = _pix?['pixCopiaECola'];
-    if (!_pixPendente ||
+    if (id == null ||
+        _pix?['pagamentoId'] != id ||
+        !_pixPendente ||
         !_pixVerificado ||
-        _pixPendentes.length > 1 ||
+        _pixPendentes.length != 1 ||
+        _pixPendentes.first['pagamentoId'] != id ||
         _recorrenteAberta ||
         _multiplasRecorrentes ||
         codigo is! String ||
-        codigo.isEmpty) {
-      return;
+        codigo.trim().isEmpty) {
+      throw const PagamentoAssinaturaException(
+        'Não foi possível confirmar o código Pix desta cobrança. Consulte o pagamento antes de continuar.',
+      );
     }
+    await _validarSessao();
     await Clipboard.setData(ClipboardData(text: codigo));
     if (mounted) {
       ScaffoldMessenger.of(
@@ -734,21 +879,24 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
   Widget _painelPix(ThemeData theme) {
     final codigo = _pix?['pixCopiaECola'];
     final status = _pix?['status'];
-    final mensagem = switch (status) {
-      'PENDENTE' =>
-        (_pix?['mercadoPagoPagamentoId']?.toString().trim().isEmpty ?? true)
-            ? 'A cobrança ainda não foi identificada no Mercado Pago. Consulte novamente; não gere outro Pix.'
-            : 'Aguardando pagamento. Confira o valor e a validade no seu banco.',
-      'APROVADO' =>
-        _pixAtivado
-            ? 'Pagamento aprovado e plano ativado para esta cobrança.'
-            : 'Pagamento aprovado. Aguardando confirmação da ativação.',
-      'RECUSADO' => 'Pagamento recusado.',
-      'CANCELADO' => 'Pagamento cancelado.',
-      'REEMBOLSADO' => 'Pagamento reembolsado.',
-      _ =>
-        'Nenhum pagamento confirmado. Verifique a tentativa salva antes de contratar novamente.',
-    };
+    final mensagem = !_pixVerificado && !_ocupado
+        ? 'Não foi possível confirmar o estado atual da cobrança. Consulte novamente antes de pagar.'
+        : switch (status) {
+            'PENDENTE' =>
+              (_pix?['mercadoPagoPagamentoId']?.toString().trim().isEmpty ??
+                      true)
+                  ? 'A cobrança ainda não foi identificada no Mercado Pago. Consulte novamente; não gere outro Pix.'
+                  : 'Aguardando pagamento. Confira o valor e a validade no seu banco.',
+            'APROVADO' =>
+              _pixAtivado
+                  ? 'Pagamento aprovado e plano ativado para esta cobrança.'
+                  : 'Pagamento aprovado. Aguardando confirmação da ativação.',
+            'RECUSADO' => 'Pagamento recusado.',
+            'CANCELADO' => 'Pagamento cancelado.',
+            'REEMBOLSADO' => 'Pagamento reembolsado.',
+            _ =>
+              'Nenhum pagamento confirmado. Verifique a tentativa salva antes de contratar novamente.',
+          };
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -792,6 +940,7 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
                 !_recorrenteAberta &&
                 !_multiplasRecorrentes &&
                 _pronto &&
+                !_ocupado &&
                 _erro == null &&
                 codigo is String &&
                 codigo.isNotEmpty) ...[
@@ -836,6 +985,7 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
                 _pronto &&
                         !_ocupado &&
                         _pixVerificado &&
+                        _erro == null &&
                         _pixPendentes.isEmpty &&
                         !_recorrenteAberta &&
                         !_multiplasRecorrentes
@@ -861,7 +1011,9 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
         _planoAtivo?['status'] == 'ATIVA' &&
         _planoAtivo?['plano'] == _recorrente?['plano'] &&
         _planoAtivo?['mercadoPagoAssinaturaId'] == externa;
-    final mensagem = criacao != null && criacao != 'CONFIRMADA'
+    final mensagem = !_pixVerificado && !_ocupado
+        ? 'Não foi possível confirmar o estado atual da assinatura. Atualize os dados antes de continuar.'
+        : criacao != null && criacao != 'CONFIRMADA'
         ? 'A criação da assinatura ainda não foi confirmada. Não inicie outra contratação.'
         : switch (status) {
             'PENDENTE' =>
@@ -894,10 +1046,15 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
                 !_multiplasRecorrentes &&
                 _pixVerificado &&
                 _pixPendentes.isEmpty &&
-                _tentativa?['forma'] != 'pix') ...[
+                (_tentativa == null ||
+                    (_tentativa?['forma'] == 'cartao' &&
+                        _tentativa?['id'] ==
+                            _recorrente?['assinaturaId']))) ...[
               _botao(
                 'Autorizar no Mercado Pago',
-                _pronto && !_ocupado ? _abrirMercadoPago : null,
+                _pronto && !_ocupado && _erro == null
+                    ? _abrirMercadoPago
+                    : null,
                 Icons.open_in_new,
               ),
               const SizedBox(height: 8),
@@ -910,6 +1067,7 @@ class _EntregadorPagamentoPageState extends State<EntregadorPagamentoPage> {
                         !_ocupado &&
                         !_multiplasRecorrentes &&
                         _pixVerificado &&
+                        _erro == null &&
                         _pixPendentes.isEmpty &&
                         _pix == null
                     ? _criarOuRetomarCartao

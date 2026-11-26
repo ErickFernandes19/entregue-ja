@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api_config.dart';
+import '../services/api_service.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 
@@ -30,6 +31,11 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
   bool carregando = true;
   bool atualizando = false;
   bool salvandoPreferencias = false;
+  bool _buscandoPreferencias = false;
+  bool _marcandoNotificacao = false;
+  bool _historicoCarregado = false;
+  bool _sessaoInvalida = false;
+  String? _autorizacaoSessao;
   bool ativandoNotificacoesWeb = false;
   bool notificacoesWebAtivadas = false;
 
@@ -63,59 +69,114 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
     }
   }
 
+  Future<Map<String, String>> _headersAutenticados() async {
+    final headers = await EmpresaService.headersAutenticados();
+    final autorizacao = headers['Authorization']?.trim() ?? '';
+    if (_sessaoInvalida ||
+        autorizacao.isEmpty ||
+        (_autorizacaoSessao != null && _autorizacaoSessao != autorizacao)) {
+      throw const ApiException(
+        'Sua sessão expirou. Entre novamente na sua conta.',
+        statusCode: 401,
+      );
+    }
+    _autorizacaoSessao = autorizacao;
+    return headers;
+  }
+
+  Future<void> _confirmarSessao(Map<String, String> headers) async {
+    final atuais = await _headersAutenticados();
+    if (atuais['Authorization'] != headers['Authorization']) {
+      throw const ApiException(
+        'Sua sessão foi alterada. Entre novamente na sua conta.',
+        statusCode: 401,
+      );
+    }
+  }
+
+  void _validarResposta(http.Response resposta, List<int> aceitos) {
+    if (!aceitos.contains(resposta.statusCode)) {
+      throw ApiService.erroHttp(
+        resposta.statusCode,
+        utf8.decode(resposta.bodyBytes, allowMalformed: true),
+      );
+    }
+  }
+
+  void _tratarSessao(Object falha) {
+    if (!mounted || falha is! ApiException || falha.statusCode != 401) return;
+    setState(() {
+      _sessaoInvalida = true;
+      _preferenciasCarregadas = false;
+      _preferenciasServidor = {};
+      notificacoes = [];
+      _historicoCarregado = false;
+      totalNaoLidas = 0;
+      erro = falha.mensagem;
+      erroPreferencias = falha.mensagem;
+    });
+  }
+
+  void _mostrarMensagem(String mensagem) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensagem)));
+  }
+
   Future<void> verificarPermissaoWeb() async {
     try {
       final configuracao = await FirebaseMessaging.instance
           .getNotificationSettings();
-      if (!mounted) return;
+      if (!mounted || ativandoNotificacoesWeb) return;
       setState(() {
         notificacoesWebAtivadas =
             configuracao.authorizationStatus == AuthorizationStatus.authorized;
       });
     } catch (_) {
-      if (!mounted) return;
-      setState(() => notificacoesWebAtivadas = false);
+      if (!mounted || ativandoNotificacoesWeb) return;
+      _mostrarMensagem('Não foi possível verificar a permissão do navegador.');
     }
   }
 
   Future<void> ativarNotificacoesWeb() async {
-    if (ativandoNotificacoesWeb) return;
+    if (!mounted || ativandoNotificacoesWeb || _sessaoInvalida) return;
     setState(() => ativandoNotificacoesWeb = true);
 
     try {
+      final headers = await _headersAutenticados();
       final permissao = await FirebaseMessaging.instance.requestPermission(
         alert: true,
         badge: true,
         sound: true,
       );
-
-      if (permissao.authorizationStatus != AuthorizationStatus.authorized) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Autorize as notificações nas configurações do navegador.',
-            ),
-          ),
+      if (!mounted) return;
+      final autorizada =
+          permissao.authorizationStatus == AuthorizationStatus.authorized;
+      setState(() => notificacoesWebAtivadas = autorizada);
+      if (!autorizada) {
+        _mostrarMensagem(
+          'Autorize as notificações nas configurações do navegador.',
         );
         return;
       }
 
+      await _confirmarSessao(headers);
+      if (!mounted) return;
       await EmpresaService.registrarDispositivoFcmConfirmado();
+      await _confirmarSessao(headers);
       if (!mounted) return;
-      setState(() => notificacoesWebAtivadas = true);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Notificações ativadas e dispositivo registrado com sucesso.',
-          ),
-        ),
+      _mostrarMensagem(
+        'Notificações ativadas e dispositivo registrado com sucesso.',
       );
-    } catch (erro) {
+    } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Não foi possível ativar as notificações: $erro'),
+      _tratarSessao(e);
+      _mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível ativar ou registrar as notificações. Tente novamente.',
         ),
       );
     } finally {
@@ -128,6 +189,7 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
   Future<void> carregar() async {
     try {
       await carregarPreferenciasLocais();
+      if (!mounted) return;
       await Future.wait([buscarPreferencias(), buscarNotificacoes()]);
     } finally {
       if (mounted) {
@@ -162,93 +224,129 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
   }
 
   Future<void> salvarPreferenciasLocais() async {
+    final valores = {
+      'empresa_entrega_concluida': entregaConcluida,
+      'empresa_entrega_cancelada': entregaCancelada,
+      'empresa_entrega_nao_realizada': entregaNaoRealizada,
+      'empresa_novo_entregador': novoEntregador,
+      'empresa_solicitacoes': solicitacoes,
+      'empresa_sons': sons,
+      'empresa_vibracao': vibracao,
+    };
     final prefs = await SharedPreferences.getInstance();
+    final resultados = await Future.wait(
+      valores.entries.map((item) => prefs.setBool(item.key, item.value)),
+    );
+    if (resultados.any((sucesso) => !sucesso)) {
+      throw const ApiException(
+        'Não foi possível salvar todas as preferências no aparelho.',
+      );
+    }
+  }
 
-    await Future.wait([
-      prefs.setBool('empresa_entrega_concluida', entregaConcluida),
-      prefs.setBool('empresa_entrega_cancelada', entregaCancelada),
-      prefs.setBool('empresa_entrega_nao_realizada', entregaNaoRealizada),
-      prefs.setBool('empresa_novo_entregador', novoEntregador),
-      prefs.setBool('empresa_solicitacoes', solicitacoes),
-      prefs.setBool('empresa_sons', sons),
-      prefs.setBool('empresa_vibracao', vibracao),
-    ]);
+  Map<String, dynamic> _lerPreferencias(http.Response response) {
+    final dados = jsonDecode(utf8.decode(response.bodyBytes));
+    if (dados is! Map<String, dynamic>) {
+      throw const FormatException('Resposta inválida');
+    }
+    const campos = [
+      'entregaConcluida',
+      'entregaCancelada',
+      'entregaNaoRealizada',
+      'novoEntregador',
+      'solicitacoes',
+      'novaEntrega',
+      'vinculos',
+      'sons',
+      'vibracao',
+    ];
+    if (campos.any((campo) => dados[campo] is! bool)) {
+      throw const FormatException('Preferências inválidas');
+    }
+    return dados;
+  }
+
+  void _aplicarPreferenciasServidor(Map<String, dynamic> preferencias) {
+    _preferenciasServidor = Map<String, dynamic>.from(preferencias);
+    entregaConcluida = preferencias['entregaConcluida'] == true;
+    entregaCancelada = preferencias['entregaCancelada'] == true;
+    entregaNaoRealizada = preferencias['entregaNaoRealizada'] == true;
+    novoEntregador = preferencias['novoEntregador'] == true;
+    solicitacoes =
+        preferencias['solicitacoes'] == true &&
+        preferencias['vinculos'] == true;
+    sons = preferencias['sons'] == true;
+    vibracao = preferencias['vibracao'] == true;
+  }
+
+  Future<void> _sincronizarPreferenciasLocais() async {
+    try {
+      await salvarPreferenciasLocais();
+    } catch (_) {
+      if (!mounted || _sessaoInvalida) return;
+      setState(() {
+        erroPreferencias =
+            'As preferências do servidor foram confirmadas, mas não foi possível salvar todas no aparelho. Atualize para tentar novamente.';
+      });
+    }
   }
 
   Future<void> buscarPreferencias() async {
+    if (!mounted ||
+        _sessaoInvalida ||
+        salvandoPreferencias ||
+        _buscandoPreferencias) {
+      return;
+    }
+    setState(() => _buscandoPreferencias = true);
     try {
+      final headers = await _headersAutenticados();
       final response = await http
-          .get(
-            _urlPreferencias,
-            headers: await EmpresaService.headersAutenticados(),
-          )
+          .get(_urlPreferencias, headers: headers)
           .timeout(const Duration(seconds: 15));
-
-      if (response.statusCode != 200) {
-        throw Exception('HTTP ${response.statusCode}');
-      }
-
-      final dados = jsonDecode(utf8.decode(response.bodyBytes));
-
-      if (dados is! Map) {
-        throw const FormatException('Resposta inválida');
-      }
-
-      final preferencias = Map<String, dynamic>.from(dados);
-
+      _validarResposta(response, [200]);
+      final preferencias = _lerPreferencias(response);
+      await _confirmarSessao(headers);
       if (!mounted) return;
-
       setState(() {
-        _preferenciasServidor = preferencias;
+        _aplicarPreferenciasServidor(preferencias);
         _preferenciasCarregadas = true;
-
-        entregaConcluida = preferencias['entregaConcluida'] == true;
-        entregaCancelada = preferencias['entregaCancelada'] == true;
-        entregaNaoRealizada = preferencias['entregaNaoRealizada'] == true;
-        novoEntregador = preferencias['novoEntregador'] == true;
-        solicitacoes =
-            preferencias['solicitacoes'] == true &&
-            preferencias['vinculos'] == true;
-        sons = preferencias['sons'] == true;
-        vibracao = preferencias['vibracao'] == true;
-
         erroPreferencias = null;
       });
-
-      await salvarPreferenciasLocais();
-    } catch (_) {
+      await _sincronizarPreferenciasLocais();
+    } catch (e) {
       if (!mounted) return;
-
+      _tratarSessao(e);
       setState(() {
         _preferenciasCarregadas = false;
-        erroPreferencias =
-            'Não foi possível sincronizar as preferências com o servidor.';
+        erroPreferencias = ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível sincronizar as preferências. Tente novamente.',
+        );
       });
+    } finally {
+      if (mounted) {
+        setState(() => _buscandoPreferencias = false);
+      }
     }
-  }
-
-  Map<String, dynamic> get _dadosPreferencias {
-    return {
-      'entregaConcluida': entregaConcluida,
-      'entregaCancelada': entregaCancelada,
-      'entregaNaoRealizada': entregaNaoRealizada,
-      'novoEntregador': novoEntregador,
-      'solicitacoes': solicitacoes,
-      'novaEntrega': _preferenciasServidor['novaEntrega'] ?? true,
-      'vinculos': solicitacoes,
-      'sons': sons,
-      'vibracao': vibracao,
-    };
   }
 
   Future<void> alterarPreferencia(String chave, bool valor) async {
-    if (!_preferenciasCarregadas || salvandoPreferencias) {
+    if (!mounted ||
+        _sessaoInvalida ||
+        !_preferenciasCarregadas ||
+        salvandoPreferencias ||
+        _buscandoPreferencias) {
       return;
     }
 
-    final valoresAnteriores = Map<String, dynamic>.from(_dadosPreferencias);
-    final solicitacoesAnteriores = solicitacoes;
-
+    final anterior = Map<String, dynamic>.from(_preferenciasServidor);
+    final dados = Map<String, dynamic>.from(anterior);
+    dados[chave] = valor;
+    if (chave == 'solicitacoes') {
+      dados['vinculos'] = valor;
+    }
     setState(() {
       _aplicarPreferencia(chave, valor);
       salvandoPreferencias = true;
@@ -256,50 +354,35 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
     });
 
     try {
+      final headers = await _headersAutenticados();
       final response = await http
           .put(
             _urlPreferencias,
-            headers: {
-              ...await EmpresaService.headersAutenticados(),
-              'Content-Type': 'application/json',
-            },
-            body: jsonEncode(_dadosPreferencias),
+            headers: {...headers, 'Content-Type': 'application/json'},
+            body: jsonEncode(dados),
           )
           .timeout(const Duration(seconds: 15));
-
-      if (response.statusCode != 200) {
-        throw Exception('HTTP ${response.statusCode}');
-      }
-
-      final dados = jsonDecode(utf8.decode(response.bodyBytes));
-
-      if (dados is! Map) {
-        throw const FormatException('Resposta inválida');
-      }
-
+      _validarResposta(response, [200]);
+      final preferencias = _lerPreferencias(response);
+      await _confirmarSessao(headers);
       if (!mounted) return;
-
-      setState(() {
-        _preferenciasServidor = Map<String, dynamic>.from(dados);
-        solicitacoes =
-            _preferenciasServidor['solicitacoes'] == true &&
-            _preferenciasServidor['vinculos'] == true;
-      });
-
-      await salvarPreferenciasLocais();
-    } catch (_) {
+      setState(() => _aplicarPreferenciasServidor(preferencias));
+      await _sincronizarPreferenciasLocais();
+    } catch (e) {
       if (!mounted) return;
-
+      _tratarSessao(e);
       setState(() {
-        solicitacoes = solicitacoesAnteriores;
-        for (final entry in valoresAnteriores.entries) {
-          if (entry.value is bool) {
-            _aplicarPreferencia(entry.key, entry.value as bool);
-          }
+        if (!_sessaoInvalida) {
+          _aplicarPreferenciasServidor(anterior);
         }
-
-        erroPreferencias =
-            'Não foi possível salvar a preferência. Tente novamente.';
+        _preferenciasCarregadas = false;
+        final mensagem = ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível salvar a preferência.',
+        );
+        erroPreferencias = _sessaoInvalida
+            ? mensagem
+            : '$mensagem Atualize as preferências antes de alterar novamente.';
       });
     } finally {
       if (mounted) {
@@ -335,15 +418,13 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
   }
 
   Future<void> buscarNotificacoes() async {
-    if (atualizando) return;
-
-    if (mounted) {
-      setState(() => atualizando = true);
+    if (!mounted || _sessaoInvalida || atualizando || _marcandoNotificacao) {
+      return;
     }
+    setState(() => atualizando = true);
 
     try {
-      final headers = await EmpresaService.headersAutenticados();
-
+      final headers = await _headersAutenticados();
       final resultados = await Future.wait([
         http
             .get(
@@ -357,42 +438,45 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
             .get(_urlNaoLidas, headers: headers)
             .timeout(const Duration(seconds: 15)),
       ]);
-
-      if (resultados[0].statusCode != 200 || resultados[1].statusCode != 200) {
-        throw Exception('Erro ao buscar notificações');
+      for (final resposta in resultados) {
+        _validarResposta(resposta, [200]);
       }
-
       final dados = jsonDecode(utf8.decode(resultados[0].bodyBytes));
-
       final dynamic conteudo = dados is Map ? dados['content'] : dados;
-
-      if (conteudo is! List) {
+      if (conteudo is! List ||
+          conteudo.any((item) => item is! Map<String, dynamic>)) {
         throw const FormatException('Resposta inválida');
       }
-
-      final lista = conteudo
-          .whereType<Map>()
-          .map((item) => Map<String, dynamic>.from(item))
-          .toList();
-
+      final lista = conteudo.cast<Map<String, dynamic>>().toList();
       final contagem = jsonDecode(utf8.decode(resultados[1].bodyBytes));
-
       if (contagem is! Map || contagem['quantidade'] is! num) {
         throw const FormatException('Contagem inválida');
       }
-
+      final quantidade = contagem['quantidade'] as num;
+      if (!quantidade.isFinite ||
+          quantidade < 0 ||
+          quantidade != quantidade.round()) {
+        throw const FormatException('Contagem inválida');
+      }
+      await _confirmarSessao(headers);
       if (!mounted) return;
-
       setState(() {
         notificacoes = lista;
-        totalNaoLidas = (contagem['quantidade'] as num).toInt();
+        _historicoCarregado = true;
+        totalNaoLidas = quantidade.toInt();
         erro = null;
       });
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
-
+      _tratarSessao(e);
       setState(() {
-        erro = 'Não foi possível atualizar as notificações.';
+        final mensagem = ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível atualizar as notificações.',
+        );
+        erro = _historicoCarregado
+            ? '$mensagem Exibindo a última atualização.'
+            : mensagem;
       });
     } finally {
       if (mounted) {
@@ -519,41 +603,52 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
   }
 
   Future<void> marcarComoLida(Map<String, dynamic> item) async {
-    if (_lida(item)) return;
-
-    final id = item['id'];
-
-    if (id == null) return;
+    if (!mounted ||
+        _sessaoInvalida ||
+        _lida(item) ||
+        atualizando ||
+        _marcandoNotificacao) {
+      return;
+    }
+    final id = int.tryParse(item['id']?.toString() ?? '');
+    if (id == null || id <= 0) {
+      _mostrarMensagem(
+        'Não foi possível identificar a notificação. Atualize a lista.',
+      );
+      return;
+    }
+    setState(() => _marcandoNotificacao = true);
 
     try {
+      final headers = await _headersAutenticados();
       final response = await http
           .put(
             Uri.parse('${_urlNotificacoes.toString()}/$id/ler'),
-            headers: await EmpresaService.headersAutenticados(),
+            headers: headers,
           )
           .timeout(const Duration(seconds: 15));
-
-      if (response.statusCode != 204 && response.statusCode != 200) {
-        throw Exception('HTTP ${response.statusCode}');
-      }
-
+      _validarResposta(response, [200, 204]);
+      await _confirmarSessao(headers);
       if (!mounted) return;
-
       setState(() {
         item['lida'] = true;
-
         if (totalNaoLidas > 0) {
           totalNaoLidas--;
         }
       });
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Não foi possível marcar a notificação como lida.'),
+      _tratarSessao(e);
+      _mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível marcar a notificação como lida.',
         ),
       );
+    } finally {
+      if (mounted) {
+        setState(() => _marcandoNotificacao = false);
+      }
     }
   }
 
@@ -573,12 +668,12 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(
-              theme.brightness == Brightness.dark ? 0.16 : 0.05,
+            color: Colors.black.withValues(
+              alpha: theme.brightness == Brightness.dark ? 0.16 : 0.05,
             ),
             blurRadius: 10,
             offset: const Offset(0, 4),
@@ -588,7 +683,7 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
       child: SwitchListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         secondary: CircleAvatar(
-          backgroundColor: color.withOpacity(0.14),
+          backgroundColor: color.withValues(alpha: 0.14),
           child: Icon(icon, color: color),
         ),
         title: Text(
@@ -603,8 +698,12 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
           style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
         ),
         value: valor,
-        activeColor: AppColors.primary,
-        onChanged: _preferenciasCarregadas && !salvandoPreferencias
+        activeThumbColor: AppColors.primary,
+        onChanged:
+            _preferenciasCarregadas &&
+                !salvandoPreferencias &&
+                !_buscandoPreferencias &&
+                !_sessaoInvalida
             ? onChanged
             : null,
       ),
@@ -619,7 +718,9 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
     final tempo = _tempo(item);
 
     return InkWell(
-      onTap: lida ? null : () => marcarComoLida(item),
+      onTap: lida || atualizando || _marcandoNotificacao || _sessaoInvalida
+          ? null
+          : () => marcarComoLida(item),
       borderRadius: BorderRadius.circular(22),
       child: Container(
         margin: const EdgeInsets.only(bottom: 14),
@@ -628,21 +729,21 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
           color: lida
               ? theme.cardColor
               : Color.alphaBlend(
-                  AppColors.primary.withOpacity(
-                    theme.brightness == Brightness.dark ? 0.10 : 0.05,
+                  AppColors.primary.withValues(
+                    alpha: theme.brightness == Brightness.dark ? 0.10 : 0.05,
                   ),
                   theme.cardColor,
                 ),
           borderRadius: BorderRadius.circular(22),
           border: Border.all(
             color: lida
-                ? theme.colorScheme.outlineVariant.withOpacity(0.25)
-                : AppColors.primary.withOpacity(0.25),
+                ? theme.colorScheme.outlineVariant.withValues(alpha: 0.25)
+                : AppColors.primary.withValues(alpha: 0.25),
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(
-                theme.brightness == Brightness.dark ? 0.16 : 0.05,
+              color: Colors.black.withValues(
+                alpha: theme.brightness == Brightness.dark ? 0.16 : 0.05,
               ),
               blurRadius: 12,
               offset: const Offset(0, 5),
@@ -653,7 +754,7 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             CircleAvatar(
-              backgroundColor: cor.withOpacity(0.13),
+              backgroundColor: cor.withValues(alpha: 0.13),
               child: Icon(_icone(tipo), color: cor),
             ),
             const SizedBox(width: 12),
@@ -720,7 +821,9 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
         actions: [
           IconButton(
             tooltip: 'Atualizar notificações',
-            onPressed: atualizando ? null : buscarNotificacoes,
+            onPressed: atualizando || _marcandoNotificacao || _sessaoInvalida
+                ? null
+                : buscarNotificacoes,
             icon: const Icon(Icons.refresh),
           ),
         ],
@@ -759,7 +862,9 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
                     ),
                     if (!_preferenciasCarregadas)
                       TextButton.icon(
-                        onPressed: buscarPreferencias,
+                        onPressed: _buscandoPreferencias || _sessaoInvalida
+                            ? null
+                            : buscarPreferencias,
                         icon: const Icon(Icons.refresh),
                         label: const Text('Tentar novamente'),
                       ),
@@ -784,7 +889,8 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
                             ),
                             const SizedBox(height: 12),
                             FilledButton.icon(
-                              onPressed: ativandoNotificacoesWeb
+                              onPressed:
+                                  ativandoNotificacoesWeb || _sessaoInvalida
                                   ? null
                                   : ativarNotificacoesWeb,
                               icon: ativandoNotificacoesWeb
@@ -890,7 +996,9 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    '$totalNaoLidas notificação(ões) não lida(s)',
+                    _historicoCarregado
+                        ? '$totalNaoLidas notificação(ões) não lida(s)'
+                        : 'Contagem de notificações indisponível',
                     style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
                   ),
                   const SizedBox(height: 16),
@@ -908,8 +1016,8 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
                         color: theme.cardColor,
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
-                          color: theme.colorScheme.outlineVariant.withOpacity(
-                            0.35,
+                          color: theme.colorScheme.outlineVariant.withValues(
+                            alpha: 0.35,
                           ),
                         ),
                       ),
@@ -922,7 +1030,9 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
                           ),
                           const SizedBox(height: 10),
                           Text(
-                            'Nenhuma notificação encontrada',
+                            erro != null && !_historicoCarregado
+                                ? 'Não foi possível carregar as notificações'
+                                : 'Nenhuma notificação encontrada',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
@@ -931,7 +1041,9 @@ class _EmpresaNotificacoesPageState extends State<EmpresaNotificacoesPage> {
                           ),
                           const SizedBox(height: 5),
                           Text(
-                            'Quando houver novos avisos, eles aparecerão aqui.',
+                            erro != null && !_historicoCarregado
+                                ? 'Atualize a lista para tentar novamente.'
+                                : 'Quando houver novos avisos, eles aparecerão aqui.',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               color: theme.colorScheme.onSurfaceVariant,

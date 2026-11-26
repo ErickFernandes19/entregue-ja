@@ -61,7 +61,10 @@ class _CadastrarEntregaManualPageState
       if (!mounted) return;
 
       if (dados == null) {
-        mostrarMensagem('CEP não encontrado', erro: true);
+        mostrarMensagem(
+          'Não foi possível localizar o CEP. Confira o número ou preencha o endereço manualmente.',
+          erro: true,
+        );
         return;
       }
 
@@ -76,8 +79,15 @@ class _CadastrarEntregaManualPageState
 
       mostrarMensagem('Endereço encontrado. Informe o número.');
     } catch (e) {
-      debugPrint('Erro ao buscar CEP: $e');
-      mostrarMensagem('Não foi possível consultar o CEP', erro: true);
+      debugPrint('Erro ao buscar CEP: ${e.runtimeType}');
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível consultar o CEP. Tente novamente ou preencha o endereço manualmente.',
+        ),
+        erro: true,
+      );
     } finally {
       if (mounted) setState(() => buscandoCep = false);
     }
@@ -177,10 +187,16 @@ class _CadastrarEntregaManualPageState
 
     setState(() => salvando = true);
 
+    var mensagemPadrao =
+        'Não foi possível verificar as entregas existentes. Tente novamente.';
+
     try {
       final email = await AuthService.usuarioLogado();
       if (email == null || email.isEmpty) {
-        throw StateError('Entregador não autenticado');
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
       }
 
       final dados = await ApiService.buscarEntregasDoEntregador(email);
@@ -234,6 +250,9 @@ class _CadastrarEntregaManualPageState
         if (!mounted || confirmar != true) return;
       }
 
+      mensagemPadrao =
+          'Não foi possível preparar a localização da entrega. Confira o endereço e tente novamente.';
+
       Map<String, double>? coordenadas;
 
       for (final existente in mesmoEndereco) {
@@ -265,6 +284,9 @@ class _CadastrarEntregaManualPageState
 
       if (!mounted) return;
 
+      mensagemPadrao =
+          'Não foi possível preparar a entrega. Confira os dados e tente novamente.';
+
       final entrega = EntregaModel(
         cliente: cliente,
         endereco: endereco,
@@ -279,9 +301,9 @@ class _CadastrarEntregaManualPageState
 
       context.pop(entrega);
     } catch (e) {
-      debugPrint('Erro ao preparar entrega: $e');
+      debugPrint('Erro ao preparar entrega: ${e.runtimeType}');
       mostrarMensagem(
-        'Não foi possível verificar as entregas existentes. Tente novamente.',
+        ApiService.mensagemErro(e, mensagemPadrao: mensagemPadrao),
         erro: true,
       );
     } finally {

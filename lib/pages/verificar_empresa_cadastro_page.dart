@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 
@@ -36,9 +37,22 @@ class _VerificarEmpresaCadastroPageState
   }
 
   void mostrarMensagem(String mensagem) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(mensagem)));
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensagem)));
+  }
+
+  String mensagemResultado(
+    Map<String, dynamic> resultado,
+    String mensagemPadrao,
+  ) {
+    final mensagem = resultado['mensagem'];
+    if (mensagem is String && mensagem.trim().isNotEmpty) {
+      return mensagem.trim();
+    }
+    return mensagemPadrao;
   }
 
   void iniciarContagemReenvio() {
@@ -59,56 +73,99 @@ class _VerificarEmpresaCadastroPageState
   }
 
   Future<void> reenviarCodigo() async {
-    if (carregando || reenviando || segundosParaReenvio > 0) return;
+    if (!mounted || carregando || reenviando || segundosParaReenvio > 0) {
+      return;
+    }
     FocusManager.instance.primaryFocus?.unfocus();
     setState(() => reenviando = true);
 
-    final resultado = await EmpresaService.reenviarCodigoCadastro(widget.email);
-    if (!mounted) return;
+    try {
+      final resultado = await EmpresaService.reenviarCodigoCadastro(
+        widget.email,
+      );
+      if (!mounted) return;
 
-    setState(() => reenviando = false);
-    final sucesso = resultado['sucesso'] == true;
-    final mensagem =
-        resultado['mensagem']?.toString() ??
-        (sucesso
+      if (resultado['sucesso'] is! bool) {
+        throw const FormatException('Resultado inválido');
+      }
+
+      final sucesso = resultado['sucesso'] == true;
+      final mensagem = mensagemResultado(
+        resultado,
+        sucesso
             ? 'Novo código enviado para seu e-mail.'
-            : 'Não foi possível reenviar o código.');
-    mostrarMensagem(mensagem);
+            : 'Não foi possível reenviar o código. Tente novamente.',
+      );
 
-    if (sucesso) {
-      codigoController.clear();
-      iniciarContagemReenvio();
+      if (sucesso) {
+        codigoController.clear();
+        iniciarContagemReenvio();
+      }
+
+      mostrarMensagem(mensagem);
+    } catch (e) {
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível reenviar o código. Tente novamente.',
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => reenviando = false);
+      }
     }
   }
 
   Future<void> confirmar() async {
-    if (carregando || reenviando) return;
+    if (!mounted || carregando || reenviando) return;
     FocusManager.instance.primaryFocus?.unfocus();
 
     final codigo = codigoController.text.trim();
     if (!RegExp(r'^\d{6}$').hasMatch(codigo)) {
-      mostrarMensagem('Digite o código de 6 dígitos');
+      mostrarMensagem('Digite o código de 6 dígitos.');
       return;
     }
 
     setState(() => carregando = true);
-    final resultado = await EmpresaService.confirmarCadastroComResultado(
-      widget.email,
-      codigo,
-    );
-    if (!mounted) return;
-    setState(() => carregando = false);
 
-    final sucesso = resultado['sucesso'] == true;
-    final mensagem =
-        resultado['mensagem']?.toString() ??
-        (sucesso
-            ? 'Cadastro da empresa confirmado com sucesso!'
-            : 'Não foi possível confirmar o código.');
-    mostrarMensagem(mensagem);
+    try {
+      final resultado = await EmpresaService.confirmarCadastroComResultado(
+        widget.email,
+        codigo,
+      );
+      if (!mounted) return;
 
-    if (sucesso) {
-      context.go('/empresa/login');
+      if (resultado['sucesso'] is! bool) {
+        throw const FormatException('Resultado inválido');
+      }
+
+      final sucesso = resultado['sucesso'] == true;
+      mostrarMensagem(
+        mensagemResultado(
+          resultado,
+          sucesso
+              ? 'Cadastro da empresa confirmado com sucesso!'
+              : 'Não foi possível confirmar o código. Tente novamente.',
+        ),
+      );
+
+      if (sucesso) {
+        context.go('/empresa/login');
+      }
+    } catch (e) {
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível confirmar o código. Tente novamente.',
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
     }
   }
 

@@ -1,123 +1,139 @@
+import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:entregue_ja/services/empresa_service.dart' as empresa_service;
 
 import '../config/api_config.dart';
+import 'api_service.dart';
+import 'empresa_service.dart';
 
 class EmpresaListaEntregasService {
-  static Future<Map<String, String>> _headersAutenticados() async {
-    return await empresa_service.EmpresaService.headersAutenticados();
-  }
+  static const Duration _tempoLimite = Duration(seconds: 15);
+  static const ApiException _sessaoExpirada = ApiException(
+    'Sua sessão expirou. Entre novamente na sua conta.',
+    statusCode: 401,
+  );
 
-  static void _registrarErro(String operacao, int statusCode, String body) {
-    debugPrint('$operacao: HTTP $statusCode');
-
-    if (statusCode == 401) {
-      debugPrint('Sessão da empresa inválida ou token JWT expirado.');
-    } else if (statusCode == 403) {
-      debugPrint('A empresa não possui permissão para esta operação.');
-    } else {
-      debugPrint('Resposta: $body');
+  static Future<String> _empresaAutenticada() async {
+    final email = await EmpresaService.empresaLogada();
+    if (email == null || email.trim().isEmpty) {
+      throw _sessaoExpirada;
     }
+    return email;
   }
 
-  static Future<List<dynamic>> buscarEntregas() async {
+  static Future<Map<String, String>> _headersAutenticados() async {
+    final headers = await EmpresaService.headersAutenticados();
+    final autorizacao = headers['Authorization'] ?? '';
+    if (!autorizacao.startsWith('Bearer ') ||
+        autorizacao.substring(7).trim().isEmpty) {
+      throw _sessaoExpirada;
+    }
+    return headers;
+  }
+
+  static ApiException _erroResposta(http.Response response) {
+    return ApiService.erroHttp(
+      response.statusCode,
+      utf8.decode(response.bodyBytes, allowMalformed: true),
+    );
+  }
+
+  static List<dynamic> _validarEntregas(http.Response response) {
+    final dados = jsonDecode(utf8.decode(response.bodyBytes));
+    if (dados is! List) {
+      throw const FormatException('Formato inválido da lista de entregas.');
+    }
+
+    for (final item in dados) {
+      if (item is! Map<String, dynamic>) {
+        throw const FormatException('Formato inválido de entrega.');
+      }
+      final id = int.tryParse(item['id']?.toString() ?? '');
+      final valor = item['valor'];
+      final entregue = item['entregue'];
+      if (id == null ||
+          id <= 0 ||
+          (valor != null && (valor is! num || !valor.isFinite)) ||
+          (entregue != null && entregue is! bool)) {
+        throw const FormatException('Dados inválidos de entrega.');
+      }
+    }
+
+    return dados;
+  }
+
+  static Future<List<dynamic>> _buscarEntregas({
+    String? entregadorEmail,
+  }) async {
     try {
-      final empresaEmail = await empresa_service.EmpresaService.empresaLogada();
-
-      if (empresaEmail == null || empresaEmail.isEmpty) {
-        throw Exception('Empresa não autenticada.');
-      }
-
+      final empresaEmail = await _empresaAutenticada();
       final headers = await _headersAutenticados();
+      final empresaEmailUrl = Uri.encodeComponent(empresaEmail);
+      var caminho = '${ApiConfig.entregas}/empresa/$empresaEmailUrl';
 
-      final response = await http.get(
-        Uri.parse(
-          '${ApiConfig.entregas}/empresa/'
-          '${Uri.encodeComponent(empresaEmail)}',
-        ),
-        headers: headers,
-      );
-
-      if (response.statusCode == 200) {
-        final dados = jsonDecode(response.body);
-
-        if (dados is List) {
-          return dados;
+      if (entregadorEmail != null) {
+        final email = entregadorEmail.trim();
+        if (email.isEmpty) {
+          throw const ApiException(
+            'Não foi possível identificar o entregador selecionado.',
+          );
         }
-
-        throw const FormatException(
-          'O servidor não retornou uma lista de entregas.',
-        );
+        caminho += '/entregador/${Uri.encodeComponent(email)}';
       }
 
-      _registrarErro(
-        'Erro ao buscar entregas da empresa',
-        response.statusCode,
-        response.body,
-      );
+      final response = await http
+          .get(Uri.parse(caminho), headers: headers)
+          .timeout(_tempoLimite);
 
-      throw Exception(
-        'Falha ao carregar entregas: HTTP ${response.statusCode}',
+      if (response.statusCode != 200) {
+        throw _erroResposta(response);
+      }
+
+      final entregas = _validarEntregas(response);
+      if (await EmpresaService.empresaLogada() != empresaEmail ||
+          (await EmpresaService.headersAutenticados())['Authorization'] !=
+              headers['Authorization']) {
+        throw _sessaoExpirada;
+      }
+      return entregas;
+    } on ApiException {
+      rethrow;
+    } on TimeoutException {
+      throw const ApiException(
+        'O servidor demorou para responder. Atualize as entregas e tente novamente.',
       );
     } catch (e) {
-      debugPrint('Erro ao buscar entregas da empresa: $e');
-      rethrow;
+      throw ApiException(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível carregar as entregas. Tente novamente.',
+        ),
+      );
     }
+  }
+
+  static Future<List<dynamic>> buscarEntregas() {
+    return _buscarEntregas();
   }
 
   static Future<List<dynamic>> buscarEntregasDoEntregador(
     String entregadorEmail,
-  ) async {
-    try {
-      final empresaEmail = await empresa_service.EmpresaService.empresaLogada();
+  ) {
+    return _buscarEntregas(entregadorEmail: entregadorEmail);
+  }
 
-      if (empresaEmail == null || empresaEmail.isEmpty) {
-        throw Exception('Empresa não autenticada.');
-      }
-
-      final headers = await _headersAutenticados();
-
-      final empresaEmailUrl = Uri.encodeComponent(empresaEmail);
-      final entregadorEmailUrl = Uri.encodeComponent(entregadorEmail);
-
-      final response = await http.get(
-        Uri.parse(
-          '${ApiConfig.entregas}/empresa/'
-          '$empresaEmailUrl/entregador/'
-          '$entregadorEmailUrl',
-        ),
-        headers: headers,
-      );
-
-      if (response.statusCode == 200) {
-        final dados = jsonDecode(response.body);
-
-        if (dados is List) {
-          return dados;
-        }
-
-        throw const FormatException(
-          'O servidor não retornou uma lista de entregas.',
-        );
-      }
-
-      _registrarErro(
-        'Erro ao buscar entregas do entregador',
-        response.statusCode,
-        response.body,
-      );
-
-      throw Exception(
-        'Falha ao carregar entregas do entregador: '
-        'HTTP ${response.statusCode}',
-      );
-    } catch (e) {
-      debugPrint('Erro ao buscar entregas do entregador: $e');
-      rethrow;
-    }
+  static bool _tratarFalha(
+    Object erro, {
+    required bool lancarErro,
+    required String mensagemPadrao,
+  }) {
+    if (!lancarErro) return false;
+    if (erro is ApiException) throw erro;
+    throw ApiException(
+      ApiService.mensagemErro(erro, mensagemPadrao: mensagemPadrao),
+    );
   }
 
   static Future<bool> editarEntrega({
@@ -126,61 +142,66 @@ class EmpresaListaEntregasService {
     required String endereco,
     required double valor,
     required String observacao,
+    bool lancarErro = false,
   }) async {
     try {
+      await _empresaAutenticada();
       final headers = await _headersAutenticados();
-
-      final response = await http.put(
-        Uri.parse('${ApiConfig.entregas}/$id'),
-        headers: {...headers, 'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'cliente': cliente,
-          'endereco': endereco,
-          'valor': valor,
-          'observacao': observacao,
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        return true;
+      if (id <= 0) {
+        throw const ApiException('Não foi possível identificar a entrega.');
+      }
+      if (!valor.isFinite) {
+        throw const ApiException('Informe um valor válido para a entrega.');
       }
 
-      _registrarErro(
-        'Erro ao editar entrega',
-        response.statusCode,
-        response.body,
-      );
+      final response = await http
+          .put(
+            Uri.parse('${ApiConfig.entregas}/$id'),
+            headers: {...headers, 'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'cliente': cliente,
+              'endereco': endereco,
+              'valor': valor,
+              'observacao': observacao,
+            }),
+          )
+          .timeout(_tempoLimite);
 
-      return false;
+      if (response.statusCode != 200) {
+        throw _erroResposta(response);
+      }
+      return true;
     } catch (e) {
-      debugPrint('Erro ao editar entrega: $e');
-      return false;
+      return _tratarFalha(
+        e,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível editar a entrega. Tente novamente.',
+      );
     }
   }
 
-  static Future<bool> cancelarEntrega(int id) async {
+  static Future<bool> cancelarEntrega(int id, {bool lancarErro = false}) async {
     try {
+      await _empresaAutenticada();
       final headers = await _headersAutenticados();
-
-      final response = await http.delete(
-        Uri.parse('${ApiConfig.entregas}/$id'),
-        headers: headers,
-      );
-
-      if (response.statusCode == 200 || response.statusCode == 204) {
-        return true;
+      if (id <= 0) {
+        throw const ApiException('Não foi possível identificar a entrega.');
       }
 
-      _registrarErro(
-        'Erro ao cancelar entrega',
-        response.statusCode,
-        response.body,
-      );
+      final response = await http
+          .delete(Uri.parse('${ApiConfig.entregas}/$id'), headers: headers)
+          .timeout(_tempoLimite);
 
-      return false;
+      if (response.statusCode != 200 && response.statusCode != 204) {
+        throw _erroResposta(response);
+      }
+      return true;
     } catch (e) {
-      debugPrint('Erro ao cancelar entrega: $e');
-      return false;
+      return _tratarFalha(
+        e,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível cancelar a entrega. Tente novamente.',
+      );
     }
   }
 }

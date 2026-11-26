@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/assinatura_service.dart';
+import '../services/auth_service.dart';
 import 'entregador_pagamento_page.dart';
 
 class EntregadorPlanosPage extends StatefulWidget {
@@ -13,8 +15,16 @@ class EntregadorPlanosPage extends StatefulWidget {
 
 class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
   bool _carregando = true;
+  bool _consultando = false;
+  bool _navegando = false;
   String? _erro;
   String? _planoAtual;
+  String? _tokenConsulta;
+
+  bool get _ocupado => _carregando || _navegando;
+
+  bool get _podeSelecionar =>
+      !_ocupado && _erro == null && _tokenConsulta != null;
 
   @override
   void initState() {
@@ -22,48 +32,160 @@ class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
     _carregarAssinatura();
   }
 
-  Future<void> _carregarAssinatura() async {
+  Future<String> _obterSessao() async {
+    final token = await AuthService.obterToken();
+    final email = await AuthService.usuarioLogado();
+    if (token == null ||
+        token.trim().isEmpty ||
+        email == null ||
+        email.trim().isEmpty ||
+        await AuthService.obterToken() != token) {
+      throw const ApiException(
+        'Sua sessão expirou ou foi alterada. Entre novamente como entregador.',
+        statusCode: 401,
+      );
+    }
+    return token;
+  }
+
+  Future<void> _conferirSessao(String token) async {
+    if (await _obterSessao() != token) {
+      throw const ApiException(
+        'Sua sessão foi alterada. Atualize os dados da assinatura.',
+        statusCode: 401,
+      );
+    }
+  }
+
+  void _limparAssinatura() {
+    _planoAtual = null;
+    _tokenConsulta = null;
+  }
+
+  Future<void> _carregarAssinatura({bool duranteNavegacao = false}) async {
+    if (!mounted || _consultando || (_navegando && !duranteNavegacao)) {
+      return;
+    }
+
     setState(() {
+      _consultando = true;
       _carregando = true;
       _erro = null;
     });
 
+    String? token;
     try {
-      final assinatura = await AssinaturaService.buscarAtual();
+      token = await _obterSessao();
+      if (!mounted) return;
+      if (_tokenConsulta != null && _tokenConsulta != token) {
+        setState(_limparAssinatura);
+      }
+
+      final assinatura = await AssinaturaService.buscarAtual(
+        tipoConta: TipoContaAssinatura.entregador,
+      );
+      await _conferirSessao(token);
+      if (!mounted) return;
+
+      final plano = assinatura?['plano']?.toString().trim().toUpperCase();
+      final status = assinatura?['status']?.toString().trim().toUpperCase();
+      if (assinatura != null &&
+          (!const {'GRATUITO', 'ESSENCIAL', 'PROFISSIONAL'}.contains(plano) ||
+              !const {
+                'ATIVA',
+                'PENDENTE',
+                'CANCELADA',
+                'EXPIRADA',
+              }.contains(status))) {
+        throw const ApiException(
+          'O servidor retornou dados inválidos da assinatura. Atualize e tente novamente.',
+        );
+      }
+
+      setState(() {
+        _planoAtual = status == 'ATIVA' ? plano : null;
+        _tokenConsulta = token;
+      });
+    } catch (e) {
       if (!mounted) return;
       setState(() {
-        _planoAtual = assinatura?['plano']?.toString().toUpperCase();
-        _carregando = false;
+        if (token == null || (e is ApiException && e.statusCode == 401)) {
+          _limparAssinatura();
+        }
+        _erro = ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível consultar sua assinatura.',
+        );
       });
-    } on AssinaturaException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _erro = e.mensagem;
-        _carregando = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _erro = 'Não foi possível consultar sua assinatura.';
-        _carregando = false;
-      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _consultando = false;
+          _carregando = false;
+        });
+      }
     }
   }
 
-  Future<void> _abrirPagamento(String plano, String preco) async {
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) =>
-            EntregadorPagamentoPage(plano: plano, precoMensal: preco),
-      ),
-    );
-    if (mounted) await _carregarAssinatura();
+  Future<void> _navegar(
+    Future<void> Function() abrir, {
+    required bool pagamento,
+  }) async {
+    if (!mounted || _ocupado || (pagamento && !_podeSelecionar)) {
+      return;
+    }
+
+    setState(() => _navegando = true);
+    try {
+      final token = await _obterSessao();
+      if (!mounted) return;
+      if (pagamento && token != _tokenConsulta) {
+        throw const ApiException(
+          'Sua sessão foi alterada. Atualize os dados da assinatura.',
+          statusCode: 401,
+        );
+      }
+      await abrir();
+      if (mounted) {
+        await _carregarAssinatura(duranteNavegacao: true);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      final mensagem = ApiService.mensagemErro(
+        e,
+        mensagemPadrao: pagamento
+            ? 'Não foi possível abrir a tela de pagamento.'
+            : 'Não foi possível abrir o gerenciamento da assinatura.',
+      );
+      if (e is ApiException && e.statusCode == 401) {
+        setState(() {
+          _limparAssinatura();
+          _erro = mensagem;
+        });
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(mensagem)));
+    } finally {
+      if (mounted) setState(() => _navegando = false);
+    }
   }
 
-  Future<void> _abrirGerenciamento() async {
-    await context.push('/entregador/assinatura/gerenciamento');
-    if (!mounted) return;
-    await _carregarAssinatura();
+  Future<void> _abrirPagamento(String plano, String preco) {
+    return _navegar(() async {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              EntregadorPagamentoPage(plano: plano, precoMensal: preco),
+        ),
+      );
+    }, pagamento: true);
+  }
+
+  Future<void> _abrirGerenciamento() {
+    return _navegar(() async {
+      await context.push('/entregador/assinatura/gerenciamento');
+    }, pagamento: false);
   }
 
   @override
@@ -76,7 +198,7 @@ class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
         centerTitle: true,
         actions: [
           IconButton(
-            onPressed: _carregando ? null : _carregarAssinatura,
+            onPressed: _ocupado ? null : _carregarAssinatura,
             tooltip: 'Atualizar assinatura',
             icon: const Icon(Icons.refresh),
           ),
@@ -105,7 +227,7 @@ class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
-                onPressed: _abrirGerenciamento,
+                onPressed: _ocupado ? null : _abrirGerenciamento,
                 icon: const Icon(Icons.manage_accounts_outlined),
                 label: const Text('Gerenciar assinatura'),
               ),
@@ -124,7 +246,7 @@ class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
                       Text(_erro!),
                       const SizedBox(height: 8),
                       TextButton.icon(
-                        onPressed: _carregarAssinatura,
+                        onPressed: _ocupado ? null : _carregarAssinatura,
                         icon: const Icon(Icons.refresh),
                         label: const Text('Tentar novamente'),
                       ),
@@ -159,7 +281,9 @@ class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
               ],
               planoAtual:
                   !_carregando && _erro == null && _planoAtual == 'ESSENCIAL',
-              onSelecionar: () => _abrirPagamento('Essencial', 'R\$ 9,90'),
+              onSelecionar: _podeSelecionar
+                  ? () => _abrirPagamento('Essencial', 'R\$ 9,90')
+                  : null,
             ),
             const SizedBox(height: 14),
             _CartaoPlanoEntregador(
@@ -177,7 +301,9 @@ class _EntregadorPlanosPageState extends State<EntregadorPlanosPage> {
                   !_carregando &&
                   _erro == null &&
                   _planoAtual == 'PROFISSIONAL',
-              onSelecionar: () => _abrirPagamento('Profissional', 'R\$ 19,90'),
+              onSelecionar: _podeSelecionar
+                  ? () => _abrirPagamento('Profissional', 'R\$ 19,90')
+                  : null,
             ),
             const SizedBox(height: 18),
             Card(

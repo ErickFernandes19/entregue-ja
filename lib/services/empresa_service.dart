@@ -10,8 +10,68 @@ import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api_config.dart';
+import 'api_service.dart';
 
 class EmpresaService {
+  static const Duration _tempoLimite = Duration(seconds: 20);
+  static const Duration _tempoLimiteUpload = Duration(seconds: 60);
+
+  static const ApiException _sessaoExpirada = ApiException(
+    'Sua sessão expirou. Entre novamente na sua conta.',
+    statusCode: 401,
+  );
+
+  static T _tratarFalha<T>(
+    Object erro,
+    T retorno, {
+    required bool lancarErro,
+    required String mensagemPadrao,
+  }) {
+    debugPrint('$mensagemPadrao (${erro.runtimeType})');
+    if (lancarErro) {
+      if (erro is ApiException) throw erro;
+      throw ApiException(
+        ApiService.mensagemErro(erro, mensagemPadrao: mensagemPadrao),
+      );
+    }
+    return retorno;
+  }
+
+  static String _corpo(http.Response response) =>
+      utf8.decode(response.bodyBytes, allowMalformed: true);
+
+  static void _validarResposta(http.Response response) {
+    if (response.statusCode != 200) {
+      throw ApiService.erroHttp(response.statusCode, _corpo(response));
+    }
+  }
+
+  static Map<String, dynamic> _decodificarMapa(String corpo) {
+    final dados = jsonDecode(corpo);
+    if (dados is Map<String, dynamic>) return dados;
+    throw const FormatException('Resposta inválida do servidor.');
+  }
+
+  static String _mensagemPublica(http.Response response) {
+    if (response.statusCode == 401) {
+      return 'Não foi possível validar a solicitação. Confira os dados informados.';
+    }
+    return ApiService.erroHttp(response.statusCode, _corpo(response)).mensagem;
+  }
+
+  static String _mensagemSucesso(http.Response response, String padrao) {
+    try {
+      final dados = jsonDecode(_corpo(response));
+      if (dados is Map && dados['mensagem'] is String) {
+        final mensagem = (dados['mensagem'] as String).trim();
+        if (mensagem.isNotEmpty && mensagem.length <= 300) return mensagem;
+      }
+    } on FormatException {
+      return padrao;
+    }
+    return padrao;
+  }
+
   static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
   static StreamSubscription<String>? _tokenSubscription;
   static Future<void> _filaFcm = Future<void>.value();
@@ -220,7 +280,10 @@ class EmpresaService {
     return ApiConfig.urlArquivo(valor);
   }
 
-  static Future<Uint8List?> buscarBytesFotoEmpresa(String? referencia) async {
+  static Future<Uint8List?> buscarBytesFotoEmpresa(
+    String? referencia, {
+    bool lancarErro = false,
+  }) async {
     try {
       final url = urlFotoEmpresa(referencia);
 
@@ -228,24 +291,42 @@ class EmpresaService {
         return null;
       }
 
-      final response = await http.get(
-        Uri.parse(url),
-        headers: await headersImagem(),
-      );
-
-      if (response.statusCode == 200) {
-        return response.bodyBytes;
+      final uri = Uri.parse(url);
+      final api = Uri.parse(ApiConfig.empresas);
+      if ((uri.scheme != 'http' && uri.scheme != 'https') ||
+          uri.host.isEmpty ||
+          uri.userInfo.isNotEmpty) {
+        throw const ApiException('Endereço da foto inválido.');
       }
 
-      debugPrint(
-        'Erro ao carregar foto empresa. '
-        'Status: ${response.statusCode}',
-      );
+      final mesmaOrigem =
+          uri.scheme == api.scheme &&
+          uri.host == api.host &&
+          uri.port == api.port;
+      final request = http.Request('GET', uri);
+      if (mesmaOrigem) {
+        request.followRedirects = false;
+        request.headers.addAll(await headersImagem());
+      }
 
-      return null;
+      final client = http.Client();
+      try {
+        final response = await client
+            .send(request)
+            .then(http.Response.fromStream)
+            .timeout(_tempoLimite);
+        _validarResposta(response);
+        return response.bodyBytes;
+      } finally {
+        client.close();
+      }
     } catch (e) {
-      debugPrint('Erro ao buscar imagem da empresa: $e');
-      return null;
+      return _tratarFalha<Uint8List?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível carregar a foto da empresa.',
+      );
     }
   }
 
@@ -260,22 +341,27 @@ class EmpresaService {
     await prefs.setString('empresa_foto', referencia.trim());
   }
 
-  static Future<Map<String, dynamic>?> login(String email, String senha) async {
+  static Future<Map<String, dynamic>?> login(
+    String email,
+    String senha, {
+    bool lancarErro = false,
+  }) async {
     try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.empresas}/login'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': email, 'senha': senha}),
-      );
+      final response = await http
+          .post(
+            Uri.parse('${ApiConfig.empresas}/login'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': email, 'senha': senha}),
+          )
+          .timeout(_tempoLimite);
 
       if (response.statusCode == 200) {
-        final data = Map<String, dynamic>.from(jsonDecode(response.body));
+        final data = _decodificarMapa(_corpo(response));
 
         final token = data['token']?.toString();
 
         if (token == null || token.isEmpty) {
-          debugPrint('Login da empresa sem token JWT.');
-          return null;
+          throw const FormatException('Token ausente na resposta.');
         }
 
         _encerrandoSessao = false;
@@ -289,12 +375,17 @@ class EmpresaService {
         return data;
       }
 
-      debugPrint('Erro login empresa. Status: ${response.statusCode}');
-
-      return null;
+      if (response.statusCode == 401) {
+        throw const ApiException('E-mail ou senha inválidos.', statusCode: 401);
+      }
+      throw ApiService.erroHttp(response.statusCode, _corpo(response));
     } catch (e) {
-      debugPrint('Erro login empresa: $e');
-      return null;
+      return _tratarFalha<Map<String, dynamic>?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível entrar na sua conta.',
+      );
     }
   }
 
@@ -368,140 +459,170 @@ class EmpresaService {
     await prefs.remove('empresa_foto');
   }
 
-  static Future<bool> vincularEntregador(String entregadorEmail) async {
+  static Future<bool> vincularEntregador(
+    String entregadorEmail, {
+    bool lancarErro = false,
+  }) async {
     try {
       final empresaEmail = await empresaLogada();
 
-      if (empresaEmail == null) return false;
+      if (empresaEmail == null) throw _sessaoExpirada;
 
-      final response = await http.put(
-        Uri.parse(
-          '${ApiConfig.empresas}/'
-          '${Uri.encodeComponent(empresaEmail)}/'
-          'entregadores/'
-          '${Uri.encodeComponent(entregadorEmail)}/solicitar',
-        ),
-        headers: await headersAutenticados(),
-      );
+      final response = await http
+          .put(
+            Uri.parse(
+              '${ApiConfig.empresas}/'
+              '${Uri.encodeComponent(empresaEmail)}/'
+              'entregadores/'
+              '${Uri.encodeComponent(entregadorEmail)}/solicitar',
+            ),
+            headers: await headersAutenticados(),
+          )
+          .timeout(_tempoLimite);
 
-      return response.statusCode == 200;
+      _validarResposta(response);
+      return true;
     } catch (e) {
-      debugPrint('Erro ao solicitar vínculo: $e');
-      return false;
+      return _tratarFalha(
+        e,
+        false,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível solicitar o vínculo.',
+      );
     }
   }
 
-  static Future<List<dynamic>> buscarEntregadoresPendentes() async {
+  static Future<List<dynamic>> buscarEntregadoresPendentes({
+    bool lancarErro = false,
+  }) async {
     try {
       final email = await empresaLogada();
 
-      if (email == null) return [];
+      if (email == null) throw _sessaoExpirada;
 
-      final response = await http.get(
-        Uri.parse(
-          '${ApiConfig.empresas}/'
-          '${Uri.encodeComponent(email)}/'
-          'entregadores-pendentes',
-        ),
-        headers: await headersAutenticados(),
-      );
+      final response = await http
+          .get(
+            Uri.parse(
+              '${ApiConfig.empresas}/'
+              '${Uri.encodeComponent(email)}/'
+              'entregadores-pendentes',
+            ),
+            headers: await headersAutenticados(),
+          )
+          .timeout(_tempoLimite);
 
-      if (response.statusCode == 200) {
-        return List<dynamic>.from(jsonDecode(response.body));
-      }
-
-      return [];
+      _validarResposta(response);
+      final dados = jsonDecode(_corpo(response));
+      if (dados is List) return List<dynamic>.from(dados);
+      throw const FormatException('Lista inválida do servidor.');
     } catch (e) {
-      debugPrint('Erro ao buscar vínculos pendentes: $e');
-      return [];
+      return _tratarFalha(
+        e,
+        <dynamic>[],
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível buscar as solicitações pendentes.',
+      );
     }
   }
 
-  static Future<List<dynamic>> buscarEntregadores() async {
+  static Future<List<dynamic>> buscarEntregadores({
+    bool lancarErro = false,
+  }) async {
     try {
       final email = await empresaLogada();
 
-      if (email == null) return [];
+      if (email == null) throw _sessaoExpirada;
 
-      final response = await http.get(
-        Uri.parse(
-          '${ApiConfig.empresas}/'
-          '${Uri.encodeComponent(email)}/entregadores',
-        ),
-        headers: await headersAutenticados(),
-      );
+      final response = await http
+          .get(
+            Uri.parse(
+              '${ApiConfig.empresas}/'
+              '${Uri.encodeComponent(email)}/entregadores',
+            ),
+            headers: await headersAutenticados(),
+          )
+          .timeout(_tempoLimite);
 
-      if (response.statusCode == 200) {
-        return List<dynamic>.from(jsonDecode(response.body));
-      }
-
-      return [];
+      _validarResposta(response);
+      final dados = jsonDecode(_corpo(response));
+      if (dados is List) return List<dynamic>.from(dados);
+      throw const FormatException('Lista inválida do servidor.');
     } catch (e) {
-      debugPrint('Erro ao buscar entregadores: $e');
-      return [];
+      return _tratarFalha(
+        e,
+        <dynamic>[],
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível buscar os entregadores.',
+      );
     }
   }
 
-  static Future<bool> cancelarSolicitacaoVinculo(String entregadorEmail) async {
+  static Future<bool> cancelarSolicitacaoVinculo(
+    String entregadorEmail, {
+    bool lancarErro = false,
+  }) async {
     try {
       final empresaEmail = await empresaLogada();
 
-      if (empresaEmail == null) return false;
+      if (empresaEmail == null) throw _sessaoExpirada;
 
-      final response = await http.put(
-        Uri.parse(
-          '${ApiConfig.empresas}/'
-          '${Uri.encodeComponent(empresaEmail)}/'
-          'entregadores/'
-          '${Uri.encodeComponent(entregadorEmail)}/'
-          'cancelar-solicitacao',
-        ),
-        headers: await headersAutenticados(),
-      );
+      final response = await http
+          .put(
+            Uri.parse(
+              '${ApiConfig.empresas}/'
+              '${Uri.encodeComponent(empresaEmail)}/'
+              'entregadores/'
+              '${Uri.encodeComponent(entregadorEmail)}/'
+              'cancelar-solicitacao',
+            ),
+            headers: await headersAutenticados(),
+          )
+          .timeout(_tempoLimite);
 
-      return response.statusCode == 200;
+      _validarResposta(response);
+      return true;
     } catch (e) {
-      debugPrint('Erro ao cancelar solicitação de vínculo: $e');
-      return false;
+      return _tratarFalha(
+        e,
+        false,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível cancelar a solicitação de vínculo.',
+      );
     }
   }
 
   static Future<Map<String, dynamic>?> atualizarPerfilEmpresa({
     required String nome,
     required String email,
+    bool lancarErro = false,
   }) async {
     try {
       final emailAtual = await empresaLogada();
 
       if (emailAtual == null || emailAtual.isEmpty) {
-        return null;
+        throw _sessaoExpirada;
       }
 
-      final response = await http.put(
-        Uri.parse(
-          '${ApiConfig.empresas}/'
-          '${Uri.encodeComponent(emailAtual)}/perfil',
-        ),
-        headers: await headersAutenticados(),
-        body: jsonEncode({'nome': nome, 'email': email}),
-      );
+      final response = await http
+          .put(
+            Uri.parse(
+              '${ApiConfig.empresas}/'
+              '${Uri.encodeComponent(emailAtual)}/perfil',
+            ),
+            headers: await headersAutenticados(),
+            body: jsonEncode({'nome': nome, 'email': email}),
+          )
+          .timeout(_tempoLimite);
 
-      debugPrint(
-        'Atualizar perfil empresa status: '
-        '${response.statusCode}',
-      );
+      _validarResposta(response);
 
-      if (response.statusCode != 200) {
-        return null;
-      }
-
-      final data = Map<String, dynamic>.from(jsonDecode(response.body));
+      final data = _decodificarMapa(_corpo(response));
 
       final novoNome = data['nome']?.toString();
       final novoEmail = data['email']?.toString();
 
       if (novoNome == null || novoEmail == null) {
-        return null;
+        throw const FormatException('Dados do perfil ausentes.');
       }
 
       await salvarDadosEmpresa(email: novoEmail, nome: novoNome);
@@ -510,81 +631,97 @@ class EmpresaService {
 
       return data;
     } catch (e) {
-      debugPrint('Erro ao atualizar perfil da empresa: $e');
-      return null;
+      return _tratarFalha<Map<String, dynamic>?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível atualizar o perfil da empresa.',
+      );
     }
   }
 
-  static Future<int> totalEntregadores() async {
+  static Future<int> totalEntregadores({bool lancarErro = false}) async {
     try {
       final email = await empresaLogada();
 
-      if (email == null) return 0;
+      if (email == null) throw _sessaoExpirada;
 
-      final response = await http.get(
-        Uri.parse(
-          '${ApiConfig.empresas}/'
-          '${Uri.encodeComponent(email)}/'
-          'entregadores/total',
-        ),
-        headers: await headersAutenticados(),
-      );
+      final response = await http
+          .get(
+            Uri.parse(
+              '${ApiConfig.empresas}/'
+              '${Uri.encodeComponent(email)}/'
+              'entregadores/total',
+            ),
+            headers: await headersAutenticados(),
+          )
+          .timeout(_tempoLimite);
 
-      if (response.statusCode == 200) {
-        final dados = Map<String, dynamic>.from(jsonDecode(response.body));
-
-        final total = dados['total'];
-
-        if (total is num) {
-          return total.toInt();
-        }
-
-        return int.tryParse(total?.toString() ?? '') ?? 0;
-      }
-
-      return 0;
+      _validarResposta(response);
+      final dados = _decodificarMapa(_corpo(response));
+      final total = dados['total'];
+      if (total is num) return total.toInt();
+      final valor = int.tryParse(total?.toString() ?? '');
+      if (valor != null) return valor;
+      throw const FormatException('Total de entregadores inválido.');
     } catch (e) {
-      debugPrint('Erro ao buscar total de entregadores: $e');
-      return 0;
+      return _tratarFalha(
+        e,
+        0,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível consultar o total de entregadores.',
+      );
     }
   }
 
-  static Future<bool> desvincularEntregador(String entregadorEmail) async {
+  static Future<bool> desvincularEntregador(
+    String entregadorEmail, {
+    bool lancarErro = false,
+  }) async {
     try {
       final empresaEmail = await empresaLogada();
 
-      if (empresaEmail == null) return false;
+      if (empresaEmail == null) throw _sessaoExpirada;
 
-      final response = await http.put(
-        Uri.parse(
-          '${ApiConfig.empresas}/'
-          '${Uri.encodeComponent(empresaEmail)}/'
-          'desvincular/'
-          '${Uri.encodeComponent(entregadorEmail)}',
-        ),
-        headers: await headersAutenticados(),
-      );
+      final response = await http
+          .put(
+            Uri.parse(
+              '${ApiConfig.empresas}/'
+              '${Uri.encodeComponent(empresaEmail)}/'
+              'desvincular/'
+              '${Uri.encodeComponent(entregadorEmail)}',
+            ),
+            headers: await headersAutenticados(),
+          )
+          .timeout(_tempoLimite);
 
-      return response.statusCode == 200;
+      _validarResposta(response);
+      return true;
     } catch (e) {
-      debugPrint('Erro ao desvincular: $e');
-      return false;
+      return _tratarFalha(
+        e,
+        false,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível desvincular o entregador.',
+      );
     }
   }
 
-  static Future<String?> atualizarFotoEmpresa(String caminhoArquivo) async {
+  static Future<String?> atualizarFotoEmpresa(
+    String caminhoArquivo, {
+    bool lancarErro = false,
+  }) async {
     try {
       final email = await empresaLogada();
 
       if (email == null || email.isEmpty) {
-        return null;
+        throw _sessaoExpirada;
       }
 
       final token = await obterTokenEmpresa();
 
       if (token == null || token.isEmpty) {
-        debugPrint('Token da empresa não encontrado.');
-        return null;
+        throw _sessaoExpirada;
       }
 
       final request = http.MultipartRequest(
@@ -605,16 +742,19 @@ class EmpresaService {
         ),
       );
 
-      final response = await request.send();
-      final body = await response.stream.bytesToString();
+      final response = await request.send().timeout(_tempoLimiteUpload);
+      final bytesResposta = await response.stream.toBytes().timeout(
+        _tempoLimiteUpload,
+      );
+      final body = utf8.decode(bytesResposta, allowMalformed: true);
 
       if (response.statusCode == 200) {
-        final data = Map<String, dynamic>.from(jsonDecode(body));
+        final data = _decodificarMapa(body);
 
         final foto = data['foto']?.toString();
 
         if (foto == null || foto.isEmpty) {
-          return null;
+          throw const FormatException('Referência da foto ausente.');
         }
 
         await salvarReferenciaFotoEmpresa(foto);
@@ -622,33 +762,31 @@ class EmpresaService {
         return foto;
       }
 
-      debugPrint(
-        'Erro foto empresa status: '
-        '${response.statusCode}. '
-        'Resposta: $body',
-      );
-
-      return null;
+      throw ApiService.erroHttp(response.statusCode, body);
     } catch (e) {
-      debugPrint('Erro ao enviar foto da empresa: $e');
-      return null;
+      return _tratarFalha<String?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível atualizar a foto da empresa.',
+      );
     }
   }
 
   static Future<String?> atualizarFotoEmpresaBytes({
     required Uint8List bytes,
     required String nomeArquivo,
+    bool lancarErro = false,
   }) async {
     try {
       final email = await empresaLogada();
       final token = await obterTokenEmpresa();
 
-      if (email == null ||
-          email.isEmpty ||
-          token == null ||
-          token.isEmpty ||
-          bytes.isEmpty) {
-        return null;
+      if (email == null || email.isEmpty || token == null || token.isEmpty) {
+        throw _sessaoExpirada;
+      }
+      if (bytes.isEmpty) {
+        throw const ApiException('Selecione uma foto válida.');
       }
 
       final request = http.MultipartRequest(
@@ -670,16 +808,19 @@ class EmpresaService {
         ),
       );
 
-      final response = await request.send();
-      final body = await response.stream.bytesToString();
+      final response = await request.send().timeout(_tempoLimiteUpload);
+      final bytesResposta = await response.stream.toBytes().timeout(
+        _tempoLimiteUpload,
+      );
+      final body = utf8.decode(bytesResposta, allowMalformed: true);
 
       if (response.statusCode == 200) {
-        final data = Map<String, dynamic>.from(jsonDecode(body));
+        final data = _decodificarMapa(body);
 
         final foto = data['foto']?.toString();
 
         if (foto == null || foto.isEmpty) {
-          return null;
+          throw const FormatException('Referência da foto ausente.');
         }
 
         await salvarReferenciaFotoEmpresa(foto);
@@ -687,16 +828,14 @@ class EmpresaService {
         return foto;
       }
 
-      debugPrint(
-        'Erro ao enviar foto por bytes. '
-        'Status: ${response.statusCode}. '
-        'Resposta: $body',
-      );
-
-      return null;
+      throw ApiService.erroHttp(response.statusCode, body);
     } catch (e) {
-      debugPrint('Erro ao enviar foto por bytes: $e');
-      return null;
+      return _tratarFalha<String?>(
+        e,
+        null,
+        lancarErro: lancarErro,
+        mensagemPadrao: 'Não foi possível atualizar a foto da empresa.',
+      );
     }
   }
 
@@ -740,28 +879,18 @@ class EmpresaService {
           .timeout(const Duration(seconds: 15));
 
       final sucesso = response.statusCode >= 200 && response.statusCode < 300;
-      String mensagem = sucesso
-          ? 'Solicitação realizada com sucesso.'
-          : 'Não foi possível concluir a solicitação.';
-
-      try {
-        final resposta = jsonDecode(utf8.decode(response.bodyBytes));
-        if (resposta is Map) {
-          final valor =
-              resposta['mensagem'] ?? resposta['message'] ?? resposta['erro'];
-          if (valor is String && valor.trim().isNotEmpty) {
-            mensagem = valor.trim();
-          }
-        }
-      } catch (_) {}
-
-      debugPrint('Cadastro empresa ($endpoint): ${response.statusCode}');
+      final mensagem = sucesso
+          ? _mensagemSucesso(response, 'Solicitação realizada com sucesso.')
+          : _mensagemPublica(response);
       return {'sucesso': sucesso, 'mensagem': mensagem};
     } catch (e) {
-      debugPrint('Erro na solicitação de cadastro da empresa ($endpoint): $e');
+      debugPrint('Erro no cadastro ($endpoint): ${e.runtimeType}');
       return {
         'sucesso': false,
-        'mensagem': 'Não foi possível conectar ao servidor. Tente novamente.',
+        'mensagem': ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível concluir a solicitação.',
+        ),
       };
     }
   }
@@ -787,26 +916,19 @@ class EmpresaService {
             .timeout(const Duration(seconds: 15));
       }
 
-      String mensagem = response.statusCode >= 200 && response.statusCode < 300
-          ? 'Operação realizada com sucesso'
-          : 'Não foi possível concluir a solicitação';
-
-      try {
-        final resposta = jsonDecode(response.body);
-        if (resposta is Map && resposta['mensagem'] is String) {
-          mensagem = resposta['mensagem'] as String;
-        }
-      } catch (_) {}
-
-      return {
-        'sucesso': response.statusCode >= 200 && response.statusCode < 300,
-        'mensagem': mensagem,
-      };
+      final sucesso = response.statusCode >= 200 && response.statusCode < 300;
+      final mensagem = sucesso
+          ? _mensagemSucesso(response, 'Operação realizada com sucesso.')
+          : _mensagemPublica(response);
+      return {'sucesso': sucesso, 'mensagem': mensagem};
     } catch (e) {
-      debugPrint('Erro na recuperação de senha da empresa: $e');
+      debugPrint('Erro na recuperação de senha: ${e.runtimeType}');
       return {
         'sucesso': false,
-        'mensagem': 'Não foi possível conectar ao servidor. Tente novamente.',
+        'mensagem': ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível concluir a recuperação de senha.',
+        ),
       };
     }
   }

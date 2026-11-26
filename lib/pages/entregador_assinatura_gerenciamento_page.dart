@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../services/api_service.dart';
 import '../services/assinatura_service.dart';
+import '../services/auth_service.dart';
 import '../services/pagamento_assinatura_service.dart';
 
 class EntregadorAssinaturaGerenciamentoPage extends StatefulWidget {
@@ -22,6 +24,8 @@ class _EntregadorAssinaturaGerenciamentoPageState
   bool _confirmando = false;
   bool _carregamentoEmCurso = false;
   String? _erroRecorrentes;
+  String? _tokenSessao;
+  bool _sessaoInvalidada = false;
   List<Map<String, dynamic>> _recorrentes = [];
 
   bool get _ocupado => _carregando || _operando || _confirmando;
@@ -36,6 +40,44 @@ class _EntregadorAssinaturaGerenciamentoPageState
     _carregar();
   }
 
+  Future<void> _validarSessao() async {
+    final token = await AuthService.obterToken();
+    final email = await AuthService.usuarioLogado();
+    if (!mounted ||
+        _sessaoInvalidada ||
+        token == null ||
+        token.trim().isEmpty ||
+        email == null ||
+        email.trim().isEmpty ||
+        await AuthService.obterToken() != token ||
+        (_tokenSessao != null && _tokenSessao != token)) {
+      throw const ApiException(
+        'Sua sessão expirou ou foi alterada. Reabra a tela após entrar novamente.',
+        statusCode: 401,
+      );
+    }
+    if (!mounted) {
+      throw const ApiException('A tela foi encerrada.');
+    }
+    _tokenSessao = token;
+  }
+
+  String _tratarFalha(Object erro, String padrao) {
+    final mensagem = ApiService.mensagemErro(erro, mensagemPadrao: padrao);
+    if (mounted && erro is ApiException && erro.statusCode == 401) {
+      setState(() {
+        _sessaoInvalidada = true;
+        _assinatura = null;
+        _consumo = null;
+        _historico = [];
+        _recorrentes = [];
+        _erro = mensagem;
+        _erroRecorrentes = mensagem;
+      });
+    }
+    return mensagem;
+  }
+
   Future<void> _carregar() async {
     if (!mounted || _operando || _confirmando || _carregamentoEmCurso) {
       return;
@@ -45,15 +87,10 @@ class _EntregadorAssinaturaGerenciamentoPageState
       _carregando = true;
       _erro = null;
       _erroRecorrentes = null;
-      _assinatura = null;
-      _consumo = null;
-      _historico = [];
-      _recorrentes = [];
     });
 
     try {
-      await _carregarPlano();
-      await _carregarRecorrentes();
+      await _atualizarDados();
     } finally {
       _carregamentoEmCurso = false;
       if (mounted) {
@@ -62,67 +99,119 @@ class _EntregadorAssinaturaGerenciamentoPageState
     }
   }
 
-  Future<void> _carregarPlano() async {
-    if (!mounted) {
-      return;
+  Future<void> _atualizarDados() async {
+    await _carregarPlano();
+    if (mounted && !_sessaoInvalidada) {
+      await _carregarRecorrentes();
     }
+  }
+
+  void _validarAssinatura(Map<String, dynamic> dados) {
+    if (!const {
+          'GRATUITO',
+          'ESSENCIAL',
+          'PROFISSIONAL',
+        }.contains(dados['plano']) ||
+        !const {
+          'ATIVA',
+          'PENDENTE',
+          'CANCELADA',
+          'EXPIRADA',
+        }.contains(dados['status'])) {
+      throw const ApiException(
+        'O servidor retornou dados inválidos da assinatura.',
+      );
+    }
+  }
+
+  Future<void> _carregarPlano() async {
+    if (!mounted) return;
     try {
+      await _validarSessao();
       final resultados = await Future.wait<dynamic>([
         AssinaturaService.buscarAtual(tipoConta: _tipoAssinatura),
         AssinaturaService.buscarHistorico(tipoConta: _tipoAssinatura),
         AssinaturaService.buscarConsumo(tipoConta: _tipoAssinatura),
       ]);
-      if (!mounted) {
-        return;
+      await _validarSessao();
+      if (!mounted) return;
+      final assinatura = resultados[0] as Map<String, dynamic>?;
+      final historico = resultados[1] as List<Map<String, dynamic>>;
+      if (assinatura != null) {
+        _validarAssinatura(assinatura);
+      }
+      for (final item in historico) {
+        _validarAssinatura(item);
       }
       setState(() {
-        _assinatura = resultados[0] as Map<String, dynamic>?;
-        _historico = resultados[1] as List<Map<String, dynamic>>;
+        _assinatura = assinatura;
+        _historico = historico;
         _consumo = resultados[2] as Map<String, dynamic>;
         _erro = null;
       });
-    } on AssinaturaException catch (e) {
-      if (!mounted) {
-        return;
-      }
-      setState(() => _erro = e.mensagem);
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      setState(
-        () => _erro = 'Não foi possível carregar os dados da assinatura.',
+    } catch (e) {
+      final mensagem = _tratarFalha(
+        e,
+        'Não foi possível carregar os dados da assinatura.',
+      );
+      if (mounted) setState(() => _erro = mensagem);
+    }
+  }
+
+  void _validarRecorrente(Map<String, dynamic> item, {int? esperado}) {
+    final id = _inteiro(item['assinaturaId']);
+    if (id == null ||
+        id <= 0 ||
+        (esperado != null && id != esperado) ||
+        !const {'ESSENCIAL', 'PROFISSIONAL'}.contains(item['plano']) ||
+        !const {
+          'PENDENTE',
+          'AUTORIZADA',
+          'PAUSADA',
+          'CANCELADA',
+          'ENCERRADA',
+        }.contains(item['status']) ||
+        !const {
+          'PREPARADA',
+          'ENVIANDO',
+          'INCERTA',
+          'CONFIRMADA',
+        }.contains(item['estadoCriacao'])) {
+      throw const ApiException(
+        'O servidor retornou dados inconsistentes da cobrança recorrente.',
       );
     }
   }
 
   Future<void> _carregarRecorrentes() async {
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
     try {
+      await _validarSessao();
       final dados =
           await PagamentoAssinaturaService.listarAssinaturasRecorrentes(
             tipoConta: _tipoPagamento,
           );
-      if (!mounted) {
-        return;
+      await _validarSessao();
+      if (!mounted) return;
+      final ids = <int>{};
+      for (final item in dados) {
+        _validarRecorrente(item);
+        if (!ids.add(_inteiro(item['assinaturaId'])!)) {
+          throw const ApiException(
+            'Foram encontradas cobranças duplicadas na resposta. Atualize os dados.',
+          );
+        }
       }
       setState(() {
         _recorrentes = dados;
         _erroRecorrentes = null;
       });
-    } on PagamentoAssinaturaException catch (e) {
-      if (mounted) {
-        setState(() => _erroRecorrentes = e.mensagem);
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(
-          () => _erroRecorrentes =
-              'Não foi possível consultar as cobranças recorrentes.',
-        );
-      }
+    } catch (e) {
+      final mensagem = _tratarFalha(
+        e,
+        'Não foi possível consultar as cobranças recorrentes.',
+      );
+      if (mounted) setState(() => _erroRecorrentes = mensagem);
     }
   }
 
@@ -192,29 +281,53 @@ class _EntregadorAssinaturaGerenciamentoPageState
     required String descricao,
     required IconData icone,
   }) async {
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(icone),
-            const SizedBox(width: 10),
-            Expanded(child: Text(titulo)),
+    if (!mounted || _ocupado) return;
+    setState(() => _confirmando = true);
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Row(
+            children: [
+              Icon(icone),
+              const SizedBox(width: 10),
+              Expanded(child: Text(titulo)),
+            ],
+          ),
+          content: Text(descricao),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Fechar'),
+            ),
           ],
         ),
-        content: Text(descricao),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Fechar'),
-          ),
-        ],
-      ),
-    );
+      );
+    } catch (e) {
+      _mensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível abrir as informações da assinatura.',
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _confirmando = false);
+    }
   }
 
   void _voltarAosPlanos() {
-    Navigator.of(context).pop();
+    if (!mounted || _ocupado) return;
+    try {
+      Navigator.of(context).pop();
+    } catch (e) {
+      _mensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível voltar aos planos.',
+        ),
+      );
+    }
   }
 
   bool _temIdentificadorExterno(Map<String, dynamic> item) {
@@ -243,47 +356,56 @@ class _EntregadorAssinaturaGerenciamentoPageState
     ).showSnackBar(SnackBar(content: Text(mensagem)));
   }
 
+  bool get _podeOperar =>
+      mounted &&
+      !_ocupado &&
+      !_sessaoInvalidada &&
+      _erro == null &&
+      _erroRecorrentes == null &&
+      _tokenSessao != null;
+
+  Future<Map<String, dynamic>> _consultarRegistro(int id) async {
+    await _validarSessao();
+    final dados =
+        await PagamentoAssinaturaService.consultarAssinaturaRecorrente(
+          assinaturaId: id,
+          tipoConta: _tipoPagamento,
+        );
+    await _validarSessao();
+    _validarRecorrente(dados, esperado: id);
+    return dados;
+  }
+
   Future<void> _consultarRecorrente(int id) async {
-    if (_ocupado || !mounted) {
-      return;
-    }
+    if (_ocupado || !mounted || _sessaoInvalidada) return;
     setState(() => _operando = true);
     try {
-      final dados =
-          await PagamentoAssinaturaService.consultarAssinaturaRecorrente(
-            assinaturaId: id,
-            tipoConta: _tipoPagamento,
-          );
-      if (!mounted) {
-        return;
-      }
+      final dados = await _consultarRegistro(id);
       _mensagem(
         'Situação da cobrança: ${_rotulo(dados['status']?.toString())}.',
       );
-    } on PagamentoAssinaturaException catch (e) {
-      _mensagem(e.mensagem);
-    } catch (_) {
-      _mensagem('Não foi possível consultar a cobrança.');
+    } catch (e) {
+      _mensagem(_tratarFalha(e, 'Não foi possível consultar a cobrança.'));
     } finally {
-      await _carregarPlano();
-      await _carregarRecorrentes();
-      if (mounted) {
-        setState(() => _operando = false);
+      try {
+        if (mounted && !_sessaoInvalidada) {
+          await _atualizarDados();
+        }
+      } finally {
+        if (mounted) setState(() => _operando = false);
       }
     }
   }
 
   Future<void> _cancelarRecorrente(Map<String, dynamic> item) async {
-    if (_ocupado || !mounted || !_podeCancelar(item)) {
-      return;
-    }
+    if (!_podeOperar || !_podeCancelar(item)) return;
     final id = _inteiro(item['assinaturaId']);
-    if (id == null || id <= 0) {
-      return;
-    }
+    if (id == null || id <= 0) return;
     setState(() => _confirmando = true);
     bool? confirmou;
     try {
+      await _validarSessao();
+      if (!mounted) return;
       confirmou = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -305,26 +427,38 @@ class _EntregadorAssinaturaGerenciamentoPageState
           ],
         ),
       );
+    } catch (e) {
+      _mensagem(
+        _tratarFalha(
+          e,
+          'Não foi possível abrir a confirmação do cancelamento.',
+        ),
+      );
     } finally {
-      if (mounted) {
-        setState(() => _confirmando = false);
-      }
+      if (mounted) setState(() => _confirmando = false);
     }
-    if (!mounted || confirmou != true || _ocupado) {
-      return;
-    }
+    if (confirmou != true || !_podeOperar) return;
+
     setState(() => _operando = true);
     try {
-      final dados =
-          await PagamentoAssinaturaService.cancelarAssinaturaRecorrente(
-            assinaturaId: id,
-            tipoConta: _tipoPagamento,
-          );
-      if (!mounted) {
-        return;
+      final atual = await _consultarRegistro(id);
+      if (atual['plano'] != item['plano'] ||
+          atual['mercadoPagoAssinaturaId'] != item['mercadoPagoAssinaturaId'] ||
+          atual['estadoCriacao'] != 'CONFIRMADA' ||
+          !_podeCancelar(atual)) {
+        throw const ApiException(
+          'A situação da cobrança mudou. Atualize os dados antes de solicitar o cancelamento.',
+        );
       }
-      if (_inteiro(dados['assinaturaId']) == id &&
-          const {'CANCELADA', 'ENCERRADA'}.contains(dados['status'])) {
+      await _validarSessao();
+      await PagamentoAssinaturaService.cancelarAssinaturaRecorrente(
+        assinaturaId: id,
+        tipoConta: _tipoPagamento,
+      );
+      final confirmacao = await _consultarRegistro(id);
+      if (confirmacao['plano'] == atual['plano'] &&
+          confirmacao['estadoCriacao'] == 'CONFIRMADA' &&
+          const {'CANCELADA', 'ENCERRADA'}.contains(confirmacao['status'])) {
         _mensagem(
           'Cobrança recorrente encerrada. Consulte a validade do plano atual.',
         );
@@ -333,52 +467,71 @@ class _EntregadorAssinaturaGerenciamentoPageState
           'Cancelamento ainda não confirmado. Consulte a situação da cobrança.',
         );
       }
-    } on PagamentoAssinaturaException catch (e) {
-      _mensagem('${e.mensagem} Consulte a situação antes de tentar novamente.');
-    } catch (_) {
+    } catch (e) {
       _mensagem(
-        'Não foi possível confirmar o cancelamento. Consulte a cobrança.',
+        _tratarFalha(
+          e,
+          'Não foi possível confirmar o cancelamento. Consulte a cobrança antes de tentar novamente.',
+        ),
       );
     } finally {
-      await _carregarPlano();
-      await _carregarRecorrentes();
-      if (mounted) {
-        setState(() => _operando = false);
+      try {
+        if (mounted && !_sessaoInvalidada) {
+          await _atualizarDados();
+        }
+      } finally {
+        if (mounted) setState(() => _operando = false);
       }
     }
   }
 
   Future<void> _abrirAutorizacao(Map<String, dynamic> item) async {
-    if (_ocupado ||
-        !mounted ||
+    if (!_podeOperar ||
         item['status'] != 'PENDENTE' ||
         item['estadoCriacao'] != 'CONFIRMADA' ||
         !_temIdentificadorExterno(item)) {
       return;
     }
-    final uri = Uri.tryParse(item['urlAutorizacao']?.toString() ?? '');
-    if (uri == null ||
-        uri.scheme != 'https' ||
-        uri.userInfo.isNotEmpty ||
-        (uri.hasPort && uri.port != 443) ||
-        !const [
-          'mercadopago.com',
-          'mercadopago.com.br',
-        ].any((host) => uri.host == host || uri.host.endsWith('.$host'))) {
-      _mensagem('O endereço de autorização do Mercado Pago é inválido.');
-      return;
-    }
+    final id = _inteiro(item['assinaturaId']);
+    if (id == null || id <= 0) return;
     setState(() => _operando = true);
     try {
+      final atual = await _consultarRegistro(id);
+      if (atual['status'] != 'PENDENTE' ||
+          atual['estadoCriacao'] != 'CONFIRMADA' ||
+          atual['plano'] != item['plano'] ||
+          atual['mercadoPagoAssinaturaId'] != item['mercadoPagoAssinaturaId'] ||
+          !_temIdentificadorExterno(atual)) {
+        throw const ApiException(
+          'A situação da cobrança mudou. Atualize a assinatura antes de autorizar o pagamento.',
+        );
+      }
+      final uri = Uri.tryParse(atual['urlAutorizacao']?.toString() ?? '');
+      if (uri == null ||
+          uri.scheme != 'https' ||
+          uri.userInfo.isNotEmpty ||
+          (uri.hasPort && uri.port != 443) ||
+          !const [
+            'mercadopago.com',
+            'mercadopago.com.br',
+          ].any((host) => uri.host == host || uri.host.endsWith('.$host'))) {
+        throw const ApiException(
+          'O endereço de autorização do Mercado Pago é inválido.',
+        );
+      }
+      await _validarSessao();
       if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-        _mensagem('Não foi possível abrir o Mercado Pago.');
+        throw const ApiException('Não foi possível abrir o Mercado Pago.');
       }
-    } catch (_) {
-      _mensagem('Não foi possível abrir o Mercado Pago.');
+    } catch (e) {
+      final mensagem = _tratarFalha(
+        e,
+        'Não foi possível abrir o Mercado Pago.',
+      );
+      if (mounted) setState(() => _erroRecorrentes = mensagem);
+      _mensagem(mensagem);
     } finally {
-      if (mounted) {
-        setState(() => _operando = false);
-      }
+      if (mounted) setState(() => _operando = false);
     }
   }
 
@@ -470,13 +623,15 @@ class _EntregadorAssinaturaGerenciamentoPageState
                 ),
               if (podeAutorizar)
                 FilledButton.icon(
-                  onPressed: _ocupado ? null : () => _abrirAutorizacao(item),
+                  onPressed: _podeOperar ? () => _abrirAutorizacao(item) : null,
                   icon: const Icon(Icons.open_in_new),
                   label: const Text('Autorizar pagamento'),
                 ),
               if (_podeCancelar(item))
                 OutlinedButton.icon(
-                  onPressed: _ocupado ? null : () => _cancelarRecorrente(item),
+                  onPressed: _podeOperar && criacao == 'CONFIRMADA'
+                      ? () => _cancelarRecorrente(item)
+                      : null,
                   icon: const Icon(Icons.cancel_outlined),
                   label: const Text('Cancelar renovação'),
                 ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 
@@ -33,60 +34,104 @@ class _EditarEmpresaPerfilPageState extends State<EditarEmpresaPerfilPage> {
     emailController = TextEditingController(text: widget.email);
   }
 
+  void mostrarMensagem(String mensagem, {bool sucesso = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(mensagem),
+          backgroundColor: sucesso ? AppColors.success : null,
+        ),
+      );
+  }
+
   Future<void> salvar() async {
-    if (salvando) return;
+    if (!mounted || salvando) return;
 
     FocusScope.of(context).unfocus();
 
     final nome = nomeController.text.trim();
-    final email = emailController.text.trim();
+    final email = emailController.text.trim().toLowerCase();
 
-    if (nome.isEmpty || email.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Preencha nome e e-mail')));
+    if (nome.isEmpty) {
+      mostrarMensagem('Informe o nome da empresa.');
       return;
     }
 
-    if (!email.contains('@') || !email.contains('.')) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Informe um e-mail válido')));
+    if (email.isEmpty) {
+      mostrarMensagem('Informe o e-mail da empresa.');
+      emailFocusNode.requestFocus();
       return;
     }
 
-    setState(() {
-      salvando = true;
-    });
+    if (email.length > 254 ||
+        !RegExp(
+          r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$',
+        ).hasMatch(email)) {
+      mostrarMensagem('Informe um e-mail válido.');
+      emailFocusNode.requestFocus();
+      return;
+    }
 
-    final resultado = await EmpresaService.atualizarPerfilEmpresa(
-      nome: nome,
-      email: email,
-    );
+    setState(() => salvando = true);
 
-    if (!mounted) return;
+    try {
+      final empresaEmail = await EmpresaService.empresaLogada();
+      if (!mounted) return;
 
-    setState(() {
-      salvando = false;
-    });
+      if (empresaEmail == null || empresaEmail.trim().isEmpty) {
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
+      }
 
-    if (resultado == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Não foi possível atualizar o perfil da empresa'),
+      if (empresaEmail.trim().toLowerCase() !=
+          widget.email.trim().toLowerCase()) {
+        throw const ApiException(
+          'Os dados da sessão foram alterados. Volte ao perfil e atualize os dados antes de editar novamente.',
+        );
+      }
+
+      final resultado = await EmpresaService.atualizarPerfilEmpresa(
+        nome: nome,
+        email: email,
+        lancarErro: true,
+      );
+
+      if (!mounted) return;
+
+      if (resultado == null) {
+        throw const ApiException(
+          'Não foi possível confirmar a atualização do perfil. Confira seus dados antes de tentar novamente.',
+        );
+      }
+
+      mostrarMensagem(
+        'Perfil da empresa atualizado com sucesso',
+        sucesso: true,
+      );
+
+      if (context.canPop()) {
+        context.pop(true);
+      } else {
+        context.go('/empresa/perfil');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível atualizar o perfil da empresa. Tente novamente.',
         ),
       );
-      return;
+    } finally {
+      if (mounted) {
+        setState(() => salvando = false);
+      }
     }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Perfil da empresa atualizado com sucesso'),
-        backgroundColor: AppColors.success,
-      ),
-    );
-
-    context.pop(true);
   }
 
   @override
@@ -133,12 +178,14 @@ class _EditarEmpresaPerfilPageState extends State<EditarEmpresaPerfilPage> {
                 color: theme.cardColor,
                 borderRadius: BorderRadius.circular(22),
                 border: Border.all(
-                  color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                  color: theme.colorScheme.outlineVariant.withValues(
+                    alpha: 0.35,
+                  ),
                 ),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(
-                      theme.brightness == Brightness.dark ? 0.18 : 0.05,
+                    color: Colors.black.withValues(
+                      alpha: theme.brightness == Brightness.dark ? 0.18 : 0.05,
                     ),
                     blurRadius: 12,
                     offset: const Offset(0, 5),
@@ -151,7 +198,9 @@ class _EditarEmpresaPerfilPageState extends State<EditarEmpresaPerfilPage> {
                   Row(
                     children: [
                       CircleAvatar(
-                        backgroundColor: AppColors.primary.withOpacity(0.14),
+                        backgroundColor: AppColors.primary.withValues(
+                          alpha: 0.14,
+                        ),
                         child: const Icon(
                           Icons.business_outlined,
                           color: AppColors.primary,

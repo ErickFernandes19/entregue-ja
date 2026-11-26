@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/theme_provider.dart';
+import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
 
@@ -15,6 +16,10 @@ class ConfiguracoesPage extends StatefulWidget {
 
 class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
   Map<String, dynamic>? vinculoPendente;
+  bool _carregandoVinculo = false;
+  bool _alterandoVinculo = false;
+  bool _alterandoTema = false;
+  bool _saindo = false;
 
   @override
   void initState() {
@@ -22,47 +27,124 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
     carregarVinculoPendente();
   }
 
-  Future<void> carregarVinculoPendente() async {
-    final resultado = await AuthService.buscarVinculoPendente();
-
+  void _mostrarMensagem(String mensagem) {
     if (!mounted) return;
-
-    setState(() {
-      vinculoPendente = resultado;
-    });
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensagem)));
   }
 
-  Future<void> aceitarVinculo() async {
-    final sucesso = await AuthService.aceitarVinculo();
+  Future<void> carregarVinculoPendente() async {
+    if (_carregandoVinculo || _alterandoVinculo || _saindo) return;
+    _carregandoVinculo = true;
 
-    if (!mounted) return;
+    try {
+      final resultado = await AuthService.buscarVinculoPendente(
+        lancarErro: true,
+      );
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          sucesso ? 'Vínculo aceito com sucesso' : 'Erro ao aceitar vínculo',
+      if (resultado == null || resultado['possuiVinculo'] is! bool) {
+        throw const FormatException('Resposta inválida');
+      }
+
+      if (!mounted || _saindo) return;
+      setState(() => vinculoPendente = resultado);
+    } catch (e) {
+      if (!mounted || _saindo) return;
+      _mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível consultar a solicitação de vínculo.',
         ),
-      ),
-    );
-
-    if (sucesso) {
-      carregarVinculoPendente();
+      );
+    } finally {
+      _carregandoVinculo = false;
     }
   }
 
-  Future<void> recusarVinculo() async {
-    final sucesso = await AuthService.recusarVinculo();
+  Future<void> aceitarVinculo() => _responderVinculo(aceitar: true);
 
-    if (!mounted) return;
+  Future<void> recusarVinculo() => _responderVinculo(aceitar: false);
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(sucesso ? 'Vínculo recusado' : 'Erro ao recusar vínculo'),
-      ),
-    );
+  Future<void> _responderVinculo({required bool aceitar}) async {
+    if (_alterandoVinculo || _carregandoVinculo || _saindo || !mounted) {
+      return;
+    }
+    if (vinculoPendente?['possuiVinculo'] != true) return;
 
-    if (sucesso) {
-      carregarVinculoPendente();
+    _alterandoVinculo = true;
+    final mensagemPadrao = aceitar
+        ? 'Não foi possível aceitar o vínculo. Tente novamente.'
+        : 'Não foi possível recusar o vínculo. Tente novamente.';
+
+    try {
+      final sucesso = aceitar
+          ? await AuthService.aceitarVinculo(lancarErro: true)
+          : await AuthService.recusarVinculo(lancarErro: true);
+
+      if (!sucesso) throw ApiException(mensagemPadrao);
+      if (!mounted) return;
+
+      setState(() => vinculoPendente = null);
+      _mostrarMensagem(
+        aceitar ? 'Vínculo aceito com sucesso' : 'Vínculo recusado',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _mostrarMensagem(
+        ApiService.mensagemErro(e, mensagemPadrao: mensagemPadrao),
+      );
+    } finally {
+      _alterandoVinculo = false;
+    }
+
+    if (mounted && !_saindo) {
+      await carregarVinculoPendente();
+    }
+  }
+
+  Future<void> _alterarTema(ThemeProvider provider, ThemeMode modo) async {
+    if (_alterandoTema || _saindo) return;
+    _alterandoTema = true;
+
+    try {
+      await provider.alterarTema(modo);
+    } catch (e) {
+      _mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível salvar a aparência. Tente novamente.',
+        ),
+      );
+    } finally {
+      _alterandoTema = false;
+    }
+  }
+
+  Future<void> _encerrarSessao() async {
+    if (_saindo || !mounted) return;
+    if (_alterandoVinculo || _alterandoTema) {
+      _mostrarMensagem('Aguarde a conclusão da operação para sair.');
+      return;
+    }
+    _saindo = true;
+
+    try {
+      await AuthService.logout();
+      if (!mounted) return;
+      context.go('/selecionar');
+    } catch (e) {
+      _mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível encerrar a sessão. Tente novamente.',
+        ),
+      );
+    } finally {
+      _saindo = false;
     }
   }
 
@@ -89,6 +171,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
   }
 
   Future<void> abrirAparencia() async {
+    if (_saindo) return;
     final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
 
     await showModalBottomSheet(
@@ -121,7 +204,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
                       groupValue: provider.themeMode,
                       onChanged: (ThemeMode? modo) async {
                         if (modo == null) return;
-                        await themeProvider.alterarTema(modo);
+                        await _alterarTema(themeProvider, modo);
                       },
                       child: const Column(
                         mainAxisSize: MainAxisSize.min,
@@ -311,13 +394,7 @@ class _ConfiguracoesPageState extends State<ConfiguracoesPage> {
             color: colorScheme.onErrorContainer.withValues(alpha: 0.80),
           ),
         ),
-        onTap: () async {
-          await AuthService.logout();
-
-          if (!mounted) return;
-
-          context.go('/selecionar');
-        },
+        onTap: _encerrarSessao,
       ),
     );
   }

@@ -28,6 +28,9 @@ public class MercadoPagoService {
     private final String accessToken;
     private final String subscriptionsAccessToken;
 
+    @Value("${MERCADO_PAGO_COBRANCAS_HABILITADAS:false}")
+    private boolean cobrancasHabilitadas;
+
     public MercadoPagoService(
             @Value("${mercadopago.access-token:}") String accessToken,
             @Value("${MERCADO_PAGO_SUBSCRIPTIONS_ACCESS_TOKEN:}") String subscriptionsAccessToken,
@@ -52,6 +55,7 @@ public class MercadoPagoService {
             String referenciaExterna,
             String chaveIdempotencia
     ) {
+        validarCobrancasHabilitadas();
         validarConfiguracao();
         validarValor(valor);
         validarTexto(descricao, "Descrição obrigatória.");
@@ -196,6 +200,7 @@ public class MercadoPagoService {
             BigDecimal valorMensal,
             String urlRetorno
     ) {
+        validarCobrancasHabilitadas();
         validarConfiguracaoAssinaturas();
         validarValor(valorMensal);
         validarTexto(motivo, "Motivo da assinatura obrigatório.");
@@ -304,6 +309,7 @@ public class MercadoPagoService {
     }
 
     public JsonNode atualizarValorAssinaturaRecorrente(String assinaturaId, BigDecimal novoValorMensal) {
+        validarCobrancasHabilitadas();
         validarConfiguracaoAssinaturas();
         validarIdentificadorAssinatura(assinaturaId);
         validarValor(novoValorMensal);
@@ -388,6 +394,12 @@ public class MercadoPagoService {
             return dados;
         } catch (JsonProcessingException e) {
             throw new MercadoPagoException("Não foi possível interpretar a resposta do Mercado Pago.", null);
+        }
+    }
+
+    private void validarCobrancasHabilitadas() {
+        if (!cobrancasHabilitadas) {
+            throw new IllegalStateException("A contratação de planos pagos está temporariamente indisponível.");
         }
     }
 

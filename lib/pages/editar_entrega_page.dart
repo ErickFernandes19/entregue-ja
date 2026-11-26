@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/empresa_lista_entregas_service.dart';
 import '../theme/app_colors.dart';
 
@@ -18,64 +19,104 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
   late TextEditingController enderecoController;
   late TextEditingController valorController;
   late TextEditingController observacaoController;
+  bool carregando = false;
 
   @override
   void initState() {
     super.initState();
     clienteController = TextEditingController(
-      text: widget.entrega['cliente'] ?? '',
+      text: widget.entrega['cliente']?.toString() ?? '',
     );
     enderecoController = TextEditingController(
-      text: widget.entrega['endereco'] ?? '',
+      text: widget.entrega['endereco']?.toString() ?? '',
     );
     valorController = TextEditingController(
       text: widget.entrega['valor']?.toString() ?? '',
     );
     observacaoController = TextEditingController(
-      text: widget.entrega['observacao'] ?? '',
+      text: widget.entrega['observacao']?.toString() ?? '',
     );
   }
 
+  void mostrarMensagem(String mensagem) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(content: Text(mensagem)));
+  }
+
   Future<void> salvarAlteracoes() async {
+    if (!mounted || carregando) return;
     FocusScope.of(context).unfocus();
     final cliente = clienteController.text.trim();
     final endereco = enderecoController.text.trim();
     final valorTexto = valorController.text.trim().replaceAll(',', '.');
     final observacao = observacaoController.text.trim();
 
-    if (cliente.isEmpty || endereco.isEmpty || valorTexto.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Preencha cliente, endereço e valor')),
-      );
+    if (cliente.isEmpty) {
+      mostrarMensagem('Informe o nome do cliente.');
+      return;
+    }
+    if (endereco.isEmpty) {
+      mostrarMensagem('Informe o endereço da entrega.');
+      return;
+    }
+    if (valorTexto.isEmpty) {
+      mostrarMensagem('Informe o valor da entrega.');
       return;
     }
 
     final valor = double.tryParse(valorTexto);
-    if (valor == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Valor inválido')));
+    if (valor == null || !valor.isFinite || valor <= 0) {
+      mostrarMensagem('Informe um valor válido maior que zero.');
       return;
     }
 
-    final sucesso = await EmpresaListaEntregasService.editarEntrega(
-      id: widget.entrega['id'],
-      cliente: cliente,
-      endereco: endereco,
-      valor: valor,
-      observacao: observacao,
-    );
-
-    if (!mounted) return;
-    if (sucesso) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Entrega alterada com sucesso')),
+    final id = int.tryParse(widget.entrega['id']?.toString() ?? '');
+    if (id == null || id <= 0) {
+      mostrarMensagem(
+        'Não foi possível identificar a entrega. Atualize a lista e tente novamente.',
       );
+      return;
+    }
+
+    setState(() => carregando = true);
+    bool sucesso = false;
+    try {
+      sucesso = await EmpresaListaEntregasService.editarEntrega(
+        id: id,
+        cliente: cliente,
+        endereco: endereco,
+        valor: valor,
+        observacao: observacao,
+        lancarErro: true,
+      );
+      if (!sucesso) {
+        throw const ApiException(
+          'Não foi possível confirmar a alteração. Consulte os detalhes da entrega antes de tentar novamente.',
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível editar a entrega. Consulte os detalhes antes de tentar novamente.',
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
+    }
+
+    if (!mounted || !sucesso) return;
+    mostrarMensagem('Entrega alterada com sucesso');
+    if (context.canPop()) {
       context.pop(true);
     } else {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Erro ao editar entrega')));
+      context.go('/empresa/entregas');
     }
   }
 
@@ -99,6 +140,7 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
     final theme = Theme.of(context);
     return TextField(
       controller: controller,
+      enabled: !carregando,
       keyboardType: keyboardType,
       textInputAction: textInputAction,
       maxLines: maxLines,
@@ -127,13 +169,15 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
         leading: IconButton(
           tooltip: 'Voltar aos detalhes da entrega',
           icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            if (context.canPop()) {
-              context.pop(false);
-            } else {
-              context.go('/empresa/entregas');
-            }
-          },
+          onPressed: carregando
+              ? null
+              : () {
+                  if (context.canPop()) {
+                    context.pop(false);
+                  } else {
+                    context.go('/empresa/entregas');
+                  }
+                },
         ),
         title: const Text('Editar Entrega'),
         centerTitle: true,
@@ -148,12 +192,12 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
               color: theme.cardColor,
               borderRadius: BorderRadius.circular(22),
               border: Border.all(
-                color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
               ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(
-                    theme.brightness == Brightness.dark ? 0.18 : 0.05,
+                  color: Colors.black.withValues(
+                    alpha: theme.brightness == Brightness.dark ? 0.18 : 0.05,
                   ),
                   blurRadius: 12,
                   offset: const Offset(0, 5),
@@ -199,8 +243,17 @@ class _EditarEntregaPageState extends State<EditarEntregaPage> {
           SizedBox(
             height: 54,
             child: ElevatedButton.icon(
-              onPressed: salvarAlteracoes,
-              icon: const Icon(Icons.save),
+              onPressed: carregando ? null : salvarAlteracoes,
+              icon: carregando
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.save),
               label: const Text(
                 'Salvar Alterações',
                 style: TextStyle(fontWeight: FontWeight.bold),

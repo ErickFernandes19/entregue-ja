@@ -1,10 +1,20 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'api_service.dart';
 import 'auth_service.dart';
 
 class ConfiguracoesService {
-  static Future<String?> _usuario() async {
-    return await AuthService.usuarioLogado();
+  static Future<String> _usuario() async {
+    final email = await AuthService.usuarioLogado();
+
+    if (email == null || email.trim().isEmpty) {
+      throw const ApiException(
+        'Sua sessão expirou. Faça login novamente.',
+        statusCode: 401,
+      );
+    }
+
+    return email;
   }
 
   static Future<void> salvarConfiguracoes({
@@ -13,58 +23,60 @@ class ConfiguracoesService {
     required String consumoMedio,
     required String precoCombustivel,
   }) async {
-    final prefs = await SharedPreferences.getInstance();
+    try {
+      final email = await _usuario();
+      final prefs = await SharedPreferences.getInstance();
+      final configuracoes = <String, String>{
+        'veiculo_$email': veiculo,
+        'capacidade_entregas_$email': capacidade,
+        'consumo_medio_$email': consumoMedio,
+        'preco_combustivel_$email': precoCombustivel,
+      };
 
-    final email = await _usuario();
+      for (final configuracao in configuracoes.entries) {
+        final salvo = await prefs.setString(
+          configuracao.key,
+          configuracao.value,
+        );
 
-    if (email == null) return;
-
-    await prefs.setString('veiculo_$email', veiculo);
-
-    await prefs.setString('capacidade_entregas_$email', capacidade);
-
-    await prefs.setString('consumo_medio_$email', consumoMedio);
-
-    await prefs.setString('preco_combustivel_$email', precoCombustivel);
+        if (!salvo) {
+          throw const ApiException(
+            'Não foi possível concluir o salvamento no aparelho. '
+            'Alguns dados podem ter sido salvos. Tente salvar novamente.',
+          );
+        }
+      }
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw const ApiException(
+        'Não foi possível concluir o salvamento no aparelho. '
+        'Alguns dados podem ter sido salvos. Tente salvar novamente.',
+      );
+    }
   }
 
-  static Future<String?> buscarVeiculo() async {
-    final prefs = await SharedPreferences.getInstance();
-
-    final email = await _usuario();
-
-    if (email == null) return null;
-
-    return prefs.getString('veiculo_$email');
+  static Future<String?> _buscar(String chave) async {
+    try {
+      final email = await _usuario();
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getString('${chave}_$email');
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw const ApiException(
+        'Não foi possível carregar as configurações do aparelho. '
+        'Tente novamente.',
+      );
+    }
   }
 
-  static Future<String?> buscarCapacidade() async {
-    final prefs = await SharedPreferences.getInstance();
+  static Future<String?> buscarVeiculo() => _buscar('veiculo');
 
-    final email = await _usuario();
+  static Future<String?> buscarCapacidade() => _buscar('capacidade_entregas');
 
-    if (email == null) return null;
+  static Future<String?> buscarConsumoMedio() => _buscar('consumo_medio');
 
-    return prefs.getString('capacidade_entregas_$email');
-  }
-
-  static Future<String?> buscarConsumoMedio() async {
-    final prefs = await SharedPreferences.getInstance();
-
-    final email = await _usuario();
-
-    if (email == null) return null;
-
-    return prefs.getString('consumo_medio_$email');
-  }
-
-  static Future<String?> buscarPrecoCombustivel() async {
-    final prefs = await SharedPreferences.getInstance();
-
-    final email = await _usuario();
-
-    if (email == null) return null;
-
-    return prefs.getString('preco_combustivel_$email');
-  }
+  static Future<String?> buscarPrecoCombustivel() =>
+      _buscar('preco_combustivel');
 }

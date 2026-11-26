@@ -43,9 +43,6 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   final NavegacaoVozService _navegacaoVoz = NavegacaoVozService();
 
   StreamSubscription<Position>? _positionSubscription;
-  static const Duration _intervaloEnvioLocalizacao = Duration(seconds: 12);
-  DateTime? _ultimoEnvioLocalizacao;
-  bool _enviandoLocalizacao = false;
 
   LatLng posicaoAtual = const LatLng(-23.5505, -46.6333);
 
@@ -55,6 +52,93 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   List<LatLng> _pontosRotaCompleta = [];
 
   bool carregandoMapa = true;
+  bool _posicaoValida = false;
+  bool _carregandoMapaCompleto = false;
+  String? _erroGps;
+  String? _erroRota;
+  String? _erroSincronizacao;
+  String? _avisoEnderecos;
+
+  void _mostrarErro(String texto) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(texto), backgroundColor: AppColors.error),
+    );
+  }
+
+  void _definirErroGps(String? texto) {
+    if (!mounted || _erroGps == texto) return;
+    setState(() => _erroGps = texto);
+  }
+
+  void _definirErroRota(String? texto) {
+    if (!mounted || _erroRota == texto) return;
+    setState(() => _erroRota = texto);
+  }
+
+  void _definirErroSincronizacao(String? texto) {
+    if (!mounted || _erroSincronizacao == texto) return;
+    setState(() => _erroSincronizacao = texto);
+  }
+
+  bool _gpsValido(Position gps) =>
+      gps.latitude.isFinite &&
+      gps.longitude.isFinite &&
+      gps.latitude >= -90 &&
+      gps.latitude <= 90 &&
+      gps.longitude >= -180 &&
+      gps.longitude <= 180 &&
+      !(gps.latitude == 0 && gps.longitude == 0);
+
+  String _mensagemGps(Object erro) {
+    if (erro is TimeoutException) {
+      return 'A localização demorou para responder. Procure um local com melhor sinal e tente novamente.';
+    }
+    if (erro is LocationServiceDisabledException) {
+      return 'Ative a localização do dispositivo para utilizar a rota.';
+    }
+    if (erro is PermissionDeniedException) {
+      return 'Permita o acesso à localização para utilizar a rota.';
+    }
+    return 'Não foi possível obter sua localização. Verifique o GPS e tente novamente.';
+  }
+
+  Widget _avisosMapa() {
+    final avisos = [
+      if (_erroGps != null)
+        _posicaoValida
+            ? '${_erroGps!} Última posição conhecida no mapa.'
+            : _erroGps!,
+      if (_erroSincronizacao != null)
+        '${_erroSincronizacao!} Os dados podem estar desatualizados.',
+      ?_erroRota,
+      ?_avisoEnderecos,
+    ];
+    if (avisos.isEmpty) return const SizedBox.shrink();
+    final cores = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final aviso in avisos)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                aviso,
+                style: TextStyle(fontSize: 12, color: cores.error),
+              ),
+            ),
+          if (rotaIniciada)
+            TextButton.icon(
+              onPressed: carregandoMapa ? null : atualizarMapa,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Atualizar mapa'),
+            ),
+        ],
+      ),
+    );
+  }
 
   bool rotaIniciada = false;
 
@@ -113,6 +197,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
 
     Future.microtask(() async {
       await _criarIconeMoto();
+      if (!mounted) return;
       await carregarMapaCompleto();
     });
   }
@@ -144,19 +229,19 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
           accuracy: LocationAccuracy.high,
         ),
       ).timeout(const Duration(seconds: 12));
-      if (!mounted ||
-          !rotaIniciada ||
-          !gps.latitude.isFinite ||
-          !gps.longitude.isFinite) {
+      if (!mounted || !rotaIniciada) return;
+      if (!_gpsValido(gps)) {
+        _definirErroGps(
+          'O GPS retornou uma localização inválida. Tente novamente.',
+        );
         return;
       }
       final posicao = LatLng(gps.latitude, gps.longitude);
-      if (gps.accuracy.isFinite && gps.accuracy <= 35) {
-        unawaited(_enviarLocalizacaoDasEntregas(posicao, forcar: true));
-      }
       _atualizarDirecao(gps, posicao);
       setState(() {
         posicaoAtual = posicao;
+        _posicaoValida = true;
+        _erroGps = null;
         markers = Set<Marker>.from(markers)
           ..removeWhere((m) => m.markerId.value == 'entregador')
           ..add(_marcadorEntregador(posicao));
@@ -168,7 +253,8 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
         unawaited(_acompanharCamera(posicao, _direcaoMoto));
       }
     } catch (e) {
-      debugPrint('Não foi possível atualizar a localização ao retornar: $e');
+      debugPrint('Falha ao atualizar localização: ${e.runtimeType}');
+      _definirErroGps(_mensagemGps(e));
     }
   }
 
@@ -195,34 +281,33 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   }
 
   Future<bool> verificarPermissaoLocalizacao() async {
-    final servicoAtivo = await Geolocator.isLocationServiceEnabled();
-
-    if (!servicoAtivo) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Ative a localização do celular para utilizar a rota.',
-            ),
-          ),
+    try {
+      final servicoAtivo = await Geolocator.isLocationServiceEnabled();
+      if (!servicoAtivo) {
+        _definirErroGps(
+          'Ative a localização do dispositivo para utilizar a rota.',
         );
+        return false;
       }
-
+      var permissao = await Geolocator.checkPermission();
+      if (permissao == LocationPermission.denied) {
+        permissao = await Geolocator.requestPermission();
+      }
+      if (permissao == LocationPermission.deniedForever) {
+        _definirErroGps(
+          'A permissão de localização está bloqueada. Libere-a nas configurações do aplicativo ou do navegador.',
+        );
+        return false;
+      }
+      if (permissao == LocationPermission.denied) {
+        _definirErroGps('Permita o acesso à localização para utilizar a rota.');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      _definirErroGps(_mensagemGps(e));
       return false;
     }
-
-    LocationPermission permissao = await Geolocator.checkPermission();
-
-    if (permissao == LocationPermission.denied) {
-      permissao = await Geolocator.requestPermission();
-    }
-
-    if (permissao == LocationPermission.denied ||
-        permissao == LocationPermission.deniedForever) {
-      return false;
-    }
-
-    return true;
   }
 
   Future<void> _criarIconeMoto() async {
@@ -364,26 +449,21 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   );
 
   void _recentralizarMapa() {
+    if (!_posicaoValida || _erroGps != null) {
+      if (!carregandoMapa) {
+        unawaited(atualizarMapa());
+      }
+      return;
+    }
     setState(() => _acompanharLocalizacao = true);
     _ultimaAtualizacaoCamera = null;
     unawaited(_acompanharCamera(posicaoAtual, _direcaoMoto));
   }
 
   Future<void> carregarMapaCompleto() async {
-    if (mounted) {
-      setState(() {
-        carregandoMapa = true;
-
-        markers.clear();
-
-        polylines.clear();
-        _pontosRotaCompleta = [];
-
-        distanciaRotaKm = 0;
-
-        duracaoRotaMinutos = 0;
-      });
-    }
+    if (!mounted || _carregandoMapaCompleto || _calculandoRota) return;
+    _carregandoMapaCompleto = true;
+    setState(() => carregandoMapa = true);
 
     try {
       final entregasProvider = Provider.of<EntregasProvider>(
@@ -395,6 +475,8 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
       await entregasProvider.carregarEntregasDoBackend();
 
       if (!mounted) return;
+      _definirErroSincronizacao(entregasProvider.erroCarregamento);
+      if (entregasProvider.erroCarregamento != null) return;
 
       _coordenadasPorEndereco.clear();
       rotaIniciada = entregasProvider.entregas.any(
@@ -406,9 +488,11 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
         }
       } else {
         _idsEntregasDaRota.clear();
+        await _encerrarMonitoramentoLocalizacao();
+        if (!mounted) return;
       }
 
-      await buscarLocalizacaoAtual();
+      final localizacaoObtida = await buscarLocalizacaoAtual();
 
       if (!mounted) return;
 
@@ -416,7 +500,26 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
 
       if (!mounted) return;
 
-      await carregarRota();
+      if (localizacaoObtida) {
+        await carregarRota();
+      } else if (entregasProvider.entregas.any(entregaAtivaParaRota)) {
+        _definirErroRota(
+          'Atualize o mapa quando a localização estiver disponível.',
+        );
+      } else {
+        _definirErroRota(null);
+        setState(() {
+          _avisoEnderecos = null;
+          polylines.clear();
+          _pontosRotaCompleta = [];
+          distanciaRotaKm = 0;
+          duracaoRotaMinutos = 0;
+          proximaEntrega = null;
+          coordenadaProximaEntrega = null;
+          instrucaoNavegacao = '';
+          passosNavegacao = [];
+        });
+      }
 
       if (!mounted) return;
 
@@ -425,8 +528,15 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
         await iniciarMonitoramentoLocalizacao();
       }
     } catch (e) {
-      debugPrint('Erro ao carregar mapa: $e');
+      debugPrint('Erro ao carregar mapa: ${e.runtimeType}');
+      _definirErroSincronizacao(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível atualizar o mapa. Tente novamente.',
+        ),
+      );
     } finally {
+      _carregandoMapaCompleto = false;
       if (mounted) {
         setState(() {
           carregandoMapa = false;
@@ -435,33 +545,42 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> buscarLocalizacaoAtual() async {
+  Future<bool> buscarLocalizacaoAtual() async {
     try {
       final permitido = await verificarPermissaoLocalizacao();
-
-      if (!permitido) return;
-
+      if (!permitido || !mounted) return false;
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
         ),
-      );
-
-      if (!mounted) return;
-
+      ).timeout(const Duration(seconds: 20));
+      if (!mounted) return false;
+      if (!_gpsValido(position)) {
+        _definirErroGps(
+          'O GPS retornou uma localização inválida. Tente novamente.',
+        );
+        return false;
+      }
       final novaPosicao = LatLng(position.latitude, position.longitude);
-
       setState(() {
         posicaoAtual = novaPosicao;
+        _posicaoValida = true;
+        _erroGps = null;
       });
-
       if (!rotaIniciada || _acompanharLocalizacao) {
-        await mapController?.animateCamera(
-          CameraUpdate.newLatLngZoom(novaPosicao, 15),
-        );
+        try {
+          await mapController?.animateCamera(
+            CameraUpdate.newLatLngZoom(novaPosicao, 15),
+          );
+        } catch (e) {
+          debugPrint('Falha ao centralizar o mapa: ${e.runtimeType}');
+        }
       }
+      return true;
     } catch (e) {
-      debugPrint('Erro ao buscar localização: $e');
+      debugPrint('Falha ao buscar localização: ${e.runtimeType}');
+      _definirErroGps(_mensagemGps(e));
+      return false;
     }
   }
 
@@ -473,7 +592,6 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
     await _positionSubscription?.cancel();
     if (!mounted || !rotaIniciada) return;
     _ultimaAtualizacaoCamera = null;
-    _ultimoEnvioLocalizacao = null;
     _leiturasForaDaRota = 0;
     _ultimaAtualizacaoRota = null;
     _ultimaConsultaEta = DateTime.now();
@@ -496,23 +614,20 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
           (Position position) {
             if (!mounted || !rotaIniciada) return;
 
-            if (!position.latitude.isFinite ||
-                !position.longitude.isFinite ||
-                position.latitude < -90 ||
-                position.latitude > 90 ||
-                position.longitude < -180 ||
-                position.longitude > 180) {
+            if (!_gpsValido(position)) {
+              _definirErroGps(
+                'O GPS retornou uma localização inválida. Aguardando uma nova leitura.',
+              );
               return;
             }
 
             final novaPosicao = LatLng(position.latitude, position.longitude);
-            if (position.accuracy.isFinite && position.accuracy <= 35) {
-              unawaited(_enviarLocalizacaoDasEntregas(novaPosicao));
-            }
             _atualizarDirecao(position, novaPosicao);
 
             setState(() {
               posicaoAtual = novaPosicao;
+              _posicaoValida = true;
+              _erroGps = null;
 
               final novosMarkers = Set<Marker>.from(markers);
 
@@ -581,9 +696,21 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
           },
 
           onError: (erro) {
-            debugPrint('Erro no GPS em tempo real: $erro');
+            debugPrint('Erro no GPS em tempo real: ${erro.runtimeType}');
+            _definirErroGps(_mensagemGps(erro));
           },
         );
+  }
+
+  Future<void> _encerrarMonitoramentoLocalizacao() async {
+    _timerSincronizacao?.cancel();
+    _timerSincronizacao = null;
+    final subscription = _positionSubscription;
+    _positionSubscription = null;
+    _ultimaAtualizacaoCamera = null;
+    _sincronizacaoPendente = false;
+    await subscription?.cancel();
+    await _navegacaoVoz.parar();
   }
 
   void _verificarAtualizacaoEta() {
@@ -600,46 +727,6 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
     }
     _ultimaConsultaEta = agora;
     unawaited(carregarRota(ajustarCamera: false, compararDestinos: false));
-  }
-
-  Future<void> _enviarLocalizacaoDasEntregas(
-    LatLng posicao, {
-    bool forcar = false,
-  }) async {
-    if (!mounted || !rotaIniciada || _enviandoLocalizacao) return;
-    final agora = DateTime.now();
-    if (!forcar &&
-        _ultimoEnvioLocalizacao != null &&
-        agora.difference(_ultimoEnvioLocalizacao!) <
-            _intervaloEnvioLocalizacao) {
-      return;
-    }
-
-    final provider = Provider.of<EntregasProvider>(context, listen: false);
-    final ids = provider.entregas
-        .where(
-          (entrega) =>
-              entrega.id != null &&
-              entrega.status.toString().trim().toUpperCase() == 'EM_ROTA',
-        )
-        .map((entrega) => entrega.id as int)
-        .toSet();
-    if (ids.isEmpty) return;
-
-    _enviandoLocalizacao = true;
-    _ultimoEnvioLocalizacao = agora;
-    try {
-      for (final id in ids) {
-        if (!mounted || !rotaIniciada) break;
-        await ApiService.enviarLocalizacaoEntregador(
-          id: id,
-          latitude: posicao.latitude,
-          longitude: posicao.longitude,
-        );
-      }
-    } finally {
-      _enviandoLocalizacao = false;
-    }
   }
 
   Future<void> _acompanharCamera(LatLng posicao, double heading) async {
@@ -697,7 +784,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   }
 
   Future<void> sincronizarEntregasEmRota({bool forcar = false}) async {
-    if (!mounted || !rotaIniciada) return;
+    if (!mounted || !rotaIniciada || _carregandoMapaCompleto) return;
     if (_sincronizandoEntregas) {
       if (forcar) _sincronizacaoPendente = true;
       return;
@@ -707,8 +794,15 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
       final provider = Provider.of<EntregasProvider>(context, listen: false);
       await provider.carregarEntregasDoBackend();
       if (!mounted) return;
+      _definirErroSincronizacao(provider.erroCarregamento);
+      if (provider.erroCarregamento != null) return;
       final assinaturaAtual = assinaturaEntregasAtivas();
-      if (assinaturaAtual == _assinaturaEntregas) return;
+      final possuiEntregasEmRota = provider.entregas.any(
+        (e) => e.status.toString().trim().toUpperCase() == 'EM_ROTA',
+      );
+      if (possuiEntregasEmRota && assinaturaAtual == _assinaturaEntregas) {
+        return;
+      }
       _assinaturaEntregas = assinaturaAtual;
       _coordenadasPorEndereco.clear();
       _destinoOtimizado = null;
@@ -716,13 +810,11 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
       _leiturasForaDaRota = 0;
       _leiturasPertoDestino = 0;
       _destinoMonitorado = null;
-      if (assinaturaAtual.isEmpty) {
-        _timerSincronizacao?.cancel();
-        await _positionSubscription?.cancel();
-        _ultimaAtualizacaoCamera = null;
-        if (!mounted) return;
+      if (!possuiEntregasEmRota) {
         setState(() {
           rotaIniciada = false;
+          _erroRota = null;
+          _avisoEnderecos = null;
           _destinoAvisado = null;
           _progressoMaximoRotaMetros = 0;
           _distanciaInicialRotaMetros = 0;
@@ -741,12 +833,22 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
           polylines.clear();
           _pontosRotaCompleta = [];
         });
+        await _encerrarMonitoramentoLocalizacao();
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Todas as entregas da rota foram finalizadas.'),
+          SnackBar(
+            content: Text(
+              assinaturaAtual.isEmpty
+                  ? 'Não há mais entregas ativas.'
+                  : 'Não há mais entregas em rota.',
+            ),
           ),
         );
         await carregarMarkers();
+        if (!mounted) return;
+        if (assinaturaAtual.isNotEmpty) {
+          await carregarRota();
+        }
         return;
       }
       await carregarMarkers();
@@ -756,7 +858,14 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
         await carregarRota(ajustarCamera: false);
       }
     } catch (e) {
-      debugPrint('Erro ao sincronizar entregas: $e');
+      debugPrint('Erro ao sincronizar entregas: ${e.runtimeType}');
+      _definirErroSincronizacao(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível sincronizar as entregas. Os dados podem estar desatualizados.',
+        ),
+      );
     } finally {
       _sincronizandoEntregas = false;
       if (_sincronizacaoPendente) {
@@ -898,7 +1007,14 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   }
 
   void anunciarInstrucaoNavegacao() {
-    if (!mounted || !rotaIniciada || instrucaoNavegacao.trim().isEmpty) return;
+    if (!mounted ||
+        !rotaIniciada ||
+        _erroRota != null ||
+        _erroGps != null ||
+        _erroSincronizacao != null ||
+        instrucaoNavegacao.trim().isEmpty) {
+      return;
+    }
 
     final distancia = distanciaProximaManobraMetros;
     if (!distancia.isFinite || distancia < 0 || distancia > 500) return;
@@ -1000,7 +1116,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
     anunciarInstrucaoNavegacao();
   }
 
-  Future<void> marcarEntregasComoEmRota() async {
+  Future<List<String>> marcarEntregasComoEmRota() async {
     final entregasProvider = Provider.of<EntregasProvider>(
       context,
 
@@ -1015,11 +1131,23 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
         )
         .toList();
 
+    final falhas = <String>[];
     for (final entrega in entregasPendentes) {
-      await ApiService.marcarEntregaEmRota(entrega.id!);
+      if (!mounted) break;
+      try {
+        await ApiService.marcarEntregaEmRota(entrega.id!, lancarErro: true);
+      } catch (e) {
+        falhas.add(
+          ApiService.mensagemErro(
+            e,
+            mensagemPadrao: 'Não foi possível iniciar uma das entregas.',
+          ),
+        );
+        if (e is ApiException && e.statusCode == 401) break;
+      }
     }
-
     await entregasProvider.carregarEntregasDoBackend();
+    return falhas;
   }
 
   Future<LatLng?> obterCoordenadaEntrega(dynamic entrega) async {
@@ -1089,7 +1217,9 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
 
   Future<void> carregarMarkers() async {
     final pontos = await buscarPontosPendentes();
-    final novosMarkers = <Marker>{_marcadorEntregador(posicaoAtual)};
+    final novosMarkers = <Marker>{
+      if (_posicaoValida) _marcadorEntregador(posicaoAtual),
+    };
     for (var i = 0; i < pontos.length; i++) {
       final ponto = pontos[i];
       final entregas = ponto.entregas;
@@ -1120,15 +1250,34 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
     bool ajustarCamera = true,
     bool compararDestinos = true,
   }) async {
-    if (_calculandoRota) return;
+    if (_calculandoRota || !mounted) return;
+    if (!_posicaoValida || _erroGps != null) {
+      _definirErroRota('Aguarde uma localização válida para calcular a rota.');
+      return;
+    }
     _calculandoRota = true;
     try {
       final pontos = await buscarPontosPendentes();
 
       if (!mounted) return;
+      final provider = Provider.of<EntregasProvider>(context, listen: false);
+      final totalAtivas = provider.entregas.where(entregaAtivaParaRota).length;
+      final totalLocalizadas = pontos.fold<int>(
+        0,
+        (total, ponto) => total + ponto.entregas.length,
+      );
+      setState(() {
+        _avisoEnderecos = totalLocalizadas > 0 && totalLocalizadas < totalAtivas
+            ? 'Alguns endereços não foram localizados e estão fora do trajeto.'
+            : null;
+      });
 
       if (pontos.isEmpty) {
-        if (!mounted) return;
+        _definirErroRota(
+          totalAtivas > 0
+              ? 'Não foi possível localizar os endereços das entregas. Confira os endereços e tente novamente.'
+              : null,
+        );
 
         setState(() {
           polylines.clear();
@@ -1240,7 +1389,9 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
 
       final rotaConfirmada = rota;
       if (rotaConfirmada == null || melhorFinal == null) {
-        debugPrint('Nenhuma sequência otimizada válida foi retornada.');
+        _definirErroRota(
+          'Não foi possível calcular a rota. Verifique a conexão e tente atualizar o mapa.',
+        );
         return;
       }
       _destinoOtimizado = melhorFinal.coordenada;
@@ -1252,7 +1403,9 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
       final polyline = rotaConfirmada['overview_polyline']?['points'];
 
       if (polyline == null || polyline.toString().isEmpty) {
-        debugPrint('Rota retornada sem polyline.');
+        _definirErroRota(
+          'O serviço de rotas retornou um trajeto incompleto. Atualize o mapa.',
+        );
         return;
       }
 
@@ -1271,6 +1424,12 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
       );
 
       final coordenadasRota = decodificarPolyline(encoded);
+      if (coordenadasRota.length < 2) {
+        _definirErroRota(
+          'O serviço de rotas retornou um trajeto inválido. Atualize o mapa.',
+        );
+        return;
+      }
 
       debugPrint('Quantidade de pontos da rota: ${coordenadasRota.length}');
 
@@ -1323,6 +1482,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
       if (!mounted) return;
 
       setState(() {
+        _erroRota = null;
         distanciaProximaEntregaKm = distanciaPrimeiraLeg is num
             ? distanciaPrimeiraLeg.toDouble() / 1000
             : distanceMeters / 1000;
@@ -1383,7 +1543,14 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
         await ajustarCameraNaRota(coordenadasRota);
       }
     } catch (e) {
-      debugPrint('Erro ao carregar rota: $e');
+      debugPrint('Erro ao carregar rota: ${e.runtimeType}');
+      _definirErroRota(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível calcular a rota. Atualize o mapa e tente novamente.',
+        ),
+      );
     } finally {
       _calculandoRota = false;
     }
@@ -1392,6 +1559,8 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   void verificarChegadaAoDestino(Position gps, LatLng posicao) {
     if (!mounted ||
         !rotaIniciada ||
+        _erroRota != null ||
+        _erroSincronizacao != null ||
         coordenadaProximaEntrega == null ||
         proximaEntrega == null) {
       _leiturasPertoDestino = 0;
@@ -1433,7 +1602,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text(
-          'Voce chegou perto da proxima entrega! Confira o endereco antes de finalizar.',
+          'Você chegou perto da próxima entrega! Confira o endereço antes de finalizar.',
         ),
         duration: Duration(seconds: 6),
         backgroundColor: AppColors.success,
@@ -1684,10 +1853,12 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
   }
 
   Future<void> atualizarMapa() async {
+    if (carregandoMapa || _sincronizandoEntregas || _calculandoRota) return;
     await carregarMapaCompleto();
   }
 
   Future<void> iniciarRota() async {
+    if (!mounted || carregandoMapa || _calculandoRota) return;
     final entregasProvider = Provider.of<EntregasProvider>(
       context,
 
@@ -1703,6 +1874,12 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
 
       if (!mounted) return;
 
+      _definirErroSincronizacao(entregasProvider.erroCarregamento);
+      if (entregasProvider.erroCarregamento != null) {
+        _mostrarErro(entregasProvider.erroCarregamento!);
+        return;
+      }
+
       final entregasAtivas = entregasProvider.entregas
           .where(entregaAtivaParaRota)
           .toList();
@@ -1717,13 +1894,12 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
         return;
       }
 
-      final permitido = await verificarPermissaoLocalizacao();
-
-      if (!permitido) return;
-
-      await buscarLocalizacaoAtual();
-
+      final localizacaoObtida = await buscarLocalizacaoAtual();
       if (!mounted) return;
+      if (!localizacaoObtida) {
+        _mostrarErro(_erroGps ?? 'Não foi possível obter sua localização.');
+        return;
+      }
 
       final pontos = await buscarPontosPendentes();
 
@@ -1739,9 +1915,51 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
         return;
       }
 
-      await marcarEntregasComoEmRota();
+      final totalLocalizadas = pontos.fold<int>(
+        0,
+        (total, ponto) => total + ponto.entregas.length,
+      );
+      if (totalLocalizadas < entregasAtivas.length) {
+        _definirErroRota(
+          'Não foi possível localizar todos os endereços. Confira as entregas antes de iniciar a rota.',
+        );
+        _mostrarErro(_erroRota!);
+        return;
+      }
+      await carregarRota(ajustarCamera: false);
+      if (!mounted) return;
+      if (_erroRota != null || _pontosRotaCompleta.isEmpty) {
+        _mostrarErro(_erroRota ?? 'Não foi possível calcular a rota.');
+        return;
+      }
+
+      final assinaturaAntes =
+          entregasAtivas
+              .map((e) => '${e.id}:${e.endereco}:${e.latitude}:${e.longitude}')
+              .toList()
+            ..sort();
+      final falhas = await marcarEntregasComoEmRota();
 
       if (!mounted) return;
+      _definirErroSincronizacao(entregasProvider.erroCarregamento);
+      if (entregasProvider.erroCarregamento != null) {
+        _mostrarErro(
+          'Não foi possível confirmar o início da rota. Atualize o mapa para verificar o resultado.',
+        );
+        return;
+      }
+
+      final possuiEntregasEmRota = entregasProvider.entregas.any(
+        (e) => e.status.toString().trim().toUpperCase() == 'EM_ROTA',
+      );
+      if (!possuiEntregasEmRota) {
+        _mostrarErro(
+          falhas.isNotEmpty
+              ? falhas.first
+              : 'Não foi possível confirmar o início da rota. Atualize o mapa.',
+        );
+        return;
+      }
 
       _registrarEntregasDaRota(entregasProvider);
       setState(() {
@@ -1752,7 +1970,15 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
 
       if (!mounted) return;
 
-      await carregarRota(ajustarCamera: false);
+      final assinaturaDepois =
+          entregasProvider.entregas
+              .where(entregaAtivaParaRota)
+              .map((e) => '${e.id}:${e.endereco}:${e.latitude}:${e.longitude}')
+              .toList()
+            ..sort();
+      if (assinaturaAntes.join('|') != assinaturaDepois.join('|')) {
+        await carregarRota(ajustarCamera: false);
+      }
 
       if (!mounted) return;
 
@@ -1774,6 +2000,20 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
 
       if (!mounted) return;
 
+      if (falhas.isNotEmpty) {
+        _mostrarErro(
+          'Algumas entregas podem não ter entrado em rota. ${falhas.first} Confira os status.',
+        );
+        return;
+      }
+      if (_erroRota != null ||
+          _erroGps != null ||
+          _positionSubscription == null) {
+        _mostrarErro(
+          'Entregas em rota, mas a navegação não está disponível normalmente. Atualize o mapa.',
+        );
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Rota iniciada com sucesso'),
@@ -1787,11 +2027,11 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Não foi possível iniciar a rota'),
-
-          backgroundColor: AppColors.error,
+      _mostrarErro(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível iniciar a rota. Atualize o mapa e verifique os status das entregas.',
         ),
       );
     } finally {
@@ -1895,7 +2135,10 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (instrucaoNavegacao.isNotEmpty) ...[
+              if (instrucaoNavegacao.isNotEmpty &&
+                  _erroRota == null &&
+                  _erroGps == null &&
+                  _erroSincronizacao == null) ...[
                 Row(
                   children: [
                     Icon(
@@ -1989,8 +2232,10 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
                         ],
                         const SizedBox(height: 3),
                         Text(
-                          '${distanciaProximaEntregaKm.toStringAsFixed(1)} km'
-                          ' • $duracaoProximaEntregaMinutos min até a entrega',
+                          _erroRota != null || _erroGps != null
+                              ? 'Distância e previsão indisponíveis'
+                              : '${distanciaProximaEntregaKm.toStringAsFixed(1)} km'
+                                    ' • $duracaoProximaEntregaMinutos min até a entrega',
                           style: TextStyle(
                             fontSize: 12,
                             color: theme.colorScheme.onSurfaceVariant,
@@ -2001,6 +2246,7 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
                   ),
                 ],
               ),
+              _avisosMapa(),
               if (totalDaSessao > 0) ...[
                 const SizedBox(height: 10),
                 Row(
@@ -2106,7 +2352,10 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
                 ),
               ],
             ),
-            if (distanciaRotaKm > 0) ...[
+            _avisosMapa(),
+            if (distanciaRotaKm > 0 &&
+                _erroRota == null &&
+                _erroGps == null) ...[
               const SizedBox(height: 12),
               Divider(height: 1, color: theme.colorScheme.outlineVariant),
               const SizedBox(height: 12),
@@ -2199,7 +2448,11 @@ class _MapaPageState extends State<MapaPage> with WidgetsBindingObserver {
               ),
 
               TextButton.icon(
-                onPressed: proximaEntrega == null || _abrindoFinalizacao
+                onPressed:
+                    proximaEntrega == null ||
+                        _abrindoFinalizacao ||
+                        _erroRota != null ||
+                        _erroSincronizacao != null
                     ? null
                     : finalizarProximaEntregaPeloMapa,
                 icon: const Icon(Icons.check_circle_outline, size: 18),

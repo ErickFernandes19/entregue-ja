@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../theme/app_colors.dart';
 import 'package:entregue_ja/services/empresa_service.dart' as empresa_service;
 
@@ -19,47 +20,71 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
   bool carregando = false;
   bool mostrarSenha = false;
 
+  void mostrarMensagem(String mensagem) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensagem)));
+  }
+
   Future<void> entrar() async {
+    if (carregando || !mounted) return;
+
     FocusManager.instance.primaryFocus?.unfocus();
     final email = emailController.text.trim();
     final senha = senhaController.text.trim();
 
     if (email.isEmpty || senha.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Preencha e-mail e senha')));
+      mostrarMensagem('Preencha e-mail e senha.');
       return;
     }
 
-    setState(() {
-      carregando = true;
-    });
+    setState(() => carregando = true);
 
-    final empresa = await empresa_service.EmpresaService.login(email, senha);
+    try {
+      final empresa = await empresa_service.EmpresaService.login(
+        email,
+        senha,
+        lancarErro: true,
+      );
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    setState(() {
-      carregando = false;
-    });
+      final emailEmpresa = empresa?['email'];
+      final nomeEmpresa = empresa?['nome'];
 
-    if (empresa != null) {
+      if (emailEmpresa is! String ||
+          emailEmpresa.trim().isEmpty ||
+          nomeEmpresa is! String) {
+        throw const FormatException('Dados da empresa inválidos.');
+      }
+
       await empresa_service.EmpresaService.salvarDadosEmpresa(
-        email: empresa['email'],
-        nome: empresa['nome'],
+        email: emailEmpresa,
+        nome: nomeEmpresa,
       );
 
       if (!mounted) return;
 
       context.go('/empresa/inicio');
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('E-mail ou senha inválidos')),
+    } catch (e) {
+      if (!mounted) return;
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível entrar na conta. Tente novamente.',
+        ),
       );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
     }
   }
 
   void recuperarSenha() {
+    if (carregando || !mounted) return;
+
     context.push(
       '/empresa/recuperar-senha',
       extra: emailController.text.trim(),
@@ -67,9 +92,9 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
   }
 
   void voltarParaSelecao() {
-    FocusManager.instance.primaryFocus?.unfocus();
+    if (carregando || !mounted) return;
 
-    if (!mounted) return;
+    FocusManager.instance.primaryFocus?.unfocus();
 
     GoRouter.of(context).go('/selecionar');
   }
@@ -89,6 +114,7 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
       textInputAction: senha ? TextInputAction.done : TextInputAction.next,
       autocorrect: false,
       onSubmitted: (_) {
+        if (carregando) return;
         if (senha) {
           entrar();
         } else {
@@ -109,6 +135,7 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
                   mostrarSenha ? Icons.visibility_off : Icons.visibility,
                 ),
                 onPressed: () {
+                  if (carregando) return;
                   setState(() {
                     mostrarSenha = !mostrarSenha;
                   });
@@ -149,7 +176,7 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
                 top: 8,
                 left: 8,
                 child: Material(
-                  color: Colors.white.withOpacity(0.16),
+                  color: Colors.white.withValues(alpha: 0.16),
                   shape: const CircleBorder(),
                   child: IconButton(
                     tooltip: 'Voltar',
@@ -167,7 +194,7 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
                       Container(
                         padding: const EdgeInsets.all(20),
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.18),
+                          color: Colors.white.withValues(alpha: 0.18),
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(
@@ -203,14 +230,14 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
                           color: theme.cardColor,
                           borderRadius: BorderRadius.circular(26),
                           border: Border.all(
-                            color: theme.colorScheme.outlineVariant.withOpacity(
-                              0.35,
+                            color: theme.colorScheme.outlineVariant.withValues(
+                              alpha: 0.35,
                             ),
                           ),
                           boxShadow: [
                             BoxShadow(
-                              color: Colors.black.withOpacity(
-                                theme.brightness == Brightness.dark
+                              color: Colors.black.withValues(
+                                alpha: theme.brightness == Brightness.dark
                                     ? 0.28
                                     : 0.12,
                               ),
@@ -310,6 +337,7 @@ class _EmpresaLoginPageState extends State<EmpresaLoginPage> {
                                 ),
                                 TextButton(
                                   onPressed: () {
+                                    if (carregando) return;
                                     context.push('/empresa/cadastro');
                                   },
                                   child: const Text('Cadastrar'),

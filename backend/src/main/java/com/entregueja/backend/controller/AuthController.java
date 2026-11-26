@@ -2,6 +2,7 @@ package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.Usuario;
 import com.entregueja.backend.entity.Empresa;
+import com.entregueja.backend.entity.Entrega;
 import com.entregueja.backend.entity.Assinatura;
 import com.entregueja.backend.repository.EmpresaRepository;
 import com.entregueja.backend.repository.UsuarioRepository;
@@ -881,6 +882,108 @@ public class AuthController {
         return ResponseEntity.ok(
                 Map.of("mensagem", "Vínculo recusado")
         );
+    }
+
+    @Transactional
+    @PutMapping("/{email}/desvincular")
+    public ResponseEntity<?> desvincularEmpresa(
+            @PathVariable String email,
+            @RequestBody Map<String, String> body
+    ) {
+        Long entregadorId = obterIdAutenticado();
+        if (entregadorId == null) {
+            return ResponseEntity.status(403).body(
+                    Map.of("mensagem", "Acesso permitido apenas ao entregador autenticado")
+            );
+        }
+
+        var usuarioOptional = usuarioRepository.findById(entregadorId);
+        if (usuarioOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Usuario usuario = usuarioOptional.get();
+        if (!usuario.getEmail().equalsIgnoreCase(email)) {
+            return ResponseEntity.status(403).body(
+                    Map.of("mensagem", "Você não pode encerrar o vínculo de outro entregador")
+            );
+        }
+
+        String empresaEmail = body == null ? null : body.get("empresaEmail");
+        if (empresaEmail == null || empresaEmail.isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("mensagem", "Informe a empresa que deseja desvincular")
+            );
+        }
+
+        if (usuario.getEmpresa() == null) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Você não possui uma empresa vinculada")
+            );
+        }
+
+        Long empresaId = usuario.getEmpresa().getId();
+        Empresa empresa = entityManager.find(
+                Empresa.class, empresaId, LockModeType.PESSIMISTIC_WRITE
+        );
+
+        if (empresa == null) {
+            return ResponseEntity.status(404).body(
+                    Map.of("mensagem", "Empresa não encontrada")
+            );
+        }
+
+        entityManager.refresh(usuario, LockModeType.PESSIMISTIC_WRITE);
+
+        if (!usuario.getEmail().equalsIgnoreCase(email)) {
+            return ResponseEntity.status(403).body(
+                    Map.of("mensagem", "Não foi possível confirmar sua conta. Atualize o perfil.")
+            );
+        }
+
+        if (usuario.getEmpresa() == null
+                || !empresaId.equals(usuario.getEmpresa().getId())
+                || !empresa.getEmail().equalsIgnoreCase(empresaEmail.trim())) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Seu vínculo foi alterado. Atualize o perfil e tente novamente.")
+            );
+        }
+
+        boolean possuiEntregasAtivas = !entityManager.createQuery("""
+                SELECT e FROM Entrega e
+                WHERE e.empresa.id = :empresaId
+                  AND e.entregador.id = :entregadorId
+                  AND e.status IN ('PENDENTE', 'EM_ROTA')
+                """, Entrega.class)
+                .setParameter("empresaId", empresaId)
+                .setParameter("entregadorId", entregadorId)
+                .setLockMode(LockModeType.PESSIMISTIC_WRITE)
+                .setMaxResults(1)
+                .getResultList()
+                .isEmpty();
+
+        if (possuiEntregasAtivas) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Você possui entregas pendentes ou em rota desta empresa. Resolva essas entregas antes de encerrar o vínculo.")
+            );
+        }
+
+        String nomeEntregador = usuario.getNome();
+        usuario.setEmpresa(null);
+        usuario.setDataVinculo(null);
+        usuarioRepository.saveAndFlush(usuario);
+
+        notificarEmpresaVinculo(
+                empresaId,
+                "VINCULO_ENCERRADO",
+                "Vínculo encerrado",
+                "O entregador " + nomeEntregador + " encerrou seu vínculo com a empresa."
+        );
+
+        return ResponseEntity.ok(Map.of(
+                "mensagem", "Vínculo encerrado com sucesso",
+                "vinculado", false
+        ));
     }
 
     @PutMapping("/{email}/configuracoes-veiculo")

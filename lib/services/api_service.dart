@@ -7,24 +7,111 @@ import 'package:http_parser/http_parser.dart';
 
 import '../config/api_config.dart';
 import 'auth_service.dart';
+import 'empresa_service.dart';
+
+class ApiException implements Exception {
+  final String mensagem;
+  final int? statusCode;
+
+  const ApiException(this.mensagem, {this.statusCode});
+
+  @override
+  String toString() => mensagem;
+}
 
 class ApiService {
   static const Duration _tempoLimite = Duration(seconds: 20);
   static const Duration _tempoLimiteUpload = Duration(seconds: 60);
 
   static Future<Map<String, String>> _headersAutenticados() async {
-    return AuthService.headersAutenticados();
+    final headers = await AuthService.headersAutenticados();
+    if ((headers['Authorization'] ?? '').trim().isEmpty) {
+      throw const ApiException(
+        'Sua sessão expirou. Entre novamente na sua conta.',
+        statusCode: 401,
+      );
+    }
+    return headers;
   }
 
-  static void _registrarErro(String operacao, int statusCode, String body) {
+  static void _registrarErro(String operacao, int statusCode) {
     debugPrint('$operacao: HTTP $statusCode');
-    if (statusCode == 401) {
-      debugPrint('Sessão inválida ou token JWT expirado.');
-    } else if (statusCode == 403) {
-      debugPrint('Acesso negado pelo servidor.');
-    } else {
-      debugPrint('Resposta: $body');
+  }
+
+  static String? _mensagemServidor(String body) {
+    try {
+      final dados = jsonDecode(body);
+      if (dados is! Map) return null;
+      final valor = dados['mensagem'];
+      if (valor is! String) return null;
+      final mensagem = valor.trim();
+      if (mensagem.isEmpty || mensagem.length > 300) return null;
+      final tecnico = RegExp(
+        r'exception|stacktrace|stack trace|java\.|org\.|sql|jdbc|hibernate|https?://|endpoint|/entregas/|<[^>]*>|[\x00-\x1F\x7F]',
+        caseSensitive: false,
+      );
+      if (tecnico.hasMatch(mensagem)) return null;
+      return mensagem;
+    } on FormatException {
+      return null;
     }
+  }
+
+  static ApiException erroHttp(int statusCode, String body) {
+    String mensagem;
+    if (statusCode == 401) {
+      mensagem = 'Sua sessão expirou. Entre novamente na sua conta.';
+    } else if (statusCode >= 500) {
+      mensagem = 'Ocorreu um problema no servidor. Tente novamente mais tarde.';
+    } else {
+      final mensagemServidor = statusCode >= 400 && statusCode < 500
+          ? _mensagemServidor(body)
+          : null;
+      mensagem =
+          mensagemServidor ??
+          (switch (statusCode) {
+            400 || 422 => 'Confira os dados informados e tente novamente.',
+            403 => 'Você não possui permissão para realizar esta operação.',
+            404 => 'O registro solicitado não foi encontrado.',
+            408 => 'O servidor demorou para responder. Tente novamente.',
+            409 =>
+              'Não foi possível realizar a operação no estado atual. Atualize os dados e tente novamente.',
+            413 => 'O arquivo enviado é muito grande.',
+            415 => 'O formato do arquivo enviado não é aceito.',
+            429 =>
+              'Muitas solicitações foram realizadas. Aguarde um momento e tente novamente.',
+            _ => 'Não foi possível realizar a operação. Tente novamente.',
+          });
+    }
+    return ApiException(mensagem, statusCode: statusCode);
+  }
+
+  static ApiException _converterErro(Object erro, String mensagemPadrao) {
+    if (erro is ApiException) return erro;
+    if (erro is TimeoutException) {
+      return const ApiException(
+        'O servidor demorou para responder. Verifique o resultado da operação antes de tentar novamente.',
+      );
+    }
+    if (erro is http.ClientException) {
+      return const ApiException(
+        'Não foi possível conectar ao servidor. Verifique sua conexão com a internet e tente novamente.',
+      );
+    }
+    if (erro is FormatException) {
+      return const ApiException(
+        'O servidor retornou uma resposta inesperada. Tente novamente mais tarde.',
+      );
+    }
+    return ApiException(mensagemPadrao);
+  }
+
+  static String mensagemErro(
+    Object erro, {
+    String mensagemPadrao =
+        'Não foi possível realizar a operação. Tente novamente.',
+  }) {
+    return _converterErro(erro, mensagemPadrao).mensagem;
   }
 
   static MediaType _tipoImagem(String caminhoFoto) {
@@ -48,42 +135,54 @@ class ApiService {
     double? longitude,
   }) async {
     if (cliente.trim().isEmpty || endereco.trim().isEmpty) {
-      throw ArgumentError('Informe o cliente e o endereço da entrega.');
+      throw const ApiException('Informe o cliente e o endereço da entrega.');
     }
-    final headers = await _headersAutenticados();
-    final response = await http
-        .post(
-          Uri.parse('${ApiConfig.entregas}/entregador'),
-          headers: {...headers, 'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'cliente': cliente.trim(),
-            'endereco': endereco.trim(),
-            'valor': valor,
-            'complemento': complemento,
-            'observacao': observacao,
-            'latitude': latitude,
-            'longitude': longitude,
-          }),
-        )
-        .timeout(_tempoLimite);
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      final dados = jsonDecode(response.body);
-      if (dados is Map<String, dynamic> && dados['id'] != null) {
-        return dados;
+    try {
+      final headers = await _headersAutenticados();
+      final response = await http
+          .post(
+            Uri.parse('${ApiConfig.entregas}/entregador'),
+            headers: {...headers, 'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'cliente': cliente.trim(),
+              'endereco': endereco.trim(),
+              'valor': valor,
+              'complemento': complemento,
+              'observacao': observacao,
+              'latitude': latitude,
+              'longitude': longitude,
+            }),
+          )
+          .timeout(_tempoLimite);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final dados = jsonDecode(
+          utf8.decode(response.bodyBytes, allowMalformed: true),
+        );
+        if (dados is Map<String, dynamic> && dados['id'] != null) {
+          return dados;
+        }
+        throw const FormatException(
+          'O servidor não retornou uma entrega salva com ID.',
+        );
       }
-      throw const FormatException(
-        'O servidor não retornou uma entrega salva com ID.',
+      _registrarErro(
+        'Erro ao cadastrar entrega do entregador',
+        response.statusCode,
       );
+      throw erroHttp(
+        response.statusCode,
+        utf8.decode(response.bodyBytes, allowMalformed: true),
+      );
+    } catch (e) {
+      debugPrint('Falha ao cadastrar entrega: ${e.runtimeType}');
+      throw _converterErro(e, 'Não foi possível cadastrar a entrega.');
     }
-    _registrarErro(
-      'Erro ao cadastrar entrega do entregador',
-      response.statusCode,
-      response.body,
-    );
-    throw Exception('Falha ao cadastrar entrega: HTTP ${response.statusCode}');
   }
 
-  static Future<Map<String, dynamic>?> buscarEntrega(String id) async {
+  static Future<Map<String, dynamic>?> buscarEntrega(
+    String id, {
+    bool lancarErro = false,
+  }) async {
     try {
       final headers = await _headersAutenticados();
       final response = await http
@@ -93,20 +192,24 @@ class ApiService {
           )
           .timeout(_tempoLimite);
       if (response.statusCode == 200) {
-        final dados = jsonDecode(response.body);
+        final dados = jsonDecode(
+          utf8.decode(response.bodyBytes, allowMalformed: true),
+        );
         if (dados is Map) {
           return Map<String, dynamic>.from(dados);
         }
         throw const FormatException('Resposta inválida do servidor.');
       }
-      _registrarErro(
-        'Erro ao buscar entrega',
+      _registrarErro('Erro ao buscar entrega', response.statusCode);
+      throw erroHttp(
         response.statusCode,
-        response.body,
+        utf8.decode(response.bodyBytes, allowMalformed: true),
       );
-      return null;
     } catch (e) {
-      debugPrint('Erro ao buscar entrega: $e');
+      debugPrint('buscarEntrega: ${e.runtimeType}');
+      if (lancarErro) {
+        throw _converterErro(e, 'Não foi possível consultar a entrega.');
+      }
       return null;
     }
   }
@@ -123,7 +226,9 @@ class ApiService {
           )
           .timeout(_tempoLimite);
       if (response.statusCode == 200) {
-        final dados = jsonDecode(response.body);
+        final dados = jsonDecode(
+          utf8.decode(response.bodyBytes, allowMalformed: true),
+        );
         if (dados is List) return dados;
         throw const FormatException(
           'O servidor não retornou uma lista de entregas.',
@@ -132,51 +237,58 @@ class ApiService {
       _registrarErro(
         'Erro ao buscar entregas do entregador',
         response.statusCode,
-        response.body,
       );
-      throw Exception(
-        'Falha ao carregar entregas: HTTP ${response.statusCode}',
+      throw erroHttp(
+        response.statusCode,
+        utf8.decode(response.bodyBytes, allowMalformed: true),
       );
     } catch (e) {
-      debugPrint('Erro ao buscar entregas do entregador: $e');
-      rethrow;
+      debugPrint('Erro ao buscar entregas do entregador: ${e.runtimeType}');
+      throw _converterErro(e, 'Não foi possível carregar suas entregas.');
     }
   }
 
-  static Future<bool> excluirEntrega(int id) async {
+  static Future<bool> excluirEntrega(int id, {bool lancarErro = false}) async {
     try {
       final headers = await _headersAutenticados();
       final response = await http
           .delete(Uri.parse('${ApiConfig.entregas}/$id'), headers: headers)
           .timeout(_tempoLimite);
       if (response.statusCode == 200 || response.statusCode == 204) return true;
-      _registrarErro(
-        'Erro ao excluir entrega',
+      _registrarErro('Erro ao excluir entrega', response.statusCode);
+      throw erroHttp(
         response.statusCode,
-        response.body,
+        utf8.decode(response.bodyBytes, allowMalformed: true),
       );
-      return false;
     } catch (e) {
-      debugPrint('Erro ao excluir entrega: $e');
+      debugPrint('excluirEntrega: ${e.runtimeType}');
+      if (lancarErro) {
+        throw _converterErro(e, 'Não foi possível remover a entrega.');
+      }
       return false;
     }
   }
 
-  static Future<bool> marcarEntregaEmRota(int id) async {
+  static Future<bool> marcarEntregaEmRota(
+    int id, {
+    bool lancarErro = false,
+  }) async {
     try {
       final headers = await _headersAutenticados();
       final response = await http
           .put(Uri.parse('${ApiConfig.entregas}/$id/em-rota'), headers: headers)
           .timeout(_tempoLimite);
       if (response.statusCode == 200) return true;
-      _registrarErro(
-        'Erro ao marcar entrega em rota',
+      _registrarErro('Erro ao marcar entrega em rota', response.statusCode);
+      throw erroHttp(
         response.statusCode,
-        response.body,
+        utf8.decode(response.bodyBytes, allowMalformed: true),
       );
-      return false;
     } catch (e) {
-      debugPrint('Erro ao marcar entrega em rota: $e');
+      debugPrint('marcarEntregaEmRota: ${e.runtimeType}');
+      if (lancarErro) {
+        throw _converterErro(e, 'Não foi possível iniciar a rota da entrega.');
+      }
       return false;
     }
   }
@@ -215,11 +327,12 @@ class ApiService {
       _registrarErro(
         'Erro ao enviar localização da entrega #$id',
         response.statusCode,
-        response.body,
       );
       return false;
     } catch (e) {
-      debugPrint('Erro ao enviar localização da entrega #$id: $e');
+      debugPrint(
+        'Erro ao enviar localização da entrega #$id: ${e.runtimeType}',
+      );
       return false;
     }
   }
@@ -228,7 +341,7 @@ class ApiService {
     int id,
   ) async {
     try {
-      final headers = await _headersAutenticados();
+      final headers = await EmpresaService.headersAutenticados();
       final response = await http
           .get(
             Uri.parse('${ApiConfig.entregas}/$id/localizacao'),
@@ -236,7 +349,9 @@ class ApiService {
           )
           .timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
-        final dados = jsonDecode(response.body);
+        final dados = jsonDecode(
+          utf8.decode(response.bodyBytes, allowMalformed: true),
+        );
         if (dados is Map<String, dynamic>) return dados;
         return null;
       }
@@ -244,11 +359,12 @@ class ApiService {
       _registrarErro(
         'Erro ao consultar localização da entrega #$id',
         response.statusCode,
-        response.body,
       );
       return null;
     } catch (e) {
-      debugPrint('Erro ao consultar localização da entrega #$id: $e');
+      debugPrint(
+        'Erro ao consultar localização da entrega #$id: ${e.runtimeType}',
+      );
       return null;
     }
   }
@@ -259,6 +375,7 @@ class ApiService {
     required double latitude,
     required double longitude,
     String observacao = '',
+    bool lancarErro = false,
   }) async {
     try {
       final headers = await _headersAutenticados();
@@ -268,8 +385,10 @@ class ApiService {
       );
       final autorizacao = headers['Authorization'];
       if (autorizacao == null || autorizacao.isEmpty) {
-        debugPrint('Não foi possível concluir: token JWT ausente.');
-        return null;
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
       }
       request.headers['Authorization'] = autorizacao;
       request.fields['latitude'] = latitude.toString();
@@ -286,9 +405,9 @@ class ApiService {
       );
       debugPrint('Enviando comprovante da entrega #$id...');
       final streamedResponse = await request.send().timeout(_tempoLimiteUpload);
-      final body = await streamedResponse.stream.bytesToString().timeout(
-        _tempoLimiteUpload,
-      );
+      final body = await streamedResponse.stream
+          .bytesToString(utf8)
+          .timeout(_tempoLimiteUpload);
       if (streamedResponse.statusCode == 200) {
         if (body.isEmpty) return {'sucesso': true, 'status': 'ENTREGUE'};
         final dados = jsonDecode(body);
@@ -297,14 +416,16 @@ class ApiService {
         }
         throw const FormatException('Resposta inválida do servidor.');
       }
-      _registrarErro(
-        'Erro ao concluir entrega',
-        streamedResponse.statusCode,
-        body,
-      );
-      return null;
+      _registrarErro('Erro ao concluir entrega', streamedResponse.statusCode);
+      throw erroHttp(streamedResponse.statusCode, body);
     } catch (e) {
-      debugPrint('Erro ao concluir entrega: $e');
+      debugPrint('concluirEntrega: ${e.runtimeType}');
+      if (lancarErro) {
+        throw _converterErro(
+          e,
+          'Não foi possível enviar o comprovante da entrega. Confira a foto e tente novamente.',
+        );
+      }
       return null;
     }
   }
@@ -316,15 +437,14 @@ class ApiService {
     required String justificativa,
     required double latitude,
     required double longitude,
+    bool lancarErro = false,
   }) async {
     try {
       if (motivo.trim().isEmpty) {
-        debugPrint('Não entrega não enviada: motivo vazio');
-        return null;
+        throw const ApiException('Informe o motivo da não entrega.');
       }
       if (justificativa.trim().isEmpty) {
-        debugPrint('Não entrega não enviada: justificativa vazia');
-        return null;
+        throw const ApiException('Informe a justificativa da não entrega.');
       }
       final headers = await _headersAutenticados();
       final request = http.MultipartRequest(
@@ -333,8 +453,10 @@ class ApiService {
       );
       final autorizacao = headers['Authorization'];
       if (autorizacao == null || autorizacao.isEmpty) {
-        debugPrint('Não foi possível registrar: token JWT ausente.');
-        return null;
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
       }
       request.headers['Authorization'] = autorizacao;
       request.fields['motivo'] = motivo.trim();
@@ -350,9 +472,9 @@ class ApiService {
       );
       debugPrint('Registrando tentativa da entrega #$id...');
       final streamedResponse = await request.send().timeout(_tempoLimiteUpload);
-      final body = await streamedResponse.stream.bytesToString().timeout(
-        _tempoLimiteUpload,
-      );
+      final body = await streamedResponse.stream
+          .bytesToString(utf8)
+          .timeout(_tempoLimiteUpload);
       if (streamedResponse.statusCode == 200) {
         if (body.isEmpty) return {'sucesso': true, 'status': 'NAO_ENTREGUE'};
         final dados = jsonDecode(body);
@@ -364,11 +486,16 @@ class ApiService {
       _registrarErro(
         'Erro ao registrar não entrega',
         streamedResponse.statusCode,
-        body,
       );
-      return null;
+      throw erroHttp(streamedResponse.statusCode, body);
     } catch (e) {
-      debugPrint('Erro ao registrar não entrega: $e');
+      debugPrint('registrarNaoEntrega: ${e.runtimeType}');
+      if (lancarErro) {
+        throw _converterErro(
+          e,
+          'Não foi possível registrar a tentativa de entrega. Confira a foto e tente novamente.',
+        );
+      }
       return null;
     }
   }

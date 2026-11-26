@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../models/entrega_model.dart';
 import '../providers/entregas_provider.dart';
+import '../services/api_service.dart';
 import '../services/entrega_service.dart';
 import '../theme/app_colors.dart';
 
@@ -148,9 +149,17 @@ class _EntregasPageState extends State<EntregasPage> {
       );
 
       await entregasProvider.adicionarEntrega(resultado);
+      if (!mounted) return;
+
+      setState(() => filtro = 'pendentes');
+      mostrarMensagem('Entrega cadastrada com sucesso!');
     } catch (e) {
       mostrarMensagem(
-        'Não foi possível atualizar a lista de entregas.',
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível cadastrar a entrega. Tente novamente.',
+        ),
         erro: true,
       );
     } finally {
@@ -365,31 +374,29 @@ class _EntregasPageState extends State<EntregasPage> {
       return;
     }
     setState(() => processandoAcao = true);
-    bool sucesso;
     try {
-      sucesso = await provider.removerEntrega(indiceAtual);
+      final sucesso = await provider.removerEntrega(
+        indiceAtual,
+        lancarErro: true,
+      );
+      if (!mounted) return;
+
+      if (sucesso) {
+        mostrarMensagem('Entrega removida com sucesso');
+      } else {
+        mostrarMensagem('Não foi possível remover a entrega.', erro: true);
+      }
     } catch (e) {
-      sucesso = false;
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível remover a entrega. Tente novamente.',
+        ),
+        erro: true,
+      );
     } finally {
       if (mounted) setState(() => processandoAcao = false);
-    }
-
-    if (!mounted) return;
-
-    if (sucesso) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Entrega removida com sucesso'),
-          backgroundColor: AppColors.success,
-        ),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Não foi possível remover a entrega'),
-          backgroundColor: AppColors.error,
-        ),
-      );
     }
   }
 
@@ -743,11 +750,67 @@ class _EntregasPageState extends State<EntregasPage> {
     );
   }
 
+  Widget avisoErroCarregamento(EntregasProvider provider, String mensagem) {
+    final theme = Theme.of(context);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.errorContainer,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.error_outline,
+                color: theme.colorScheme.onErrorContainer,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  mensagem,
+                  style: TextStyle(
+                    color: theme.colorScheme.onErrorContainer,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (provider.entregas.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              'As entregas exibidas podem estar desatualizadas.',
+              style: TextStyle(color: theme.colorScheme.onErrorContainer),
+            ),
+          ],
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: provider.carregando || processandoAcao || processandoQr
+                ? null
+                : () => provider.carregarEntregasDoBackend(),
+            icon: const Icon(Icons.refresh),
+            label: const Text('Tentar novamente'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: theme.colorScheme.onErrorContainer,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<EntregasProvider>();
     final theme = Theme.of(context);
     final lista = filtrarEntregas(provider);
+    final erroCarregamento = provider.erroCarregamento;
 
     return Scaffold(
       appBar: AppBar(
@@ -835,12 +898,20 @@ class _EntregasPageState extends State<EntregasPage> {
               ),
             ),
             const SizedBox(height: 18),
-            if (provider.carregando)
+            if (erroCarregamento != null)
+              avisoErroCarregamento(provider, erroCarregamento),
+            if (provider.carregando && provider.entregas.isNotEmpty) ...[
+              const LinearProgressIndicator(),
+              const SizedBox(height: 14),
+            ],
+            if (provider.carregando && provider.entregas.isEmpty)
               const Padding(
                 padding: EdgeInsets.only(top: 90),
                 child: Center(child: CircularProgressIndicator()),
               )
-            else if (lista.isEmpty)
+            else if (lista.isEmpty &&
+                erroCarregamento == null &&
+                !provider.carregando)
               Padding(
                 padding: const EdgeInsets.only(top: 80),
                 child: Column(
@@ -860,7 +931,7 @@ class _EntregasPageState extends State<EntregasPage> {
                   ],
                 ),
               )
-            else
+            else if (lista.isNotEmpty)
               ...lista.map(
                 (item) => cardEntrega(item.value, item.key, provider),
               ),

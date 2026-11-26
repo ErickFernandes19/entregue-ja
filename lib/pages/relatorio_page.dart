@@ -13,6 +13,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../models/entrega_model.dart';
 import '../providers/entregas_provider.dart';
+import '../services/api_service.dart';
 import '../services/configuracoes_service.dart';
 import '../theme/app_colors.dart';
 
@@ -30,6 +31,9 @@ class _RelatorioPageState extends State<RelatorioPage> {
 
   bool carregando = true;
   bool gerandoArquivo = false;
+  bool imprimindoRelatorio = false;
+  bool carregandoDados = false;
+  String? erroConfiguracoes;
 
   final Set<String> statusSelecionados = {
     'PENDENTE',
@@ -49,25 +53,119 @@ class _RelatorioPageState extends State<RelatorioPage> {
     carregarConfiguracoes();
   }
 
-  Future<void> carregarConfiguracoes() async {
-    final veiculoSalvo = await ConfiguracoesService.buscarVeiculo();
-
-    final consumo = await ConfiguracoesService.buscarConsumoMedio();
-
-    final preco = await ConfiguracoesService.buscarPrecoCombustivel();
-
+  void mostrarMensagem(String mensagem, {VoidCallback? tentarNovamente}) {
     if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(mensagem),
+        action: tentarNovamente == null
+            ? null
+            : SnackBarAction(
+                label: 'Tentar novamente',
+                onPressed: tentarNovamente,
+              ),
+      ),
+    );
+  }
 
-    setState(() {
-      veiculo = veiculoSalvo ?? 'Moto';
+  double lerValorConfigurado(String? valor) {
+    if (valor == null || valor.trim().isEmpty) return 0;
+    final numero = double.tryParse(valor.trim().replaceAll(',', '.'));
+    if (numero == null || !numero.isFinite || numero < 0) {
+      throw const ApiException(
+        'Os dados de combustível são inválidos. Confira as configurações do veículo.',
+      );
+    }
+    return numero;
+  }
 
-      consumoMedio = double.tryParse((consumo ?? '').replaceAll(',', '.')) ?? 0;
+  Future<void> carregarConfiguracoes() async {
+    if (carregandoDados || gerandoArquivo || imprimindoRelatorio) return;
+    carregandoDados = true;
+    try {
+      final veiculoSalvo = await ConfiguracoesService.buscarVeiculo();
+      final consumo = await ConfiguracoesService.buscarConsumoMedio();
+      final preco = await ConfiguracoesService.buscarPrecoCombustivel();
+      final consumoValidado = lerValorConfigurado(consumo);
+      final precoValidado = lerValorConfigurado(preco);
 
-      precoCombustivel =
-          double.tryParse((preco ?? '').replaceAll(',', '.')) ?? 0;
+      if (!mounted) return;
+      setState(() {
+        veiculo = veiculoSalvo ?? 'Moto';
+        consumoMedio = consumoValidado;
+        precoCombustivel = precoValidado;
+        erroConfiguracoes = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        erroConfiguracoes = ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível carregar as configurações do veículo.',
+        );
+      });
+      mostrarMensagem(
+        erroConfiguracoes!,
+        tentarNovamente: carregarConfiguracoes,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
+    }
 
-      carregando = false;
-    });
+    try {
+      if (!mounted) return;
+      final provider = context.read<EntregasProvider>();
+      await provider.carregarEntregasDoBackend();
+      if (!mounted) return;
+      final erro = provider.erroCarregamento;
+      if (erro != null) {
+        mostrarMensagem(
+          '$erro Os dados do relatório podem estar desatualizados.',
+          tentarNovamente: carregarConfiguracoes,
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível atualizar os dados do relatório.',
+        ),
+        tentarNovamente: carregarConfiguracoes,
+      );
+    } finally {
+      carregandoDados = false;
+    }
+  }
+
+  bool podeGerarRelatorio(List<EntregaModel> entregas) {
+    if (!mounted || gerandoArquivo || imprimindoRelatorio) return false;
+    final provider = context.read<EntregasProvider>();
+    if (carregandoDados || provider.carregando) {
+      mostrarMensagem('Aguarde a atualização dos dados do relatório.');
+      return false;
+    }
+    final erro = provider.erroCarregamento ?? erroConfiguracoes;
+    if (erro != null) {
+      mostrarMensagem(erro, tentarNovamente: carregarConfiguracoes);
+      return false;
+    }
+    if (entregas.isEmpty) {
+      mostrarMensagem(
+        'Nenhuma entrega encontrada com os filtros selecionados.',
+      );
+      return false;
+    }
+    if (!incluirResumo && !incluirFinanceiro && !incluirDetalhes) {
+      mostrarMensagem(
+        'Selecione pelo menos um conteúdo para gerar o relatório.',
+      );
+      return false;
+    }
+    return true;
   }
 
   double distanciaMediaPorEntrega() {
@@ -209,7 +307,7 @@ class _RelatorioPageState extends State<RelatorioPage> {
                     }
                   });
 
-                  setState(() {});
+                  if (mounted) setState(() {});
                 },
               );
             }
@@ -227,7 +325,7 @@ class _RelatorioPageState extends State<RelatorioPage> {
                     onChanged(novoValor);
                   });
 
-                  setState(() {});
+                  if (mounted) setState(() {});
                 },
               );
             }
@@ -474,40 +572,31 @@ class _RelatorioPageState extends State<RelatorioPage> {
   }
 
   Future<void> imprimirRelatorio(List<EntregaModel> entregas) async {
-    if (entregas.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Nenhuma entrega encontrada com os filtros selecionados.',
-          ),
+    if (!podeGerarRelatorio(entregas)) return;
+    imprimindoRelatorio = true;
+    try {
+      final bytes = await criarPdf(entregas);
+      if (!mounted) return;
+      await Printing.layoutPdf(
+        name: 'Relatório Entregue Já',
+        onLayout: (_) async => bytes,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível gerar ou imprimir o PDF. Tente novamente.',
         ),
       );
-
-      return;
+    } finally {
+      imprimindoRelatorio = false;
     }
-
-    final bytes = await criarPdf(entregas);
-
-    await Printing.layoutPdf(
-      name: 'Relatório Entregue Já',
-      onLayout: (_) async => bytes,
-    );
   }
 
   Future<void> gerarExcel(List<EntregaModel> entregas) async {
-    if (entregas.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Nenhuma entrega encontrada com os filtros selecionados.',
-          ),
-        ),
-      );
-
-      return;
-    }
-
-    if (gerandoArquivo) return;
+    if (!podeGerarRelatorio(entregas)) return;
 
     setState(() {
       gerandoArquivo = true;
@@ -618,8 +707,10 @@ class _RelatorioPageState extends State<RelatorioPage> {
 
       final bytes = excel.save();
 
-      if (bytes == null) {
-        throw Exception('Erro ao gerar arquivo Excel');
+      if (bytes == null || bytes.isEmpty) {
+        throw const ApiException(
+          'Não foi possível gerar o arquivo Excel. Tente novamente.',
+        );
       }
 
       final diretorio = await getTemporaryDirectory();
@@ -631,6 +722,8 @@ class _RelatorioPageState extends State<RelatorioPage> {
 
       await arquivo.writeAsBytes(bytes, flush: true);
 
+      if (!mounted) return;
+
       await SharePlus.instance.share(
         ShareParams(
           files: [XFile(arquivo.path)],
@@ -640,9 +733,13 @@ class _RelatorioPageState extends State<RelatorioPage> {
     } catch (e) {
       if (!mounted) return;
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Erro ao gerar Excel: $e')));
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível gerar ou compartilhar o Excel. Tente novamente.',
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() {

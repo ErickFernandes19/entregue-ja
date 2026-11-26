@@ -1,9 +1,14 @@
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show PlatformException;
+import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../config/api_config.dart';
+import '../services/api_service.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 
@@ -25,6 +30,15 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
   bool carregando = true;
   bool carregandoFoto = false;
   bool enviandoFoto = false;
+  bool _consultandoEmpresa = false;
+  bool _abrindoOpcoes = false;
+  bool _editandoPerfil = false;
+  bool _sessaoIndisponivel = false;
+  String? _tokenSessao;
+  String? _erroEntregadores;
+
+  bool get _ocupado =>
+      _consultandoEmpresa || enviandoFoto || _abrindoOpcoes || _editandoPerfil;
 
   final ImagePicker picker = ImagePicker();
 
@@ -34,208 +48,333 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
     carregarEmpresa();
   }
 
-  Future<void> carregarEmpresa() async {
-    final empresaEmail = await EmpresaService.empresaLogada();
-    final empresaNome = await EmpresaService.nomeEmpresa();
-    final empresaFoto = await EmpresaService.fotoEmpresa();
-    final listaEntregadores = await EmpresaService.buscarEntregadores();
-
+  void _mostrarMensagem(String mensagem) {
     if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(mensagem)));
+  }
 
-    setState(() {
-      email = empresaEmail ?? '';
-      nome = empresaNome ?? 'Empresa';
-      fotoUrl = empresaFoto;
-      entregadores = listaEntregadores;
-      carregando = false;
-    });
+  Future<String> _validarSessao() async {
+    final empresa = await EmpresaService.empresaLogada();
+    final token = await EmpresaService.obterTokenEmpresa();
+    if (empresa == null ||
+        empresa.trim().isEmpty ||
+        token == null ||
+        token.trim().isEmpty ||
+        (_tokenSessao != null && _tokenSessao != token)) {
+      throw const ApiException(
+        'Sua sessão expirou ou mudou. Entre novamente na sua conta.',
+        statusCode: 401,
+      );
+    }
+    _tokenSessao ??= token;
+    return empresa;
+  }
 
-    await carregarFoto(empresaFoto);
+  void _tratarErro(Object erro, String mensagemPadrao) {
+    if (!mounted) return;
+    if (erro is ApiException &&
+        (erro.statusCode == 401 || erro.statusCode == 403)) {
+      setState(() {
+        _sessaoIndisponivel = true;
+        nome = 'Empresa';
+        email = '';
+        fotoUrl = null;
+        fotoBytes = null;
+        entregadores = [];
+        _erroEntregadores = 'Não foi possível consultar os entregadores.';
+      });
+    }
+    _mostrarMensagem(
+      ApiService.mensagemErro(erro, mensagemPadrao: mensagemPadrao),
+    );
+  }
+
+  Future<void> carregarEmpresa() async {
+    if (!mounted || _ocupado || _sessaoIndisponivel) return;
+    _consultandoEmpresa = true;
+    try {
+      final empresaEmail = await _validarSessao();
+      final empresaNome = await EmpresaService.nomeEmpresa();
+      final empresaFoto = await EmpresaService.fotoEmpresa();
+      await _validarSessao();
+      if (!mounted) return;
+      setState(() {
+        email = empresaEmail;
+        nome = empresaNome ?? 'Empresa';
+        if (fotoUrl != empresaFoto) fotoBytes = null;
+        fotoUrl = empresaFoto;
+      });
+
+      try {
+        final lista = await EmpresaService.buscarEntregadores(lancarErro: true);
+        await _validarSessao();
+        if (!mounted) return;
+        if (lista.any((item) => item is! Map<String, dynamic>)) {
+          throw const FormatException('Lista de entregadores inválida.');
+        }
+        setState(() {
+          entregadores = lista;
+          _erroEntregadores = null;
+        });
+      } catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _erroEntregadores = ApiService.mensagemErro(
+            e,
+            mensagemPadrao: 'Não foi possível consultar os entregadores.',
+          );
+        });
+        _tratarErro(e, 'Não foi possível consultar os entregadores.');
+      }
+
+      if (!mounted || _sessaoIndisponivel) return;
+      setState(() => carregando = false);
+      await carregarFoto(empresaFoto);
+    } catch (e) {
+      _tratarErro(e, 'Não foi possível carregar o perfil da empresa.');
+      if (mounted) {
+        setState(() {
+          _erroEntregadores ??= 'Não foi possível consultar os entregadores.';
+        });
+      }
+    } finally {
+      _consultandoEmpresa = false;
+      if (mounted) setState(() => carregando = false);
+    }
+  }
+
+  Future<void> _validarImagem(Uint8List bytes) async {
+    if (bytes.isEmpty) {
+      throw const ApiException('A imagem está vazia ou indisponível.');
+    }
+    try {
+      final codec = await ui.instantiateImageCodec(bytes, targetWidth: 120);
+      try {
+        final frame = await codec.getNextFrame();
+        frame.image.dispose();
+      } finally {
+        codec.dispose();
+      }
+    } catch (_) {
+      throw const ApiException(
+        'Não foi possível abrir a imagem. Confira o formato.',
+      );
+    }
   }
 
   Future<void> carregarFoto(String? referencia) async {
-    if (referencia == null || referencia.isEmpty) {
-      if (!mounted) return;
-
+    if (!mounted || _sessaoIndisponivel) return;
+    if (referencia == null || referencia.trim().isEmpty) {
       setState(() {
         fotoBytes = null;
         carregandoFoto = false;
       });
-
       return;
     }
-
-    if (!mounted) return;
-
-    setState(() {
-      carregandoFoto = true;
-    });
-
-    final bytes = await EmpresaService.buscarBytesFotoEmpresa(referencia);
-
-    if (!mounted) return;
-
-    setState(() {
-      if (bytes != null && bytes.isNotEmpty) {
-        fotoBytes = bytes;
+    setState(() => carregandoFoto = true);
+    final cliente = http.Client();
+    try {
+      await _validarSessao();
+      final uri = Uri.tryParse(EmpresaService.urlFotoEmpresa(referencia));
+      if (uri == null ||
+          !uri.hasAuthority ||
+          uri.host.isEmpty ||
+          uri.userInfo.isNotEmpty ||
+          (uri.scheme != 'http' && uri.scheme != 'https')) {
+        throw const ApiException('O endereço do logo da empresa é inválido.');
       }
-
-      carregandoFoto = false;
-    });
+      final apiUri = Uri.parse(ApiConfig.empresas);
+      final requisicao = http.Request('GET', uri);
+      final mesmaOrigem = uri.origin == apiUri.origin;
+      if (mesmaOrigem) {
+        requisicao.headers['Authorization'] = 'Bearer ${_tokenSessao!}';
+        requisicao.followRedirects = false;
+      }
+      final resposta = await cliente
+          .send(requisicao)
+          .then(http.Response.fromStream)
+          .timeout(const Duration(seconds: 20));
+      if (resposta.statusCode != 200) {
+        if (mesmaOrigem) {
+          throw ApiService.erroHttp(resposta.statusCode, resposta.body);
+        }
+        throw const ApiException(
+          'Não foi possível carregar o logo da empresa.',
+        );
+      }
+      await _validarImagem(resposta.bodyBytes);
+      await _validarSessao();
+      if (!mounted) return;
+      setState(() => fotoBytes = resposta.bodyBytes);
+    } catch (e) {
+      _tratarErro(e, 'Não foi possível carregar o logo da empresa.');
+    } finally {
+      cliente.close();
+      if (mounted) setState(() => carregandoFoto = false);
+    }
   }
 
   Future<void> escolherFoto(ImageSource source) async {
-    if (enviandoFoto) return;
-
+    if (!mounted || _ocupado || _sessaoIndisponivel) return;
+    setState(() => enviandoFoto = true);
     try {
+      await _validarSessao();
+      if (!mounted) return;
       final imagem = await picker.pickImage(source: source, imageQuality: 70);
-
-      if (imagem == null) return;
-
+      if (imagem == null || !mounted) return;
+      final bytes = await imagem.readAsBytes();
+      await _validarImagem(bytes);
+      await _validarSessao();
       if (!mounted) return;
 
-      setState(() {
-        enviandoFoto = true;
-      });
-
-      final bytes = await imagem.readAsBytes();
-
-      if (bytes.isEmpty) {
-        throw Exception('A imagem selecionada está vazia.');
-      }
-
-      String nomeArquivo = imagem.name;
-
+      final nomeArquivo = imagem.name;
       final nomeMinusculo = nomeArquivo.toLowerCase();
-
       if (!nomeMinusculo.endsWith('.jpg') &&
           !nomeMinusculo.endsWith('.jpeg') &&
           !nomeMinusculo.endsWith('.png') &&
           !nomeMinusculo.endsWith('.webp')) {
-        nomeArquivo = 'perfil.jpg';
+        throw const ApiException('Escolha uma imagem JPG, PNG ou WEBP.');
       }
-
       final foto = await EmpresaService.atualizarFotoEmpresaBytes(
         bytes: bytes,
         nomeArquivo: nomeArquivo,
+        lancarErro: true,
       );
-
+      await _validarSessao();
       if (!mounted) return;
-
-      if (foto == null || foto.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Erro ao atualizar foto da empresa')),
+      if (foto == null || foto.trim().isEmpty) {
+        throw const ApiException(
+          'Não foi possível confirmar a atualização do logo.',
         );
-
-        return;
       }
-
       setState(() {
         fotoUrl = foto;
         fotoBytes = bytes;
       });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Foto atualizada com sucesso')),
-      );
-
-      await carregarFoto(foto);
-    } catch (e) {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erro ao selecionar ou enviar foto: $e')),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          enviandoFoto = false;
-        });
+      _mostrarMensagem('Foto atualizada com sucesso');
+    } on PlatformException catch (e) {
+      final codigo = e.code.toLowerCase();
+      if (codigo.contains('access_denied') ||
+          codigo.contains('restricted') ||
+          codigo.contains('permission')) {
+        _mostrarMensagem(
+          source == ImageSource.camera
+              ? 'Permita o acesso à câmera nas configurações do dispositivo.'
+              : 'Permita o acesso às fotos nas configurações do dispositivo.',
+        );
+      } else {
+        _mostrarMensagem('Não foi possível acessar a imagem. Tente novamente.');
       }
+    } catch (e) {
+      _tratarErro(e, 'Não foi possível atualizar o logo da empresa.');
+    } finally {
+      if (mounted) setState(() => enviandoFoto = false);
     }
   }
 
   Future<void> abrirOpcoesFoto() async {
-    if (enviandoFoto) return;
+    if (!mounted || _ocupado || _sessaoIndisponivel) return;
+    _abrindoOpcoes = true;
+    ImageSource? source;
+    try {
+      source = await showModalBottomSheet<ImageSource>(
+        context: context,
+        showDragHandle: true,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        builder: (context) {
+          final theme = Theme.of(context);
 
-    await showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (context) {
-        final theme = Theme.of(context);
-
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Wrap(
-              children: [
-                ListTile(
-                  title: Text(
-                    'Logo da empresa',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: theme.colorScheme.onSurface,
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Wrap(
+                children: [
+                  ListTile(
+                    title: Text(
+                      'Logo da empresa',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: theme.colorScheme.onSurface,
+                      ),
+                    ),
+                    subtitle: Text(
+                      'Escolha uma opção',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
-                  subtitle: Text(
-                    'Escolha uma opção',
-                    style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
-                  ),
-                ),
-                ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: AppColors.primary.withOpacity(0.15),
-                    child: const Icon(
-                      Icons.photo_camera,
-                      color: AppColors.primary,
+                  ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: AppColors.primary.withValues(
+                        alpha: 0.15,
+                      ),
+                      child: const Icon(
+                        Icons.photo_camera,
+                        color: AppColors.primary,
+                      ),
                     ),
-                  ),
-                  title: Text(
-                    'Tirar foto',
-                    style: TextStyle(color: theme.colorScheme.onSurface),
-                  ),
-                  onTap: () {
-                    Navigator.pop(context);
-                    escolherFoto(ImageSource.camera);
-                  },
-                ),
-                ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: AppColors.primary.withOpacity(0.15),
-                    child: const Icon(
-                      Icons.photo_library,
-                      color: AppColors.primary,
+                    title: Text(
+                      'Tirar foto',
+                      style: TextStyle(color: theme.colorScheme.onSurface),
                     ),
+                    onTap: () {
+                      Navigator.pop(context, ImageSource.camera);
+                    },
                   ),
-                  title: Text(
-                    'Escolher da galeria',
-                    style: TextStyle(color: theme.colorScheme.onSurface),
+                  ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: AppColors.primary.withValues(
+                        alpha: 0.15,
+                      ),
+                      child: const Icon(
+                        Icons.photo_library,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    title: Text(
+                      'Escolher da galeria',
+                      style: TextStyle(color: theme.colorScheme.onSurface),
+                    ),
+                    onTap: () {
+                      Navigator.pop(context, ImageSource.gallery);
+                    },
                   ),
-                  onTap: () {
-                    Navigator.pop(context);
-                    escolherFoto(ImageSource.gallery);
-                  },
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        );
-      },
-    );
+          );
+        },
+      );
+    } catch (e) {
+      _tratarErro(e, 'Não foi possível abrir as opções de foto.');
+    } finally {
+      _abrindoOpcoes = false;
+    }
+    if (mounted && source != null) await escolherFoto(source);
   }
 
   Future<void> editarPerfil() async {
-    final atualizado = await context.push<bool>(
-      '/empresa/perfil/editar',
-      extra: {'nome': nome, 'email': email},
-    );
-
-    if (atualizado == true) {
-      await carregarEmpresa();
+    if (!mounted || _ocupado || _sessaoIndisponivel) return;
+    _editandoPerfil = true;
+    bool? atualizado;
+    try {
+      await _validarSessao();
+      if (!mounted) return;
+      atualizado = await context.push<bool>(
+        '/empresa/perfil/editar',
+        extra: {'nome': nome, 'email': email},
+      );
+    } catch (e) {
+      _tratarErro(e, 'Não foi possível abrir a edição do perfil.');
+    } finally {
+      _editandoPerfil = false;
     }
+    if (mounted && atualizado == true) await carregarEmpresa();
   }
 
   Widget avatarEmpresa() {
@@ -243,7 +382,7 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
 
     return Center(
       child: GestureDetector(
-        onTap: enviandoFoto ? null : abrirOpcoesFoto,
+        onTap: enviandoFoto || _sessaoIndisponivel ? null : abrirOpcoesFoto,
         child: Stack(
           alignment: Alignment.bottomRight,
           children: [
@@ -256,8 +395,8 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
                 ),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(
-                      theme.brightness == Brightness.dark ? 0.30 : 0.16,
+                    color: Colors.black.withValues(
+                      alpha: theme.brightness == Brightness.dark ? 0.30 : 0.16,
                     ),
                     blurRadius: 16,
                     offset: const Offset(0, 6),
@@ -314,12 +453,12 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
       decoration: BoxDecoration(
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withOpacity(0.18)),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
       ),
       child: ListTile(
         onTap: onTap,
         leading: CircleAvatar(
-          backgroundColor: color.withOpacity(0.15),
+          backgroundColor: color.withValues(alpha: 0.15),
           child: Icon(icon, color: color),
         ),
         title: Text(
@@ -356,12 +495,12 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
-          color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(
-              theme.brightness == Brightness.dark ? 0.16 : 0.04,
+            color: Colors.black.withValues(
+              alpha: theme.brightness == Brightness.dark ? 0.16 : 0.04,
             ),
             blurRadius: 10,
             offset: const Offset(0, 4),
@@ -370,7 +509,7 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
       ),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: AppColors.primary.withOpacity(0.14),
+          backgroundColor: AppColors.primary.withValues(alpha: 0.14),
           child: const Icon(Icons.person, color: AppColors.primary),
         ),
         title: Text(
@@ -460,7 +599,9 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
                   cardInfo(
                     icon: Icons.groups,
                     titulo: 'Entregadores vinculados',
-                    valor: '${entregadores.length} entregador(es)',
+                    valor: _erroEntregadores != null
+                        ? 'Consulta indisponível'
+                        : '${entregadores.length} entregador(es)',
                     color: Colors.orange,
                   ),
 
@@ -469,7 +610,9 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
                   SizedBox(
                     height: 52,
                     child: ElevatedButton.icon(
-                      onPressed: editarPerfil,
+                      onPressed: enviandoFoto || _sessaoIndisponivel
+                          ? null
+                          : editarPerfil,
                       icon: const Icon(Icons.edit),
                       label: const Text('Editar Perfil'),
                       style: ElevatedButton.styleFrom(
@@ -484,7 +627,9 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
                   SizedBox(
                     height: 52,
                     child: OutlinedButton.icon(
-                      onPressed: enviandoFoto ? null : abrirOpcoesFoto,
+                      onPressed: enviandoFoto || _sessaoIndisponivel
+                          ? null
+                          : abrirOpcoesFoto,
                       icon: const Icon(Icons.photo_camera),
                       label: const Text('Alterar Logo'),
                       style: OutlinedButton.styleFrom(
@@ -516,8 +661,12 @@ class _EmpresaPerfilPageState extends State<EmpresaPerfilPage> {
                   if (entregadores.isEmpty)
                     cardInfo(
                       icon: Icons.person_off,
-                      titulo: 'Nenhum entregador vinculado',
-                      valor: 'Vincule um entregador para ele aparecer aqui.',
+                      titulo: _erroEntregadores == null
+                          ? 'Nenhum entregador vinculado'
+                          : 'Não foi possível consultar os entregadores',
+                      valor: _erroEntregadores == null
+                          ? 'Vincule um entregador para ele aparecer aqui.'
+                          : 'Deslize para atualizar e tente novamente.',
                       color: Colors.orange,
                     )
                   else

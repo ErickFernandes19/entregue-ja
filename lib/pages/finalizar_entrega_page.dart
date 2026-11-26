@@ -1,10 +1,14 @@
+import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:go_router/go_router.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../services/api_service.dart';
 import '../services/entrega_service.dart';
 import '../theme/app_colors.dart';
 
@@ -43,6 +47,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
 
   double? latitude;
   double? longitude;
+  String? erroLocalizacao;
 
   final Map<String, String> motivos = {
     'DESTINATARIO_AUSENTE': 'Destinatário ausente',
@@ -59,41 +64,38 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
     obterLocalizacao();
   }
 
-  void mostrarMensagem(String mensagem) {
+  void mostrarMensagem(String mensagem, {SnackBarAction? action}) {
     if (!mounted) return;
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(mensagem)));
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensagem), action: action));
   }
 
-  Future<void> selecionarFoto(ImageSource origem) async {
+  Future<void> tirarFoto() async {
     if (enviando || carregandoFoto) return;
+
+    setState(() => carregandoFoto = true);
 
     try {
       final imagem = await picker.pickImage(
-        source: origem,
+        source: ImageSource.camera,
         imageQuality: 75,
         preferredCameraDevice: CameraDevice.rear,
       );
 
       if (imagem == null || !mounted) return;
 
-      setState(() {
-        carregandoFoto = true;
-      });
-
       final bytes = await imagem.readAsBytes();
-
       if (!mounted) return;
 
       if (bytes.isEmpty) {
-        mostrarMensagem('A foto está vazia.');
+        mostrarMensagem('A foto está vazia. Tire outra foto.');
         return;
       }
 
       if (bytes.length > 10 * 1024 * 1024) {
-        mostrarMensagem('A imagem deve ter no máximo 10 MB.');
+        mostrarMensagem('A imagem deve ter no máximo 10 MB. Tire outra foto.');
         return;
       }
 
@@ -101,80 +103,121 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
         foto = imagem;
         fotoBytes = bytes;
       });
+    } on PlatformException catch (e) {
+      debugPrint('Falha na câmera: ${e.code}');
+      final mensagem = switch (e.code) {
+        'camera_access_denied' || 'camera_access_denied_without_prompt' =>
+          'Permita o acesso à câmera nas configurações do aplicativo ou navegador e tente novamente.',
+        'camera_access_restricted' =>
+          'O acesso à câmera está restrito neste dispositivo.',
+        'no_available_camera' || 'camera_unavailable' =>
+          'A câmera não está disponível neste dispositivo.',
+        'already_active' => 'A câmera já está em uso. Tente novamente.',
+        _ =>
+          'Não foi possível capturar a foto. Verifique a câmera e tente novamente.',
+      };
+      mostrarMensagem(mensagem);
     } catch (e) {
-      debugPrint('Erro ao selecionar foto: $e');
-
-      mostrarMensagem('Não foi possível tirar a foto.');
+      debugPrint('Falha ao obter foto: ${e.runtimeType}');
+      mostrarMensagem('Não foi possível obter a foto. Tente novamente.');
     } finally {
       if (mounted) {
-        setState(() {
-          carregandoFoto = false;
-        });
+        setState(() => carregandoFoto = false);
       }
     }
   }
 
-  Future<void> tirarFoto() async {
-    await selecionarFoto(ImageSource.camera);
+  Future<void> abrirConfiguracoesLocalizacao() async {
+    try {
+      if (!await Geolocator.openAppSettings()) {
+        mostrarMensagem(
+          'Abra as configurações do dispositivo e permita a localização.',
+        );
+      }
+    } catch (_) {
+      mostrarMensagem(
+        'Abra as configurações do dispositivo e permita a localização.',
+      );
+    }
+  }
+
+  bool informarFalhaLocalizacao(
+    String mensagem, {
+    bool abrirConfiguracoes = false,
+  }) {
+    if (!mounted) return false;
+    setState(() => erroLocalizacao = mensagem);
+    mostrarMensagem(
+      mensagem,
+      action: abrirConfiguracoes && !kIsWeb
+          ? SnackBarAction(
+              label: 'Abrir',
+              onPressed: abrirConfiguracoesLocalizacao,
+            )
+          : null,
+    );
+    return false;
   }
 
   Future<bool> obterLocalizacao() async {
-    if (!mounted) return false;
+    if (!mounted || buscandoLocalizacao) return false;
 
     setState(() {
       buscandoLocalizacao = true;
       latitude = null;
       longitude = null;
+      erroLocalizacao = null;
     });
 
     try {
       final servicoAtivo = await Geolocator.isLocationServiceEnabled();
-
+      if (!mounted) return false;
       if (!servicoAtivo) {
-        mostrarMensagem(
-          'Ative a localização do dispositivo '
-          'para registrar a entrega.',
+        return informarFalhaLocalizacao(
+          'Ative a localização do dispositivo para registrar a entrega.',
         );
-        return false;
       }
 
-      LocationPermission permissao = await Geolocator.checkPermission();
-
+      var permissao = await Geolocator.checkPermission();
+      if (!mounted) return false;
       if (permissao == LocationPermission.denied) {
         permissao = await Geolocator.requestPermission();
       }
+      if (!mounted) return false;
 
       if (permissao == LocationPermission.denied) {
-        mostrarMensagem('A permissão de localização é necessária.');
-        return false;
+        return informarFalhaLocalizacao(
+          'Permita o acesso à localização para registrar a entrega.',
+        );
       }
 
       if (permissao == LocationPermission.deniedForever) {
-        if (!mounted) return false;
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text(
-              'A permissão de localização foi bloqueada. '
-              'Ative-a nas configurações do aplicativo.',
-            ),
-            action: SnackBarAction(
-              label: 'Abrir',
-              onPressed: () {
-                Geolocator.openAppSettings();
-              },
-            ),
-          ),
+        return informarFalhaLocalizacao(
+          kIsWeb
+              ? 'A localização foi bloqueada. Permita o acesso nas configurações do site no navegador.'
+              : 'A localização foi bloqueada. Permita o acesso nas configurações do aplicativo.',
+          abrirConfiguracoes: true,
         );
-
-        return false;
       }
 
       final posicao = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 20),
+        ),
       );
 
       if (!mounted) return false;
+
+      if (!posicao.latitude.isFinite ||
+          !posicao.longitude.isFinite ||
+          posicao.latitude.abs() > 90 ||
+          posicao.longitude.abs() > 180 ||
+          (posicao.latitude == 0 && posicao.longitude == 0)) {
+        return informarFalhaLocalizacao(
+          'A localização recebida é inválida. Tente obter sua localização novamente.',
+        );
+      }
 
       setState(() {
         latitude = posicao.latitude;
@@ -182,112 +225,134 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
       });
 
       return true;
+    } on TimeoutException {
+      return informarFalhaLocalizacao(
+        'A localização demorou para responder. Vá para um local com melhor sinal e tente novamente.',
+      );
+    } on LocationServiceDisabledException {
+      return informarFalhaLocalizacao(
+        'Ative a localização do dispositivo e tente novamente.',
+      );
+    } on PermissionDeniedException {
+      return informarFalhaLocalizacao(
+        'Permita o acesso à localização nas configurações do aplicativo ou navegador e tente novamente.',
+      );
     } catch (e) {
-      debugPrint('Erro ao obter localização: $e');
-
-      mostrarMensagem('Não foi possível obter a localização.');
-
-      return false;
+      debugPrint('Falha ao obter localização: ${e.runtimeType}');
+      return informarFalhaLocalizacao(
+        'Não foi possível obter sua localização. Tente novamente.',
+      );
     } finally {
       if (mounted) {
-        setState(() {
-          buscandoLocalizacao = false;
-        });
+        setState(() => buscandoLocalizacao = false);
       }
     }
   }
 
   Future<void> finalizar() async {
-    if (enviando || carregandoFoto) return;
+    if (enviando || carregandoFoto || buscandoLocalizacao) return;
 
-    if (foto == null || fotoBytes == null || fotoBytes!.isEmpty) {
+    final imagem = foto;
+    final bytes = fotoBytes;
+    final entregue = tipoFinalizacao == 'ENTREGUE';
+    final motivo = motivoSelecionado;
+    final justificativa = justificativaController.text.trim();
+    final observacao = observacaoController.text.trim();
+
+    if (imagem == null || bytes == null || bytes.isEmpty) {
       mostrarMensagem(
-        tipoFinalizacao == 'ENTREGUE'
+        entregue
             ? 'Tire uma foto para comprovar a entrega.'
             : 'Tire uma foto para comprovar a tentativa.',
       );
       return;
     }
 
-    if (tipoFinalizacao == 'NAO_ENTREGUE' &&
-        justificativaController.text.trim().isEmpty) {
+    if (!entregue && justificativa.isEmpty) {
       mostrarMensagem('Escreva uma justificativa para a não entrega.');
       return;
     }
 
-    final localizacaoObtida = await obterLocalizacao();
-
-    if (!mounted) return;
-
-    if (!localizacaoObtida || latitude == null || longitude == null) {
-      mostrarMensagem(
-        'Não foi possível obter sua localização. '
-        'Tente novamente.',
-      );
-      return;
-    }
-
-    setState(() {
-      enviando = true;
-    });
-
-    Map<String, dynamic>? resultado;
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() => enviando = true);
 
     try {
-      final nomeArquivo = foto!.name;
+      final localizacaoObtida = await obterLocalizacao();
+      if (!mounted || !localizacaoObtida) return;
 
-      if (tipoFinalizacao == 'ENTREGUE') {
-        resultado = await EntregaService.concluirEntrega(
-          idEntrega: widget.entregaId.toString(),
-          fotoBytes: fotoBytes!,
-          nomeArquivo: nomeArquivo,
-          latitude: latitude!,
-          longitude: longitude!,
-          observacao: observacaoController.text.trim(),
+      final lat = latitude;
+      final lng = longitude;
+      if (lat == null || lng == null) {
+        informarFalhaLocalizacao(
+          'Não foi possível obter sua localização. Tente novamente.',
         );
-      } else {
-        resultado = await EntregaService.registrarNaoEntrega(
-          idEntrega: widget.entregaId.toString(),
-          fotoBytes: fotoBytes!,
-          nomeArquivo: nomeArquivo,
-          motivo: motivoSelecionado,
-          justificativa: justificativaController.text.trim(),
-          latitude: latitude!,
-          longitude: longitude!,
-        );
+        return;
       }
+
+      final resultado = entregue
+          ? await EntregaService.concluirEntrega(
+              idEntrega: widget.entregaId.toString(),
+              fotoBytes: bytes,
+              nomeArquivo: imagem.name,
+              latitude: lat,
+              longitude: lng,
+              observacao: observacao,
+              lancarErro: true,
+            )
+          : await EntregaService.registrarNaoEntrega(
+              idEntrega: widget.entregaId.toString(),
+              fotoBytes: bytes,
+              nomeArquivo: imagem.name,
+              motivo: motivo,
+              justificativa: justificativa,
+              latitude: lat,
+              longitude: lng,
+              lancarErro: true,
+            );
+
+      if (!mounted) return;
+
+      if (resultado == null) {
+        mostrarMensagem(
+          'Não foi possível confirmar o registro. Confira a situação da entrega antes de tentar novamente.',
+        );
+        return;
+      }
+
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              entregue
+                  ? 'Entrega concluída com sucesso!'
+                  : 'Tentativa de entrega registrada com sucesso!',
+            ),
+            backgroundColor: entregue ? AppColors.success : AppColors.warning,
+          ),
+        );
+
+      context.pop(true);
     } catch (e) {
-      debugPrint('Erro ao finalizar entrega: $e');
-    }
-
-    if (!mounted) return;
-
-    setState(() {
-      enviando = false;
-    });
-
-    if (resultado == null) {
-      mostrarMensagem(
-        'Não foi possível registrar a entrega. '
-        'Verifique a conexão e tente novamente.',
+      debugPrint('Falha ao finalizar entrega: ${e.runtimeType}');
+      final mensagem = ApiService.mensagemErro(
+        e,
+        mensagemPadrao: entregue
+            ? 'Não foi possível concluir a entrega.'
+            : 'Não foi possível registrar a tentativa de entrega.',
       );
-      return;
+      final status = e is ApiException ? e.statusCode : null;
+      mostrarMensagem(
+        (status == null || status == 408 || status >= 500) &&
+                !mensagem.contains('Verifique o resultado da operação')
+            ? '$mensagem Confira a situação da entrega antes de tentar novamente.'
+            : mensagem,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => enviando = false);
+      }
     }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          tipoFinalizacao == 'ENTREGUE'
-              ? 'Entrega concluída com sucesso!'
-              : 'Tentativa de entrega registrada com sucesso!',
-        ),
-        backgroundColor: tipoFinalizacao == 'ENTREGUE'
-            ? AppColors.success
-            : AppColors.warning,
-      ),
-    );
-
-    context.pop(true);
   }
 
   Widget opcaoFinalizacao({
@@ -313,7 +378,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: selecionado ? color.withOpacity(0.12) : theme.cardColor,
+          color: selecionado ? color.withValues(alpha: 0.12) : theme.cardColor,
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
             color: selecionado ? color : theme.colorScheme.outlineVariant,
@@ -323,7 +388,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
         child: Row(
           children: [
             CircleAvatar(
-              backgroundColor: color.withOpacity(0.15),
+              backgroundColor: color.withValues(alpha: 0.15),
               child: Icon(icon, color: color),
             ),
             const SizedBox(width: 12),
@@ -347,20 +412,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
                 ],
               ),
             ),
-            Radio<String>(
-              value: valor,
-              groupValue: tipoFinalizacao,
-              activeColor: color,
-              onChanged: enviando
-                  ? null
-                  : (novoValor) {
-                      if (novoValor == null) return;
-
-                      setState(() {
-                        tipoFinalizacao = novoValor;
-                      });
-                    },
-            ),
+            Radio<String>(value: valor, activeColor: color, enabled: !enviando),
           ],
         ),
       ),
@@ -408,7 +460,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
         decoration: BoxDecoration(
           color: theme.cardColor,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: AppColors.primary.withOpacity(0.35)),
+          border: Border.all(color: AppColors.primary.withValues(alpha: 0.35)),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -450,7 +502,7 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
       decoration: BoxDecoration(
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: cor.withOpacity(0.25)),
+        border: Border.all(color: cor.withValues(alpha: 0.25)),
       ),
       child: Row(
         children: [
@@ -472,14 +524,14 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
                   ? 'Obtendo sua localização...'
                   : possuiLocalizacao
                   ? 'Localização registrada'
-                  : 'Localização ainda não disponível',
+                  : (erroLocalizacao ?? 'Localização ainda não disponível'),
               style: TextStyle(fontWeight: FontWeight.w600, color: cor),
             ),
           ),
           if (!possuiLocalizacao && !buscandoLocalizacao)
             IconButton(
               tooltip: 'Tentar novamente',
-              onPressed: obterLocalizacao,
+              onPressed: enviando ? null : obterLocalizacao,
               icon: Icon(Icons.refresh, color: theme.colorScheme.onSurface),
             ),
         ],
@@ -531,7 +583,9 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
                 color: theme.cardColor,
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(
-                  color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                  color: theme.colorScheme.outlineVariant.withValues(
+                    alpha: 0.35,
+                  ),
                 ),
               ),
               child: Column(
@@ -592,26 +646,37 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
 
             const SizedBox(height: 12),
 
-            opcaoFinalizacao(
-              valor: 'ENTREGUE',
-              icon: Icons.check_circle,
-              titulo: 'Entrega realizada',
-              descricao: 'O pedido foi entregue ao destinatário.',
-              color: AppColors.success,
-            ),
+            RadioGroup<String>(
+              groupValue: tipoFinalizacao,
+              onChanged: (valor) {
+                if (enviando || valor == null) return;
+                setState(() => tipoFinalizacao = valor);
+              },
+              child: Column(
+                children: [
+                  opcaoFinalizacao(
+                    valor: 'ENTREGUE',
+                    icon: Icons.check_circle,
+                    titulo: 'Entrega realizada',
+                    descricao: 'O pedido foi entregue ao destinatário.',
+                    color: AppColors.success,
+                  ),
 
-            opcaoFinalizacao(
-              valor: 'NAO_ENTREGUE',
-              icon: Icons.report_problem,
-              titulo: 'Não foi possível entregar',
-              descricao: 'Registre a tentativa e informe o motivo.',
-              color: AppColors.error,
+                  opcaoFinalizacao(
+                    valor: 'NAO_ENTREGUE',
+                    icon: Icons.report_problem,
+                    titulo: 'Não foi possível entregar',
+                    descricao: 'Registre a tentativa e informe o motivo.',
+                    color: AppColors.error,
+                  ),
+                ],
+              ),
             ),
 
             if (naoEntregue) ...[
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(
-                value: motivoSelecionado,
+                initialValue: motivoSelecionado,
                 dropdownColor: theme.cardColor,
                 style: TextStyle(color: theme.colorScheme.onSurface),
                 decoration: const InputDecoration(
@@ -698,7 +763,9 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
             SizedBox(
               height: 54,
               child: ElevatedButton.icon(
-                onPressed: enviando ? null : finalizar,
+                onPressed: enviando || carregandoFoto || buscandoLocalizacao
+                    ? null
+                    : finalizar,
                 icon: enviando
                     ? const SizedBox(
                         width: 21,
@@ -713,7 +780,9 @@ class _FinalizarEntregaPageState extends State<FinalizarEntregaPage> {
                       ),
                 label: Text(
                   enviando
-                      ? 'Enviando...'
+                      ? (buscandoLocalizacao
+                            ? 'Obtendo localização...'
+                            : 'Enviando...')
                       : naoEntregue
                       ? 'Registrar Tentativa'
                       : 'Confirmar Entrega',

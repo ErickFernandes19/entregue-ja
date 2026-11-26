@@ -2,6 +2,7 @@ package com.entregueja.backend.controller;
 
 import com.entregueja.backend.entity.Assinatura;
 import com.entregueja.backend.entity.Empresa;
+import com.entregueja.backend.entity.Entrega;
 import com.entregueja.backend.entity.Usuario;
 import com.entregueja.backend.repository.EmpresaRepository;
 import com.entregueja.backend.repository.UsuarioRepository;
@@ -897,6 +898,7 @@ public class EmpresaController {
         }
     }
 
+    @Transactional
     @PutMapping("/{empresaEmail}/desvincular/{entregadorEmail}")
     public ResponseEntity<?> desvincularEntregador(
             @PathVariable String empresaEmail,
@@ -915,6 +917,14 @@ public class EmpresaController {
             return ResponseEntity.status(403).build();
         }
 
+        empresa = entityManager.find(
+                Empresa.class, empresa.getId(), LockModeType.PESSIMISTIC_WRITE
+        );
+
+        if (empresa == null) {
+            return ResponseEntity.notFound().build();
+        }
+
         var usuarioOptional =
                 usuarioRepository.findByEmail(entregadorEmail);
 
@@ -923,9 +933,16 @@ public class EmpresaController {
         }
 
         Usuario entregador = usuarioOptional.get();
+        entityManager.refresh(entregador, LockModeType.PESSIMISTIC_WRITE);
+
+        if (!entregador.getEmail().equalsIgnoreCase(entregadorEmail)) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Os dados do entregador foram alterados. Atualize a lista e tente novamente.")
+            );
+        }
 
         if (entregador.getEmpresa() == null) {
-            return ResponseEntity.badRequest().body(
+            return ResponseEntity.status(409).body(
                     Map.of(
                             "mensagem",
                             "Entregador não possui empresa vinculada"
@@ -942,10 +959,29 @@ public class EmpresaController {
             );
         }
 
+        boolean possuiEntregasAtivas = !entityManager.createQuery("""
+                SELECT e FROM Entrega e
+                WHERE e.empresa.id = :empresaId
+                  AND e.entregador.id = :entregadorId
+                  AND e.status IN ('PENDENTE', 'EM_ROTA')
+                """, Entrega.class)
+                .setParameter("empresaId", empresa.getId())
+                .setParameter("entregadorId", entregador.getId())
+                .setLockMode(LockModeType.PESSIMISTIC_WRITE)
+                .setMaxResults(1)
+                .getResultList()
+                .isEmpty();
+
+        if (possuiEntregasAtivas) {
+            return ResponseEntity.status(409).body(
+                    Map.of("mensagem", "Este entregador possui entregas pendentes ou em rota da sua empresa. Resolva essas entregas antes de encerrar o vínculo.")
+            );
+        }
+
         entregador.setEmpresa(null);
         entregador.setDataVinculo(null);
 
-        usuarioRepository.save(entregador);
+        usuarioRepository.saveAndFlush(entregador);
 
         notificarEntregador(
                 entregador.getId(),

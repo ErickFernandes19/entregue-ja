@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/empresa_lista_entregas_service.dart';
+import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 
 class EmpresaEntregasPage extends StatefulWidget {
@@ -24,6 +28,11 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
   List<dynamic> entregas = [];
   String filtro = 'em_rota';
   bool carregando = true;
+  bool _consultandoEntregas = false;
+  bool _abrindoDetalhes = false;
+  bool _dadosCarregados = false;
+  String? _erroCarregamento;
+  String? _emailDosDados;
 
   @override
   void initState() {
@@ -31,50 +40,135 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
     carregarEntregas();
   }
 
-  Future<void> carregarEntregas() async {
+  void _mostrarErro(String mensagem) {
     if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(content: Text(mensagem), backgroundColor: AppColors.error),
+    );
+  }
 
-    setState(() {
-      carregando = true;
-    });
+  Future<void> carregarEntregas() async {
+    if (!mounted || _consultandoEntregas) return;
+    _consultandoEntregas = true;
+
+    if (!_dadosCarregados && !carregando) {
+      setState(() => carregando = true);
+    }
 
     try {
-      List<dynamic> resultado;
-
-      if (widget.entregadorEmail != null &&
-          widget.entregadorEmail!.isNotEmpty) {
-        resultado =
-            await EmpresaListaEntregasService.buscarEntregasDoEntregador(
-              widget.entregadorEmail!,
-            );
-      } else {
-        resultado = await EmpresaListaEntregasService.buscarEntregas();
+      final empresaEmail = await EmpresaService.empresaLogada();
+      if (!mounted) return;
+      if (empresaEmail == null || empresaEmail.trim().isEmpty) {
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
       }
 
+      if (_emailDosDados != null && _emailDosDados != empresaEmail) {
+        setState(() {
+          entregas = [];
+          _dadosCarregados = false;
+          _emailDosDados = null;
+          carregando = true;
+        });
+      }
+
+      final entregadorEmail = widget.entregadorEmail;
+      final resultado =
+          await (entregadorEmail != null && entregadorEmail.isNotEmpty
+                  ? EmpresaListaEntregasService.buscarEntregasDoEntregador(
+                      entregadorEmail,
+                    )
+                  : EmpresaListaEntregasService.buscarEntregas())
+              .timeout(const Duration(seconds: 20));
+
       if (!mounted) return;
+      final dados = <Map<String, dynamic>>[];
+      for (final item in resultado) {
+        if (item is! Map<String, dynamic>) {
+          throw const FormatException('Formato inválido de entrega');
+        }
+        final valor = item['valor'];
+        final entregue = item['entregue'];
+        if ((valor != null && (valor is! num || !valor.isFinite)) ||
+            (entregue != null && entregue is! bool)) {
+          throw const FormatException('Dados inválidos de entrega');
+        }
+        dados.add(item);
+      }
+
+      final sessaoAtual = await EmpresaService.empresaLogada();
+      if (!mounted) return;
+      if (sessaoAtual != empresaEmail) {
+        throw const ApiException(
+          'Sua sessão foi alterada. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
+      }
 
       setState(() {
-        entregas = resultado;
+        entregas = dados;
+        _dadosCarregados = true;
+        _emailDosDados = empresaEmail;
+        _erroCarregamento = null;
       });
     } catch (e) {
-      debugPrint('Erro ao carregar entregas da empresa: $e');
-
       if (!mounted) return;
+      final mensagem = e is TimeoutException
+          ? 'O servidor demorou para responder. Atualize as entregas e tente novamente.'
+          : ApiService.mensagemErro(
+              e,
+              mensagemPadrao:
+                  'Não foi possível carregar as entregas. Tente novamente.',
+            );
+      final acessoNegado =
+          e is ApiException && (e.statusCode == 401 || e.statusCode == 403);
+      setState(() {
+        if (acessoNegado) {
+          entregas = [];
+          _dadosCarregados = false;
+          _emailDosDados = null;
+        }
+        _erroCarregamento = mensagem;
+      });
+      _mostrarErro(
+        _dadosCarregados
+            ? '$mensagem Exibindo os últimos dados disponíveis.'
+            : mensagem,
+      );
+    } finally {
+      _consultandoEntregas = false;
+      if (mounted) {
+        setState(() => carregando = false);
+      }
+    }
+  }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Não foi possível carregar as entregas. Verifique sua sessão.',
-          ),
-          backgroundColor: AppColors.error,
+  Future<void> _abrirDetalhes(Map<String, dynamic> entrega) async {
+    if (!mounted || _abrindoDetalhes) return;
+    _abrindoDetalhes = true;
+    try {
+      final resultado = await context.push<bool>(
+        '/empresa/entregas/detalhes',
+        extra: entrega,
+      );
+      if (!mounted) return;
+      if (resultado == true) {
+        await carregarEntregas();
+      }
+    } catch (e) {
+      _mostrarErro(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível abrir os detalhes da entrega. Tente novamente.',
         ),
       );
     } finally {
-      if (mounted) {
-        setState(() {
-          carregando = false;
-        });
-      }
+      _abrindoDetalhes = false;
     }
   }
 
@@ -267,18 +361,7 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(22),
-        onTap: () async {
-          final resultado = await context.push<bool>(
-            '/empresa/entregas/detalhes',
-            extra: entrega,
-          );
-
-          if (!mounted) return;
-
-          if (resultado == true) {
-            await carregarEntregas();
-          }
-        },
+        onTap: () => _abrirDetalhes(entrega),
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -475,7 +558,13 @@ class _EmpresaEntregasPageState extends State<EmpresaEntregasPage> {
                           ),
                           const SizedBox(height: 14),
                           Text(
-                            'Nenhuma entrega encontrada',
+                            !_dadosCarregados && _erroCarregamento != null
+                                ? 'Não foi possível carregar as entregas. Puxe para atualizar.'
+                                : 'Nenhuma entrega encontrada',
+                            textAlign:
+                                !_dadosCarregados && _erroCarregamento != null
+                                ? TextAlign.center
+                                : null,
                             style: TextStyle(
                               color: theme.colorScheme.onSurfaceVariant,
                             ),

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../services/api_service.dart';
 import '../services/assinatura_service.dart';
+import '../services/empresa_service.dart';
 import '../services/pagamento_assinatura_service.dart';
 
 class EmpresaAssinaturaGerenciamentoPage extends StatefulWidget {
@@ -20,6 +22,15 @@ class _EmpresaAssinaturaGerenciamentoPageState
   List<Map<String, dynamic>> _historico = [];
   List<Map<String, dynamic>> _recorrentes = [];
   bool _cancelando = false;
+  bool _consultando = false;
+  bool _dialogoAberto = false;
+  String? _erroRecorrentes;
+  String? _tokenConsulta;
+
+  bool get _ocupado => _carregando || _cancelando || _dialogoAberto;
+
+  bool get _recorrentesDisponiveis =>
+      _erro == null && _erroRecorrentes == null && _tokenConsulta != null;
 
   @override
   void initState() {
@@ -27,103 +38,310 @@ class _EmpresaAssinaturaGerenciamentoPageState
     _carregar();
   }
 
-  Future<void> _carregar() async {
-    setState(() {
-      _carregando = true;
-      _erro = null;
-    });
+  Future<String> _obterSessao() async {
+    final email = await EmpresaService.empresaLogada();
+    final token = await EmpresaService.obterTokenEmpresa();
+    if (email == null || token == null || token.trim().isEmpty) {
+      throw const ApiException(
+        'Sua sessão expirou. Entre novamente na sua conta.',
+        statusCode: 401,
+      );
+    }
+    return token;
+  }
 
-    try {
-      final resultados = await Future.wait<dynamic>([
-        AssinaturaService.buscarAtual(),
-        AssinaturaService.buscarHistorico(),
-        AssinaturaService.buscarConsumo(),
-      ]);
-
-      if (!mounted) return;
-
-      setState(() {
-        _assinatura = resultados[0] as Map<String, dynamic>?;
-        _historico = resultados[1] as List<Map<String, dynamic>>;
-        _consumo = resultados[2] as Map<String, dynamic>;
-
-        _carregando = false;
-      });
-      try {
-        final recorrentes =
-            await PagamentoAssinaturaService.listarAssinaturasRecorrentes();
-        if (mounted) setState(() => _recorrentes = recorrentes);
-      } catch (_) {
-        if (mounted) setState(() => _recorrentes = []);
-      }
-    } on AssinaturaException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _erro = e.mensagem;
-        _carregando = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _erro = 'Não foi possível carregar os dados da assinatura.';
-        _carregando = false;
-      });
+  Future<void> _conferirSessao(String token) async {
+    if (await _obterSessao() != token) {
+      throw const ApiException(
+        'Sua sessão foi alterada. Atualize os dados da assinatura.',
+        statusCode: 401,
+      );
     }
   }
 
-  Future<void> _cancelarRecorrente(Map<String, dynamic> assinatura) async {
-    if (_cancelando) return;
-    final id = int.tryParse(assinatura['assinaturaId']?.toString() ?? '');
-    if (id == null || id <= 0) return;
-    final confirmado = await showDialog<bool>(
-      context: context,
-      builder: (contexto) => AlertDialog(
-        title: const Text('Cancelar assinatura?'),
-        content: const Text(
-          'O cancelamento será solicitado ao Mercado Pago. Confira o resultado antes de tentar outra contratação.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(contexto, false),
-            child: const Text('Voltar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(contexto, true),
-            child: const Text('Confirmar cancelamento'),
-          ),
-        ],
-      ),
-    );
-    if (confirmado != true || !mounted) return;
-    setState(() => _cancelando = true);
+  void _limparDados() {
+    _assinatura = null;
+    _consumo = null;
+    _historico = [];
+    _recorrentes = [];
+    _tokenConsulta = null;
+  }
+
+  void _mostrarMensagem(String mensagem) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(mensagem)));
+  }
+
+  bool _erroSessao(Object erro) =>
+      erro is ApiException &&
+      (erro.statusCode == 401 || erro.statusCode == 403);
+
+  bool _cancelavel(Map<String, dynamic> item) => const {
+    'PENDENTE',
+    'AUTORIZADA',
+    'PAUSADA',
+  }.contains(item['status']?.toString().toUpperCase());
+
+  int? _idRecorrente(Map<String, dynamic> item) =>
+      int.tryParse(item['assinaturaId']?.toString() ?? '');
+
+  bool _cancelamentoConfirmado(int id) =>
+      _recorrentesDisponiveis &&
+      _recorrentes.any(
+        (item) =>
+            _idRecorrente(item) == id &&
+            item['status']?.toString().toUpperCase() == 'CANCELADA',
+      );
+
+  Future<void> _carregar({bool duranteCancelamento = false}) async {
+    if (!mounted ||
+        _consultando ||
+        _dialogoAberto ||
+        (_cancelando && !duranteCancelamento)) {
+      return;
+    }
+    setState(() {
+      _consultando = true;
+      _carregando = true;
+      _erro = null;
+      _erroRecorrentes = null;
+    });
+
     try {
+      final token = await _obterSessao();
+      if (!mounted) return;
+      if (_tokenConsulta != token) {
+        setState(() {
+          _limparDados();
+          _tokenConsulta = token;
+        });
+      }
+      const tipo = TipoContaAssinatura.empresa;
+      final resultados = await Future.wait<dynamic>([
+        AssinaturaService.buscarAtual(tipoConta: tipo),
+        AssinaturaService.buscarHistorico(tipoConta: tipo),
+        AssinaturaService.buscarConsumo(tipoConta: tipo),
+      ]);
+      await _conferirSessao(token);
+      if (!mounted) return;
+      final assinatura = resultados[0] as Map<String, dynamic>?;
+      final historico = resultados[1] as List<Map<String, dynamic>>;
+      final consumo = resultados[2] as Map<String, dynamic>;
+      if ((assinatura != null && !_assinaturaValida(assinatura)) ||
+          historico.any((item) => !_assinaturaValida(item))) {
+        throw const FormatException('Dados da assinatura inválidos.');
+      }
+      setState(() {
+        _assinatura = assinatura;
+        _historico = historico;
+        _consumo = consumo;
+      });
+
+      try {
+        final recorrentes =
+            await PagamentoAssinaturaService.listarAssinaturasRecorrentes();
+        await _conferirSessao(token);
+        if (!mounted) return;
+        final ids = <int>{};
+        for (final item in recorrentes) {
+          final id = _idRecorrente(item);
+          final status = item['status'];
+          if (id == null ||
+              id <= 0 ||
+              !ids.add(id) ||
+              status is! String ||
+              status.trim().isEmpty) {
+            throw const FormatException('Dados de recorrência inválidos.');
+          }
+        }
+        setState(() => _recorrentes = recorrentes);
+      } catch (e) {
+        await _conferirSessao(token);
+        if (_erroSessao(e)) rethrow;
+        if (!mounted) return;
+        setState(() {
+          _erroRecorrentes = ApiService.mensagemErro(
+            e,
+            mensagemPadrao:
+                'Não foi possível consultar as assinaturas recorrentes.',
+          );
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      var falha = e;
+      final token = _tokenConsulta;
+      if (token != null) {
+        try {
+          await _conferirSessao(token);
+        } catch (erroSessao) {
+          falha = erroSessao;
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        if (_erroSessao(falha) || _tokenConsulta == null) {
+          _limparDados();
+        }
+        _erro = ApiService.mensagemErro(
+          falha,
+          mensagemPadrao: 'Não foi possível carregar os dados da assinatura.',
+        );
+        _erroRecorrentes = _erro;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _carregando = false;
+          _consultando = false;
+        });
+      }
+    }
+  }
+
+  bool _assinaturaValida(Map<String, dynamic> item) {
+    final plano = item['plano'];
+    final status = item['status'];
+    return plano is String &&
+        plano.trim().isNotEmpty &&
+        status is String &&
+        status.trim().isNotEmpty;
+  }
+
+  Future<void> _cancelarRecorrente(Map<String, dynamic> assinatura) async {
+    if (!mounted || _ocupado) return;
+    if (!_recorrentesDisponiveis) {
+      _mostrarMensagem(
+        'Atualize as assinaturas recorrentes antes de cancelar.',
+      );
+      return;
+    }
+    final id = _idRecorrente(assinatura);
+    if (id == null ||
+        id <= 0 ||
+        !_recorrentes.any(
+          (item) => _idRecorrente(item) == id && _cancelavel(item),
+        )) {
+      _mostrarMensagem(
+        'Não foi possível identificar uma assinatura cancelável. Atualize os dados.',
+      );
+      return;
+    }
+    final token = _tokenConsulta!;
+    setState(() => _cancelando = true);
+    var solicitacaoIniciada = false;
+    try {
+      await _conferirSessao(token);
+      if (!mounted) return;
+      final confirmado = await showDialog<bool>(
+        context: context,
+        builder: (contexto) => AlertDialog(
+          title: const Text('Cancelar assinatura?'),
+          content: const Text(
+            'O cancelamento será solicitado ao Mercado Pago. Confira o resultado antes de tentar outra contratação.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(contexto, false),
+              child: const Text('Voltar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(contexto, true),
+              child: const Text('Confirmar cancelamento'),
+            ),
+          ],
+        ),
+      );
+      if (confirmado != true || !mounted) return;
+      await _conferirSessao(token);
+      if (!mounted) return;
+      solicitacaoIniciada = true;
       await PagamentoAssinaturaService.cancelarAssinaturaRecorrente(
         assinaturaId: id,
       );
+      await _conferirSessao(token);
       if (!mounted) return;
-      await _carregar();
+      await _carregar(duranteCancelamento: true);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Solicitação concluída. Confira o status da assinatura.',
-          ),
-        ),
+      if (_tokenConsulta == token && _cancelamentoConfirmado(id)) {
+        _mostrarMensagem('Cancelamento confirmado pelo servidor.');
+      } else {
+        _mostrarMensagem(
+          'Não foi possível confirmar o cancelamento. Confira o status da assinatura antes de tentar novamente.',
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      final mensagem = ApiService.mensagemErro(
+        e,
+        mensagemPadrao: solicitacaoIniciada
+            ? 'Não foi possível confirmar o cancelamento.'
+            : 'Não foi possível iniciar o cancelamento.',
       );
-    } catch (erro) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Não foi possível confirmar o cancelamento: $erro'),
-        ),
-      );
-      await _carregar();
+      if (_erroSessao(e)) {
+        setState(() {
+          _limparDados();
+          _erro = mensagem;
+          _erroRecorrentes = mensagem;
+        });
+        _mostrarMensagem(mensagem);
+      } else if (solicitacaoIniciada) {
+        await _carregar(duranteCancelamento: true);
+        if (!mounted) return;
+        if (_tokenConsulta == token && _cancelamentoConfirmado(id)) {
+          _mostrarMensagem('Cancelamento confirmado pelo servidor.');
+        } else {
+          _mostrarMensagem(
+            '$mensagem Confira o status da assinatura antes de tentar novamente.',
+          );
+        }
+      } else {
+        _mostrarMensagem(mensagem);
+      }
     } finally {
       if (mounted) setState(() => _cancelando = false);
     }
   }
 
+  Future<void> _executarDialogo(Future<void> Function() acao) async {
+    if (!mounted || _ocupado) return;
+    setState(() => _dialogoAberto = true);
+    try {
+      await acao();
+    } catch (e) {
+      if (!mounted) return;
+      final mensagem = ApiService.mensagemErro(
+        e,
+        mensagemPadrao: 'Não foi possível abrir esta opção.',
+      );
+      if (_erroSessao(e)) {
+        setState(() {
+          _limparDados();
+          _erro = mensagem;
+          _erroRecorrentes = mensagem;
+        });
+      }
+      _mostrarMensagem(mensagem);
+    } finally {
+      if (mounted) setState(() => _dialogoAberto = false);
+    }
+  }
+
   Future<void> _mostrarRenovacao() async {
+    if (!_recorrentesDisponiveis) {
+      _mostrarMensagem(
+        'Não foi possível consultar a renovação. Atualize a assinatura.',
+      );
+      return;
+    }
+    await _executarDialogo(_dialogoRenovacao);
+  }
+
+  Future<void> _dialogoRenovacao() async {
+    await _conferirSessao(_tokenConsulta!);
+    if (!mounted) return;
     final ativas = _recorrentes.where((item) {
       final status = item['status']?.toString().toUpperCase();
       return status == 'PENDENTE' ||
@@ -149,7 +367,10 @@ class _EmpresaAssinaturaGerenciamentoPageState
     );
   }
 
-  Future<void> _mostrarFormaPagamento() async {
+  Future<void> _mostrarFormaPagamento() =>
+      _executarDialogo(_dialogoFormaPagamento);
+
+  Future<void> _dialogoFormaPagamento() async {
     await showDialog<void>(
       context: context,
       builder: (contexto) => AlertDialog(
@@ -168,6 +389,26 @@ class _EmpresaAssinaturaGerenciamentoPageState
   }
 
   Future<void> _selecionarCancelamento() async {
+    if (!mounted || _ocupado) return;
+    if (!_recorrentesDisponiveis) {
+      _mostrarMensagem(
+        'Atualize as assinaturas recorrentes antes de cancelar.',
+      );
+      return;
+    }
+    Map<String, dynamic>? escolhida;
+    await _executarDialogo(() async {
+      escolhida = await _dialogoSelecionarCancelamento();
+    });
+    final item = escolhida;
+    if (item != null && mounted) {
+      await _cancelarRecorrente(item);
+    }
+  }
+
+  Future<Map<String, dynamic>?> _dialogoSelecionarCancelamento() async {
+    await _conferirSessao(_tokenConsulta!);
+    if (!mounted) return null;
     final cancelaveis = _recorrentes.where((item) {
       final status = item['status']?.toString().toUpperCase();
       return status == 'PENDENTE' ||
@@ -190,9 +431,9 @@ class _EmpresaAssinaturaGerenciamentoPageState
           ],
         ),
       );
-      return;
+      return null;
     }
-    final escolhida = await showDialog<Map<String, dynamic>>(
+    return showDialog<Map<String, dynamic>>(
       context: context,
       builder: (contexto) => AlertDialog(
         title: const Text('Cancelar assinatura'),
@@ -218,9 +459,6 @@ class _EmpresaAssinaturaGerenciamentoPageState
         ],
       ),
     );
-    if (escolhida != null && mounted) {
-      await _cancelarRecorrente(escolhida);
-    }
   }
 
   Widget _painelRecorrentes() {
@@ -238,13 +476,15 @@ class _EmpresaAssinaturaGerenciamentoPageState
             const SizedBox(height: 12),
             if (_carregando)
               const Center(child: CircularProgressIndicator())
-            else if (_erro != null)
-              const Text(
-                'Não foi possível consultar as assinaturas recorrentes.',
-              )
-            else if (itens.isEmpty)
-              const Text('Nenhuma assinatura recorrente encontrada.')
-            else
+            else if (_erroRecorrentes != null) ...[
+              Text(_erroRecorrentes!),
+              if (itens.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                const Text('Os dados anteriores podem estar desatualizados.'),
+              ],
+            ] else if (itens.isEmpty)
+              const Text('Nenhuma assinatura recorrente encontrada.'),
+            if (!_carregando && itens.isNotEmpty)
               ...itens.map((item) {
                 final status =
                     item['status']?.toString().toUpperCase() ?? 'DESCONHECIDO';
@@ -262,7 +502,7 @@ class _EmpresaAssinaturaGerenciamentoPageState
                       subtitle: Text('Status: $status'),
                       trailing: cancelavel
                           ? TextButton(
-                              onPressed: _cancelando || _carregando
+                              onPressed: _ocupado || !_recorrentesDisponiveis
                                   ? null
                                   : () => _cancelarRecorrente(item),
                               child: const Text('Cancelar'),
@@ -310,7 +550,7 @@ class _EmpresaAssinaturaGerenciamentoPageState
   }
 
   int _numero(dynamic valor) {
-    if (valor is num) return valor.toInt();
+    if (valor is num && valor.isFinite) return valor.toInt();
     return int.tryParse(valor?.toString() ?? '') ?? 0;
   }
 
@@ -373,7 +613,11 @@ class _EmpresaAssinaturaGerenciamentoPageState
 
     final dadosValidos = camposObrigatorios.every((campo) {
       final valor = consumo[campo];
-      return valor is num || int.tryParse(valor?.toString() ?? '') != null;
+      if (valor is num) {
+        return valor.isFinite && valor >= 0 && valor == valor.truncate();
+      }
+      final inteiro = int.tryParse(valor?.toString() ?? '');
+      return inteiro != null && inteiro >= 0;
     });
 
     if (!dadosValidos) {
@@ -453,7 +697,7 @@ class _EmpresaAssinaturaGerenciamentoPageState
         centerTitle: true,
         actions: [
           IconButton(
-            onPressed: _carregando ? null : _carregar,
+            onPressed: _ocupado ? null : _carregar,
             tooltip: 'Atualizar assinatura',
             icon: const Icon(Icons.refresh),
           ),
@@ -509,7 +753,7 @@ class _EmpresaAssinaturaGerenciamentoPageState
                       Text(_erro!),
                       const SizedBox(height: 8),
                       TextButton.icon(
-                        onPressed: _carregar,
+                        onPressed: _ocupado ? null : _carregar,
                         icon: const Icon(Icons.refresh),
                         label: const Text('Tentar novamente'),
                       ),
@@ -610,7 +854,17 @@ class _EmpresaAssinaturaGerenciamentoPageState
                     title: const Text('Alterar plano'),
                     subtitle: const Text('Comparar os planos disponíveis'),
                     trailing: const Icon(Icons.chevron_right),
-                    onTap: () => Navigator.of(context).pop(),
+                    onTap: _ocupado
+                        ? null
+                        : () {
+                            if (Navigator.of(context).canPop()) {
+                              Navigator.of(context).pop();
+                            } else {
+                              _mostrarMensagem(
+                                'Não foi possível voltar aos planos por esta tela.',
+                              );
+                            }
+                          },
                   ),
                   Divider(height: 1, color: colors.outlineVariant),
                   ListTile(
@@ -618,7 +872,7 @@ class _EmpresaAssinaturaGerenciamentoPageState
                     title: const Text('Renovação automática'),
                     subtitle: const Text('Consultar situação da renovação'),
                     trailing: const Icon(Icons.chevron_right),
-                    onTap: _carregando ? null : _mostrarRenovacao,
+                    onTap: _ocupado ? null : _mostrarRenovacao,
                   ),
                   Divider(height: 1, color: colors.outlineVariant),
                   ListTile(
@@ -626,7 +880,7 @@ class _EmpresaAssinaturaGerenciamentoPageState
                     title: const Text('Forma de pagamento'),
                     subtitle: const Text('Consultar as opções de cobrança'),
                     trailing: const Icon(Icons.chevron_right),
-                    onTap: _mostrarFormaPagamento,
+                    onTap: _ocupado ? null : _mostrarFormaPagamento,
                   ),
                   Divider(height: 1, color: colors.outlineVariant),
                   ListTile(
@@ -636,9 +890,7 @@ class _EmpresaAssinaturaGerenciamentoPageState
                       'Selecionar uma assinatura recorrente',
                     ),
                     trailing: const Icon(Icons.chevron_right),
-                    onTap: _carregando || _cancelando
-                        ? null
-                        : _selecionarCancelamento,
+                    onTap: _ocupado ? null : _selecionarCancelamento,
                   ),
                 ],
               ),

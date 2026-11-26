@@ -1,58 +1,92 @@
+import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:entregue_ja/services/empresa_service.dart' as empresa_service;
 
 import '../config/api_config.dart';
+import 'api_service.dart';
+import 'empresa_service.dart';
 
 class EmpresaEstatisticasService {
+  static const Duration _tempoLimite = Duration(seconds: 15);
+
   static Future<Map<String, dynamic>?> buscarEstatisticas() async {
     try {
-      final empresaEmail = await empresa_service.EmpresaService.empresaLogada();
+      final empresaEmail = await EmpresaService.empresaLogada();
 
-      if (empresaEmail == null || empresaEmail.isEmpty) {
-        debugPrint('Erro ao buscar estatísticas: empresa não autenticada.');
-        return null;
+      if (empresaEmail == null || empresaEmail.trim().isEmpty) {
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
       }
 
-      final headers =
-          await empresa_service.EmpresaService.headersAutenticados();
+      final headers = await EmpresaService.headersAutenticados();
+      final autorizacao = headers['Authorization'] ?? '';
+
+      if (!autorizacao.startsWith('Bearer ') ||
+          autorizacao.substring(7).trim().isEmpty) {
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
+      }
 
       final empresaEmailUrl = Uri.encodeComponent(empresaEmail);
+      final response = await http
+          .get(
+            Uri.parse(
+              '${ApiConfig.entregas}/estatisticas/empresa/$empresaEmailUrl',
+            ),
+            headers: headers,
+          )
+          .timeout(_tempoLimite);
 
-      final response = await http.get(
-        Uri.parse(
-          '${ApiConfig.entregas}/estatisticas/empresa/$empresaEmailUrl',
-        ),
-        headers: headers,
-      );
+      if (response.statusCode != 200) {
+        throw ApiService.erroHttp(response.statusCode, response.body);
+      }
 
-      if (response.statusCode == 200) {
-        final dados = jsonDecode(response.body);
+      final dados = jsonDecode(utf8.decode(response.bodyBytes));
 
-        if (dados is Map<String, dynamic>) {
-          debugPrint('Estatísticas carregadas: $dados');
-          return dados;
+      if (dados is! Map<String, dynamic>) {
+        throw const FormatException('Formato inválido das estatísticas.');
+      }
+
+      const campos = [
+        'total',
+        'entregues',
+        'pendentes',
+        'emRota',
+        'naoEntregues',
+      ];
+
+      final estatisticas = Map<String, dynamic>.from(dados);
+
+      for (final campo in campos) {
+        final valor = int.tryParse(estatisticas[campo]?.toString() ?? '');
+
+        if (valor == null || valor < 0) {
+          throw const FormatException('Valor inválido nas estatísticas.');
         }
 
-        debugPrint('Erro: formato inesperado das estatísticas.');
-        return null;
+        estatisticas[campo] = valor;
       }
 
-      if (response.statusCode == 401) {
-        debugPrint('Erro 401: sessão empresarial inválida ou expirada.');
-      } else if (response.statusCode == 403) {
-        debugPrint('Erro 403: acesso às estatísticas negado.');
-      } else {
-        debugPrint('Erro ao buscar estatísticas: HTTP ${response.statusCode}');
-        debugPrint('Resposta: ${response.body}');
-      }
-
-      return null;
+      return estatisticas;
+    } on ApiException {
+      rethrow;
+    } on TimeoutException {
+      throw const ApiException(
+        'O servidor demorou para responder. Tente atualizar as estatísticas novamente.',
+      );
     } catch (e) {
-      debugPrint('Erro ao buscar estatísticas: $e');
-      return null;
+      throw ApiException(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível carregar as estatísticas. Tente novamente.',
+        ),
+      );
     }
   }
 }

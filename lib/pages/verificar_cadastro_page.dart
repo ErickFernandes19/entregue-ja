@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
 
@@ -23,6 +24,12 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
   int segundosParaReenvio = 0;
   Timer? temporizadorReenvio;
 
+  @override
+  void initState() {
+    super.initState();
+    iniciarEsperaReenvio();
+  }
+
   void iniciarEsperaReenvio() {
     temporizadorReenvio?.cancel();
     setState(() => segundosParaReenvio = 60);
@@ -41,31 +48,59 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
   }
 
   void mostrarMensagem(String mensagem) {
+    if (!mounted) return;
+
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(mensagem)));
   }
 
+  String mensagemResultado(
+    Map<String, dynamic> resultado,
+    String mensagemPadrao,
+  ) {
+    final mensagem = resultado['mensagem']?.toString().trim();
+    return mensagem != null && mensagem.isNotEmpty ? mensagem : mensagemPadrao;
+  }
+
   Future<void> reenviarCodigo() async {
-    if (carregando || reenviando || segundosParaReenvio > 0) return;
+    if (!mounted || carregando || reenviando || segundosParaReenvio > 0) {
+      return;
+    }
+
     fecharTeclado();
     setState(() => reenviando = true);
 
-    final resultado = await AuthService.reenviarCodigoCadastro(widget.email);
-    if (!mounted) return;
+    try {
+      final resultado = await AuthService.reenviarCodigoCadastro(widget.email);
+      if (!mounted) return;
 
-    setState(() => reenviando = false);
-    final sucesso = resultado['sucesso'] == true;
-    final mensagem =
-        resultado['mensagem']?.toString() ??
-        (sucesso
-            ? 'Código reenviado para seu e-mail.'
-            : 'Não foi possível reenviar o código.');
-    mostrarMensagem(mensagem);
-
-    if (sucesso) {
-      codigoController.clear();
-      iniciarEsperaReenvio();
+      if (resultado['sucesso'] == true) {
+        codigoController.clear();
+        iniciarEsperaReenvio();
+        mostrarMensagem(
+          mensagemResultado(resultado, 'Código reenviado para seu e-mail.'),
+        );
+      } else {
+        mostrarMensagem(
+          mensagemResultado(
+            resultado,
+            'Não foi possível reenviar o código. Tente novamente.',
+          ),
+        );
+      }
+    } catch (e) {
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível reenviar o código. Tente novamente.',
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => reenviando = false);
+      }
     }
   }
 
@@ -84,40 +119,48 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
   }
 
   Future<void> confirmar() async {
-    if (carregando || reenviando) return;
+    if (!mounted || carregando || reenviando) return;
     fecharTeclado();
 
     final codigo = codigoController.text.trim();
 
     if (!RegExp(r'^\d{6}$').hasMatch(codigo)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Digite o código de 6 dígitos')),
-      );
+      mostrarMensagem('Digite o código de 6 dígitos.');
       return;
     }
 
     setState(() => carregando = true);
 
-    final resultado = await AuthService.confirmarCadastroComResultado(
-      widget.email,
-      codigo,
-    );
-
-    if (!mounted) return;
-
-    setState(() => carregando = false);
-
-    if (resultado['sucesso'] == true) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cadastro confirmado com sucesso!')),
+    try {
+      final resultado = await AuthService.confirmarCadastroComResultado(
+        widget.email,
+        codigo,
       );
+      if (!mounted) return;
 
-      context.go('/entregador/login');
-    } else {
-      mostrarMensagem(
-        resultado['mensagem']?.toString() ??
+      if (resultado['sucesso'] == true) {
+        mostrarMensagem('Cadastro confirmado com sucesso!');
+        context.go('/entregador/login');
+      } else {
+        mostrarMensagem(
+          mensagemResultado(
+            resultado,
             'Não foi possível confirmar o código. Tente novamente.',
+          ),
+        );
+      }
+    } catch (e) {
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível confirmar o código. Tente novamente.',
+        ),
       );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
     }
   }
 
@@ -302,6 +345,21 @@ class _VerificarCadastroPageState extends State<VerificarCadastroPage> {
                             ),
                           ),
                           const SizedBox(height: 12),
+                          TextButton(
+                            onPressed:
+                                carregando ||
+                                    reenviando ||
+                                    segundosParaReenvio > 0
+                                ? null
+                                : reenviarCodigo,
+                            child: Text(
+                              reenviando
+                                  ? 'Reenviando código...'
+                                  : segundosParaReenvio > 0
+                                  ? 'Reenviar código em ${segundosParaReenvio}s'
+                                  : 'Reenviar código',
+                            ),
+                          ),
                           TextButton(
                             onPressed: carregando || reenviando
                                 ? null

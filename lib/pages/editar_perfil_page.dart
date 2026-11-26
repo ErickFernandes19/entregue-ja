@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
 
@@ -29,58 +30,84 @@ class _EditarPerfilPageState extends State<EditarPerfilPage> {
     emailController = TextEditingController(text: widget.email);
   }
 
+  void mostrarMensagem(String mensagem, {bool sucesso = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(mensagem),
+          backgroundColor: sucesso ? AppColors.success : null,
+        ),
+      );
+  }
+
   Future<void> salvar() async {
     if (salvando) return;
 
     FocusScope.of(context).unfocus();
 
     final nome = nomeController.text.trim();
-    final email = emailController.text.trim();
+    final email = emailController.text.trim().toLowerCase();
 
-    if (nome.isEmpty || email.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Preencha nome e e-mail')));
+    if (nome.isEmpty) {
+      mostrarMensagem('Informe seu nome.');
+      nomeFocus.requestFocus();
       return;
     }
 
-    if (!email.contains('@') || !email.contains('.')) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Informe um e-mail válido')));
+    if (email.isEmpty) {
+      mostrarMensagem('Informe seu e-mail.');
+      emailFocus.requestFocus();
       return;
     }
 
-    setState(() {
-      salvando = true;
-    });
+    if (email.length > 254 ||
+        !RegExp(
+          r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+$',
+        ).hasMatch(email)) {
+      mostrarMensagem('Informe um e-mail válido.');
+      emailFocus.requestFocus();
+      return;
+    }
 
-    final resultado = await AuthService.atualizarPerfil(
-      nome: nome,
-      email: email,
-    );
+    setState(() => salvando = true);
 
-    if (!mounted) return;
-
-    setState(() {
-      salvando = false;
-    });
-
-    if (resultado == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Não foi possível atualizar o perfil')),
+    try {
+      final resultado = await AuthService.atualizarPerfil(
+        nome: nome,
+        email: email,
+        lancarErro: true,
       );
-      return;
+
+      if (!mounted) return;
+
+      if (resultado == null) {
+        throw const ApiException(
+          'Não foi possível confirmar a atualização do perfil. Confira seus dados antes de tentar novamente.',
+        );
+      }
+
+      mostrarMensagem('Perfil atualizado com sucesso!', sucesso: true);
+      if (context.canPop()) {
+        context.pop(true);
+      } else {
+        context.go('/entregador/perfil');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível atualizar o perfil. Tente novamente.',
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => salvando = false);
+      }
     }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Perfil atualizado com sucesso'),
-        backgroundColor: AppColors.success,
-      ),
-    );
-
-    context.pop(true);
   }
 
   @override
@@ -128,12 +155,14 @@ class _EditarPerfilPageState extends State<EditarPerfilPage> {
                 color: theme.cardColor,
                 borderRadius: BorderRadius.circular(22),
                 border: Border.all(
-                  color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                  color: theme.colorScheme.outlineVariant.withValues(
+                    alpha: 0.35,
+                  ),
                 ),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(
-                      theme.brightness == Brightness.dark ? 0.20 : 0.05,
+                    color: Colors.black.withValues(
+                      alpha: theme.brightness == Brightness.dark ? 0.20 : 0.05,
                     ),
                     blurRadius: 12,
                     offset: const Offset(0, 5),
@@ -146,7 +175,9 @@ class _EditarPerfilPageState extends State<EditarPerfilPage> {
                   Row(
                     children: [
                       CircleAvatar(
-                        backgroundColor: AppColors.primary.withOpacity(0.12),
+                        backgroundColor: AppColors.primary.withValues(
+                          alpha: 0.12,
+                        ),
                         child: const Icon(
                           Icons.person_outline,
                           color: AppColors.primary,

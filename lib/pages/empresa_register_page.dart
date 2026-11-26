@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../theme/app_colors.dart';
 import 'package:entregue_ja/services/empresa_service.dart' as empresa_service;
 
@@ -105,24 +106,37 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
   }
 
   void mostrarErro(String mensagem) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(mensagem)));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensagem)));
   }
 
   Future<void> cadastrar() async {
+    if (carregando || !mounted) return;
+
     final nome = nomeController.text.trim();
     final email = emailController.text.trim().toLowerCase();
     final senha = senhaController.text;
     final confirmarSenha = confirmarSenhaController.text;
 
-    if (nome.isEmpty ||
-        email.isEmpty ||
-        senha.isEmpty ||
-        confirmarSenha.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Preencha todos os campos')));
+    if (nome.isEmpty) {
+      mostrarErro('Informe o nome da empresa.');
+      return;
+    }
+
+    if (email.isEmpty) {
+      mostrarErro('Informe o e-mail da empresa.');
+      return;
+    }
+
+    if (senha.isEmpty) {
+      mostrarErro('Informe uma senha.');
+      return;
+    }
+
+    if (confirmarSenha.isEmpty) {
+      mostrarErro('Confirme sua senha.');
       return;
     }
 
@@ -130,7 +144,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
           r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$',
         ).hasMatch(email) ||
         email.length > 254) {
-      mostrarErro('Informe um e-mail válido');
+      mostrarErro('Informe um e-mail válido.');
       return;
     }
 
@@ -148,35 +162,51 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
     }
 
     FocusScope.of(context).unfocus();
+    setState(() => carregando = true);
 
-    setState(() {
-      carregando = true;
-    });
+    try {
+      final resultado = await empresa_service
+          .EmpresaService.cadastrarComResultado(nome, email, senha);
 
-    final resultado = await empresa_service
-        .EmpresaService.cadastrarComResultado(nome, email, senha);
+      if (!mounted) return;
 
-    if (!mounted) return;
+      final sucesso = resultado['sucesso'];
+      if (sucesso is! bool) {
+        throw const FormatException('Resultado inválido');
+      }
 
-    setState(() {
-      carregando = false;
-    });
+      if (!sucesso) {
+        final mensagem = resultado['mensagem'];
+        mostrarErro(
+          mensagem is String && mensagem.trim().isNotEmpty
+              ? mensagem.trim()
+              : 'Não foi possível enviar o código de verificação. Tente novamente.',
+        );
+        return;
+      }
 
-    if (resultado['sucesso'] == true) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Código de verificação enviado para seu e-mail'),
-        ),
-      );
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Código de verificação enviado para seu e-mail'),
+          ),
+        );
 
       context.push('/empresa/verificar-cadastro', extra: email);
-    } else {
-      final mensagem = resultado['mensagem']?.toString().trim();
+    } catch (e) {
+      if (!mounted) return;
       mostrarErro(
-        mensagem != null && mensagem.isNotEmpty
-            ? mensagem
-            : 'Não foi possível enviar o código de verificação',
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível concluir o cadastro. Tente novamente.',
+        ),
       );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
     }
   }
 
@@ -197,7 +227,9 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
       controller: controller,
       focusNode: focusNode,
       textInputAction: textInputAction,
-      onSubmitted: (_) => onSubmitted?.call(),
+      onSubmitted: (_) {
+        if (!carregando) onSubmitted?.call();
+      },
       onTapOutside: (_) => FocusScope.of(context).unfocus(),
       enabled: !carregando,
       autocorrect: false,
@@ -215,6 +247,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
                       : Icons.visibility,
                 ),
                 onPressed: () {
+                  if (carregando) return;
                   setState(() {
                     if (confirmacao) {
                       mostrarConfirmacao = !mostrarConfirmacao;
@@ -271,7 +304,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
                       Container(
                         padding: const EdgeInsets.all(18),
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.18),
+                          color: Colors.white.withValues(alpha: 0.18),
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(
@@ -303,14 +336,14 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
                           color: theme.cardColor,
                           borderRadius: BorderRadius.circular(26),
                           border: Border.all(
-                            color: theme.colorScheme.outlineVariant.withOpacity(
-                              0.35,
+                            color: theme.colorScheme.outlineVariant.withValues(
+                              alpha: 0.35,
                             ),
                           ),
                           boxShadow: [
                             BoxShadow(
-                              color: Colors.black.withOpacity(
-                                theme.brightness == Brightness.dark
+                              color: Colors.black.withValues(
+                                alpha: theme.brightness == Brightness.dark
                                     ? 0.28
                                     : 0.12,
                               ),
@@ -402,6 +435,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
                                 ),
                                 TextButton(
                                   onPressed: () {
+                                    if (carregando) return;
                                     context.go('/empresa/login');
                                   },
                                   child: const Text('Entrar'),
@@ -419,7 +453,7 @@ class _EmpresaRegisterPageState extends State<EmpresaRegisterPage> {
                 top: 8,
                 left: 8,
                 child: Material(
-                  color: Colors.white.withOpacity(0.16),
+                  color: Colors.white.withValues(alpha: 0.16),
                   shape: const CircleBorder(),
                   child: IconButton(
                     tooltip: 'Voltar ao login',

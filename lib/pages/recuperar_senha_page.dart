@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 
+import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
 
@@ -27,6 +30,9 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
   bool mostrarConfirmacao = false;
   String emailConfirmado = '';
   String codigoConfirmado = '';
+  int segundosParaReenvio = 0;
+  Timer? temporizadorReenvio;
+  DateTime? prazoReenvio;
 
   @override
   void initState() {
@@ -36,6 +42,7 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
 
   @override
   void dispose() {
+    temporizadorReenvio?.cancel();
     emailController.dispose();
     codigoController.dispose();
     senhaController.dispose();
@@ -45,6 +52,8 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
   }
 
   void mostrarMensagem(String mensagem, {bool sucesso = false}) {
+    if (!mounted) return;
+
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -55,72 +64,148 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
   }
 
   bool emailValido(String email) {
-    return RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email);
+    return email.length <= 254 &&
+        RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email);
+  }
+
+  void iniciarEsperaReenvio() {
+    temporizadorReenvio?.cancel();
+    final prazo = DateTime.now().add(const Duration(seconds: 60));
+    prazoReenvio = prazo;
+    setState(() => segundosParaReenvio = 60);
+    temporizadorReenvio = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      final restante = (prazo.difference(DateTime.now()).inMilliseconds / 1000)
+          .ceil();
+      if (restante <= 0) {
+        timer.cancel();
+        prazoReenvio = null;
+        setState(() => segundosParaReenvio = 0);
+      } else if (restante != segundosParaReenvio) {
+        setState(() => segundosParaReenvio = restante);
+      }
+    });
+  }
+
+  bool get aguardandoReenvio {
+    final prazo = prazoReenvio;
+    return prazo != null && DateTime.now().isBefore(prazo);
+  }
+
+  String mensagemResultado(
+    Map<String, dynamic> resultado,
+    String mensagemPadrao,
+  ) {
+    final mensagem = resultado['mensagem']?.toString().trim();
+    return mensagem != null && mensagem.isNotEmpty ? mensagem : mensagemPadrao;
+  }
+
+  bool codigoInvalidoOuExpirado(String mensagem) {
+    final texto = mensagem.toLowerCase();
+    return texto.contains('código') &&
+        (texto.contains('inválid') || texto.contains('expirad'));
   }
 
   Future<void> solicitarCodigo() async {
+    if (!mounted || carregando || etapa != 0 || aguardandoReenvio) return;
     final email = emailController.text.trim();
     if (!emailValido(email)) {
       mostrarMensagem('Informe um e-mail válido.');
       return;
     }
-
-    setState(() => carregando = true);
-    final resultado = await AuthService.solicitarCodigoRecuperacao(email);
-    if (!mounted) return;
-    setState(() => carregando = false);
-
-    final sucesso = resultado['sucesso'] == true;
-    mostrarMensagem(
-      resultado['mensagem']?.toString() ?? 'Não foi possível enviar o código.',
-      sucesso: sucesso,
-    );
-    if (sucesso) {
-      setState(() {
-        emailConfirmado = email;
-        codigoController.clear();
-        etapa = 1;
-      });
-    }
+    await enviarCodigo(email, reenvio: false);
   }
 
   Future<void> reenviarCodigo() async {
-    if (carregando) return;
+    if (!mounted || carregando || etapa != 1 || aguardandoReenvio) return;
+    await enviarCodigo(emailConfirmado, reenvio: true);
+  }
+
+  Future<void> enviarCodigo(String email, {required bool reenvio}) async {
+    if (!mounted || carregando || aguardandoReenvio) return;
+    FocusManager.instance.primaryFocus?.unfocus();
     setState(() => carregando = true);
-    final resultado = await AuthService.solicitarCodigoRecuperacao(
-      emailConfirmado,
-    );
-    if (!mounted) return;
-    setState(() => carregando = false);
-    mostrarMensagem(
-      resultado['mensagem']?.toString() ??
-          'Não foi possível reenviar o código.',
-      sucesso: resultado['sucesso'] == true,
-    );
+    final mensagemPadrao = reenvio
+        ? 'Não foi possível reenviar o código. Tente novamente.'
+        : 'Não foi possível solicitar o código. Tente novamente.';
+    try {
+      final resultado = await AuthService.solicitarCodigoRecuperacao(email);
+      if (!mounted) return;
+
+      if (resultado['sucesso'] == true) {
+        setState(() {
+          emailConfirmado = email;
+          codigoConfirmado = '';
+          codigoController.clear();
+          if (!reenvio) {
+            senhaController.clear();
+            confirmarSenhaController.clear();
+          }
+          etapa = 1;
+        });
+        iniciarEsperaReenvio();
+        mostrarMensagem(
+          'Se o e-mail estiver cadastrado, um código será enviado. '
+          'Confira sua caixa de entrada e o spam.',
+          sucesso: true,
+        );
+      } else {
+        mostrarMensagem(mensagemResultado(resultado, mensagemPadrao));
+      }
+    } catch (e) {
+      mostrarMensagem(
+        ApiService.mensagemErro(e, mensagemPadrao: mensagemPadrao),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
+    }
   }
 
   Future<void> verificarCodigo() async {
+    if (!mounted || carregando || etapa != 1) return;
     final codigo = codigoController.text.trim();
     if (!RegExp(r'^\d{6}$').hasMatch(codigo)) {
       mostrarMensagem('Digite o código de 6 dígitos recebido por e-mail.');
       return;
     }
 
+    FocusManager.instance.primaryFocus?.unfocus();
     setState(() => carregando = true);
-    final resultado = await AuthService.verificarCodigoRecuperacao(
-      emailConfirmado,
-      codigo,
-    );
-    if (!mounted) return;
-    setState(() => carregando = false);
+    const mensagemPadrao =
+        'Não foi possível verificar o código. Tente novamente.';
+    try {
+      final resultado = await AuthService.verificarCodigoRecuperacao(
+        emailConfirmado,
+        codigo,
+      );
+      if (!mounted) return;
 
-    if (resultado['sucesso'] == true) {
-      setState(() {
-        codigoConfirmado = codigo;
-        etapa = 2;
-      });
-    } else {
-      mostrarMensagem(resultado['mensagem']?.toString() ?? 'Código inválido.');
+      if (resultado['sucesso'] == true) {
+        setState(() {
+          codigoConfirmado = codigo;
+          etapa = 2;
+        });
+      } else {
+        final mensagem = mensagemResultado(resultado, mensagemPadrao);
+        mostrarMensagem(
+          codigoInvalidoOuExpirado(mensagem)
+              ? 'Código inválido ou expirado. Confira o código ou solicite outro.'
+              : mensagem,
+        );
+      }
+    } catch (e) {
+      mostrarMensagem(
+        ApiService.mensagemErro(e, mensagemPadrao: mensagemPadrao),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
     }
   }
 
@@ -133,6 +218,7 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
   }
 
   Future<void> redefinirSenha() async {
+    if (!mounted || carregando || etapa != 2) return;
     final senha = senhaController.text;
     final confirmacao = confirmarSenhaController.text;
     if (senha.isEmpty || confirmacao.isEmpty) {
@@ -150,27 +236,46 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
       return;
     }
 
+    FocusManager.instance.primaryFocus?.unfocus();
     setState(() => carregando = true);
-    final resultado = await AuthService.redefinirSenha(
-      emailConfirmado,
-      codigoConfirmado,
-      senha,
-    );
-    if (!mounted) return;
-    setState(() => carregando = false);
-
-    if (resultado['sucesso'] == true) {
-      mostrarMensagem(
-        'Senha redefinida com sucesso! Faça login com a nova senha.',
-        sucesso: true,
+    const mensagemPadrao =
+        'Não foi possível redefinir a senha. Tente novamente.';
+    try {
+      final resultado = await AuthService.redefinirSenha(
+        emailConfirmado,
+        codigoConfirmado,
+        senha,
       );
+      if (!mounted) return;
 
-      context.go('/entregador/login');
-    } else {
+      if (resultado['sucesso'] == true) {
+        mostrarMensagem(
+          'Senha redefinida com sucesso! Faça login com a nova senha.',
+          sucesso: true,
+        );
+        context.go('/entregador/login');
+      } else {
+        final mensagem = mensagemResultado(resultado, mensagemPadrao);
+        if (codigoInvalidoOuExpirado(mensagem)) {
+          setState(() {
+            codigoConfirmado = '';
+            etapa = 1;
+          });
+          mostrarMensagem(
+            'Código inválido ou expirado. Confira o código ou solicite outro.',
+          );
+        } else {
+          mostrarMensagem(mensagem);
+        }
+      }
+    } catch (e) {
       mostrarMensagem(
-        resultado['mensagem']?.toString() ??
-            'Não foi possível redefinir a senha.',
+        ApiService.mensagemErro(e, mensagemPadrao: mensagemPadrao),
       );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
     }
   }
 
@@ -243,8 +348,8 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
     final theme = Theme.of(context);
     final titulos = ['Recuperar senha', 'Verificar código', 'Nova senha'];
     final descricoes = [
-      'Informe o e-mail cadastrado para receber um código de recuperação.',
-      'Digite o código de 6 dígitos enviado para $emailConfirmado.',
+      'Informe seu e-mail para solicitar um código de recuperação.',
+      'Se o e-mail $emailConfirmado estiver cadastrado, você receberá um código de 6 dígitos.',
       'Escolha uma nova senha para acessar sua conta.',
     ];
 
@@ -376,10 +481,15 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
                                 Align(
                                   alignment: Alignment.centerRight,
                                   child: TextButton(
-                                    onPressed: carregando
+                                    onPressed:
+                                        carregando || segundosParaReenvio > 0
                                         ? null
                                         : reenviarCodigo,
-                                    child: const Text('Reenviar código'),
+                                    child: Text(
+                                      segundosParaReenvio > 0
+                                          ? 'Reenviar em ${segundosParaReenvio}s'
+                                          : 'Reenviar código',
+                                    ),
                                   ),
                                 ),
                               ],
@@ -403,7 +513,10 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
                               SizedBox(
                                 height: 54,
                                 child: ElevatedButton(
-                                  onPressed: carregando
+                                  onPressed:
+                                      carregando ||
+                                          (etapa == 0 &&
+                                              segundosParaReenvio > 0)
                                       ? null
                                       : (etapa == 0
                                             ? solicitarCodigo
@@ -428,7 +541,9 @@ class _RecuperarSenhaPageState extends State<RecuperarSenhaPage> {
                                         )
                                       : Text(
                                           etapa == 0
-                                              ? 'Enviar código'
+                                              ? (segundosParaReenvio > 0
+                                                    ? 'Aguarde ${segundosParaReenvio}s'
+                                                    : 'Enviar código')
                                               : etapa == 1
                                               ? 'Verificar código'
                                               : 'Redefinir senha',

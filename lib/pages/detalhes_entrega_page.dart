@@ -1,10 +1,15 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:ui' as ui;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:http/http.dart' as http;
+
+import '../config/api_config.dart';
 
 import '../services/api_service.dart';
 import '../services/empresa_entrega_service.dart';
@@ -29,12 +34,192 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
   bool erroComprovante = false;
   bool atribuindoEntregador = false;
   Timer? _timerAcompanhamento;
+  Timer? _timerValidadeLocalizacao;
+  static const Duration _validadeLocalizacao = Duration(seconds: 60);
+  bool _falhaConsultaAcompanhamento = false;
   GoogleMapController? _mapaAcompanhamentoController;
   Map<String, dynamic>? _dadosAcompanhamento;
   Map<String, dynamic>? _localizacaoRecebida;
   bool _consultandoAcompanhamento = false;
 
-  Map<String, dynamic> get entrega => widget.entrega;
+  bool _cancelandoEntrega = false;
+  bool _editandoEntrega = false;
+  bool _detalhesConfirmados = false;
+  bool _sessaoInvalida = false;
+  bool _mudouEntrega = false;
+  bool _saindo = false;
+  String? _erroDetalhes;
+  String? _mensagemComprovante;
+  String? _mensagemAcompanhamento;
+  String? _emailSessao;
+  String? _tokenSessao;
+
+  bool get _operacaoEmAndamento =>
+      atribuindoEntregador || _cancelandoEntrega || _editandoEntrega;
+
+  Map<String, dynamic> get entrega => _dadosAcompanhamento ?? widget.entrega;
+
+  static const _erroSessao = ApiException(
+    'Sua sessão expirou. Entre novamente na sua conta.',
+    statusCode: 401,
+  );
+
+  void _mostrarMensagem(String mensagem, {bool erro = true}) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(mensagem),
+        backgroundColor: erro ? AppColors.error : null,
+      ),
+    );
+  }
+
+  int _idValido() {
+    final id = int.tryParse(idEntrega);
+    if (id == null || id <= 0) {
+      throw const ApiException('Não foi possível identificar a entrega.');
+    }
+    return id;
+  }
+
+  Future<Map<String, String>> _headersEmpresa() async {
+    final email = await EmpresaService.empresaLogada();
+    final token = await EmpresaService.obterTokenEmpresa();
+    if (email == null ||
+        email.trim().isEmpty ||
+        token == null ||
+        token.trim().isEmpty) {
+      throw _erroSessao;
+    }
+    if (_emailSessao != null &&
+        (_emailSessao != email || _tokenSessao != token)) {
+      throw _erroSessao;
+    }
+    _emailSessao = email;
+    _tokenSessao = token;
+    return {'Authorization': 'Bearer $token'};
+  }
+
+  Future<Map<String, dynamic>> _consultarDados(String caminho) async {
+    final headers = await _headersEmpresa();
+    final resposta = await http
+        .get(Uri.parse(caminho), headers: headers)
+        .timeout(const Duration(seconds: 15));
+    await _headersEmpresa();
+    if (resposta.statusCode != 200) {
+      throw ApiService.erroHttp(
+        resposta.statusCode,
+        utf8.decode(resposta.bodyBytes, allowMalformed: true),
+      );
+    }
+    final dados = jsonDecode(utf8.decode(resposta.bodyBytes));
+    if (dados is! Map<String, dynamic>) {
+      throw const FormatException('Formato inválido da resposta.');
+    }
+    return dados;
+  }
+
+  bool _statusValido(String status) => const {
+    'PENDENTE',
+    'EM_ROTA',
+    'ENTREGUE',
+    'NAO_ENTREGUE',
+    'CANCELADA',
+  }.contains(status);
+
+  bool _acessoNegado(Object erro) =>
+      erro is ApiException &&
+      (erro.statusCode == 401 ||
+          erro.statusCode == 403 ||
+          erro.statusCode == 404);
+
+  void _registrarFalhaDetalhes(Object erro) {
+    if (!mounted) return;
+    final mensagem = ApiService.mensagemErro(
+      erro,
+      mensagemPadrao:
+          'Não foi possível atualizar os detalhes da entrega. Tente novamente.',
+    );
+    final anterior = _erroDetalhes;
+    _timerValidadeLocalizacao?.cancel();
+    setState(() {
+      _detalhesConfirmados = false;
+      _erroDetalhes = mensagem;
+      _localizacaoRecebida = null;
+      _falhaConsultaAcompanhamento = true;
+      _mensagemAcompanhamento = mensagem;
+      if (_acessoNegado(erro)) {
+        _sessaoInvalida = true;
+        bytesComprovante = null;
+        erroComprovante = true;
+        _mensagemComprovante = mensagem;
+      }
+      if (_localizacaoDestino == null) {
+        _mapaAcompanhamentoController = null;
+      }
+    });
+    if (anterior != mensagem && ModalRoute.of(context)?.isCurrent == true) {
+      _mostrarMensagem(mensagem);
+    }
+  }
+
+  Future<void> _carregarDetalhes(int id) async {
+    final dados = await _consultarDados('${ApiConfig.entregas}/$id');
+    if (!mounted) return;
+    final novoStatus = (dados['status'] ?? '').toString().trim().toUpperCase();
+    final valor = dados['valor'];
+    if (int.tryParse(dados['id']?.toString() ?? '') != id ||
+        !_statusValido(novoStatus) ||
+        (valor != null && (valor is! num || !valor.isFinite))) {
+      throw const FormatException('Dados da entrega inválidos.');
+    }
+    final statusAnterior = statusEntrega();
+    final referenciaAnterior = referenciaComprovante;
+    setState(() {
+      _dadosAcompanhamento = dados;
+      _detalhesConfirmados = true;
+      _erroDetalhes = null;
+      if (_sessaoInvalida) {
+        erroComprovante = false;
+        _mensagemComprovante = null;
+      }
+      _sessaoInvalida = false;
+      if (statusAnterior != novoStatus) {
+        _mudouEntrega = true;
+      }
+      if (referenciaAnterior != referenciaComprovante) {
+        bytesComprovante = null;
+        erroComprovante = false;
+        _mensagemComprovante = null;
+      }
+      if (novoStatus != 'EM_ROTA') {
+        _timerValidadeLocalizacao?.cancel();
+        _localizacaoRecebida = null;
+        _falhaConsultaAcompanhamento = false;
+        _mensagemAcompanhamento = null;
+        _mapaAcompanhamentoController = null;
+      }
+    });
+    if ((novoStatus == 'ENTREGUE' || novoStatus == 'NAO_ENTREGUE') &&
+        possuiComprovante &&
+        bytesComprovante == null &&
+        !erroComprovante) {
+      unawaited(carregarComprovante());
+    }
+  }
+
+  bool _podeOperar() {
+    if (!mounted || _operacaoEmAndamento) return false;
+    if (!_detalhesConfirmados || _consultandoAcompanhamento) {
+      _mostrarMensagem(
+        _erroDetalhes ?? 'Aguarde a atualização dos detalhes da entrega.',
+      );
+      return false;
+    }
+    return true;
+  }
 
   String statusEntrega() {
     final status = (_dadosAcompanhamento?['status'] ?? entrega['status'] ?? '')
@@ -127,21 +312,22 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
     super.initState();
 
     _dadosAcompanhamento = Map<String, dynamic>.from(widget.entrega);
-    _timerAcompanhamento = Timer.periodic(
-      const Duration(seconds: 15),
-      (_) => _atualizarAcompanhamento(),
-    );
+    _timerAcompanhamento = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (!mounted ||
+          WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed ||
+          ModalRoute.of(context)?.isCurrent != true) {
+        return;
+      }
+      unawaited(_atualizarAcompanhamento());
+    });
     unawaited(_atualizarAcompanhamento());
-
-    if (possuiComprovante) {
-      carregarComprovante();
-    }
   }
 
   @override
   void dispose() {
     _timerAcompanhamento?.cancel();
-    _mapaAcompanhamentoController?.dispose();
+    _timerValidadeLocalizacao?.cancel();
+    _mapaAcompanhamentoController = null;
     super.dispose();
   }
 
@@ -163,11 +349,24 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
 
   LatLng? get _localizacaoEntregador {
     final dados = _localizacaoRecebida;
-    if (dados == null || dados['status'] != 'EM_ROTA') return null;
+    if (_sessaoInvalida ||
+        statusEntrega() != 'EM_ROTA' ||
+        dados == null ||
+        dados['status']?.toString().trim().toUpperCase() != 'EM_ROTA') {
+      return null;
+    }
+
+    final horario = _horarioLocalizacao;
+    if (horario == null) return null;
+
+    final idade = DateTime.now().difference(horario);
+    if (idade < Duration.zero || idade >= _validadeLocalizacao) return null;
+
     return _coordenadaValida(dados['latitude'], dados['longitude']);
   }
 
   LatLng? get _localizacaoDestino {
+    if (_sessaoInvalida) return null;
     final dados = _dadosAcompanhamento ?? entrega;
     return _coordenadaValida(dados['latitude'], dados['longitude']);
   }
@@ -178,43 +377,106 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
     return DateTime.tryParse(valor.toString())?.toLocal();
   }
 
+  void _programarValidadeLocalizacao() {
+    _timerValidadeLocalizacao?.cancel();
+    final horario = _horarioLocalizacao;
+    if (horario == null || _localizacaoEntregador == null) return;
+
+    final restante = horario
+        .add(_validadeLocalizacao)
+        .difference(DateTime.now());
+    if (restante <= Duration.zero) return;
+
+    _timerValidadeLocalizacao = Timer(restante, () {
+      if (!mounted) return;
+      setState(() {
+        if (_localizacaoEntregador == null && _localizacaoDestino == null) {
+          _mapaAcompanhamentoController = null;
+        }
+      });
+    });
+  }
+
+  void _registrarFalhaAcompanhamento(Object erro) {
+    if (!mounted) return;
+    _timerValidadeLocalizacao?.cancel();
+    setState(() {
+      _falhaConsultaAcompanhamento = true;
+      _mensagemAcompanhamento = ApiService.mensagemErro(
+        erro,
+        mensagemPadrao:
+            'Não foi possível consultar a localização. Uma nova tentativa será feita automaticamente.',
+      );
+      _localizacaoRecebida = null;
+      if (_localizacaoDestino == null) {
+        _mapaAcompanhamentoController = null;
+      }
+    });
+  }
+
   Future<void> _atualizarAcompanhamento() async {
-    if (_consultandoAcompanhamento || !mounted) return;
-    if (statusEntrega() != 'EM_ROTA') return;
-    final id = int.tryParse(idEntrega);
-    if (id == null) return;
+    if (_consultandoAcompanhamento ||
+        !mounted ||
+        _operacaoEmAndamento ||
+        _saindo) {
+      return;
+    }
     _consultandoAcompanhamento = true;
     try {
-      final dados = await ApiService.buscarLocalizacaoEntregador(id);
-      if (!mounted || dados == null) return;
-
-      final status = (dados['status'] ?? '').toString().trim().toUpperCase();
-      if (status.isEmpty) return;
-
-      if (status != 'EM_ROTA') {
-        _timerAcompanhamento?.cancel();
-        setState(() {
-          _dadosAcompanhamento = {...?_dadosAcompanhamento, 'status': status};
-          _localizacaoRecebida = null;
-        });
+      final id = _idValido();
+      await _carregarDetalhes(id);
+      if (!mounted || _operacaoEmAndamento || statusEntrega() != 'EM_ROTA') {
         return;
       }
 
-      final posicao = _coordenadaValida(dados['latitude'], dados['longitude']);
-      setState(() {
-        _localizacaoRecebida = dados;
-      });
-      if (posicao != null && _mapaAcompanhamentoController != null) {
-        try {
-          await _mapaAcompanhamentoController!.animateCamera(
-            CameraUpdate.newLatLng(posicao),
-          );
-        } catch (e) {
-          debugPrint('Não foi possível atualizar a câmera: $e');
+      try {
+        final dados = await _consultarDados(
+          '${ApiConfig.entregas}/$id/localizacao',
+        );
+        if (!mounted) return;
+        final status = (dados['status'] ?? '').toString().trim().toUpperCase();
+        if (int.tryParse(dados['entregaId']?.toString() ?? '') != id ||
+            !_statusValido(status)) {
+          throw const FormatException('Dados inválidos de localização.');
+        }
+        if (status != 'EM_ROTA') {
+          _timerValidadeLocalizacao?.cancel();
+          setState(() {
+            _localizacaoRecebida = null;
+            _detalhesConfirmados = false;
+          });
+          await _carregarDetalhes(id);
+          return;
+        }
+
+        setState(() {
+          _localizacaoRecebida = dados;
+          _falhaConsultaAcompanhamento = false;
+          _mensagemAcompanhamento = null;
+          if (_localizacaoEntregador == null && _localizacaoDestino == null) {
+            _mapaAcompanhamentoController = null;
+          }
+        });
+        _programarValidadeLocalizacao();
+
+        final posicao = _localizacaoEntregador;
+        final controller = _mapaAcompanhamentoController;
+        if (posicao != null && controller != null) {
+          try {
+            await controller.animateCamera(CameraUpdate.newLatLng(posicao));
+          } catch (e) {
+            debugPrint('Não foi possível atualizar a câmera: ${e.runtimeType}');
+          }
+        }
+      } catch (e) {
+        if (_acessoNegado(e) || !_detalhesConfirmados) {
+          _registrarFalhaDetalhes(e);
+        } else {
+          _registrarFalhaAcompanhamento(e);
         }
       }
     } catch (e) {
-      debugPrint('Não foi possível consultar acompanhamento: $e');
+      _registrarFalhaDetalhes(e);
     } finally {
       _consultandoAcompanhamento = false;
     }
@@ -225,10 +487,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
     final entregador = _localizacaoEntregador;
     final destino = _localizacaoDestino;
     final horario = _horarioLocalizacao;
-    final recente =
-        horario != null &&
-        DateTime.now().difference(horario).inSeconds >= 0 &&
-        DateTime.now().difference(horario) <= const Duration(seconds: 60);
+    final recente = entregador != null;
     final pontos = <Marker>{};
     if (entregador != null) {
       pontos.add(
@@ -257,8 +516,36 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
       String dois(int n) => n.toString().padLeft(2, '0');
       horarioTexto =
           'Última posição: ${dois(horario.hour)}:${dois(horario.minute)}:${dois(horario.second)}';
-    } else if (entregador != null) {
-      horarioTexto = 'Horário da posição não informado';
+    }
+
+    final String situacaoLocalizacao;
+    final String mensagemLocalizacao;
+
+    if (_falhaConsultaAcompanhamento) {
+      situacaoLocalizacao = 'Localização temporariamente indisponível';
+      mensagemLocalizacao =
+          _mensagemAcompanhamento ??
+          'Não foi possível consultar a localização. Uma nova tentativa será feita automaticamente.';
+    } else if (recente) {
+      situacaoLocalizacao = 'Localização recente';
+      mensagemLocalizacao = 'O mapa consulta atualizações a cada 15 segundos.';
+    } else if (horario != null) {
+      situacaoLocalizacao = 'Localização atual indisponível';
+      mensagemLocalizacao =
+          'A última posição não é válida ou recente. Aguardando uma nova localização.';
+    } else if (_localizacaoRecebida != null &&
+        _coordenadaValida(
+              _localizacaoRecebida?['latitude'],
+              _localizacaoRecebida?['longitude'],
+            ) !=
+            null) {
+      situacaoLocalizacao = 'Localização sem horário válido';
+      mensagemLocalizacao =
+          'A posição não será exibida até que seja possível confirmar seu horário.';
+    } else {
+      situacaoLocalizacao = 'Aguardando localização do entregador';
+      mensagemLocalizacao =
+          'Aguardando o envio da posição pelo aplicativo do entregador.';
     }
 
     return Container(
@@ -292,7 +579,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
           ),
           const SizedBox(height: 8),
           Text(
-            recente ? 'Localização recente' : horarioTexto,
+            situacaoLocalizacao,
             style: TextStyle(
               color: recente
                   ? AppColors.success
@@ -300,7 +587,10 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
               fontWeight: FontWeight.w600,
             ),
           ),
-          if (recente) ...[const SizedBox(height: 4), Text(horarioTexto)],
+          if (horario != null) ...[
+            const SizedBox(height: 4),
+            Text(horarioTexto),
+          ],
           const SizedBox(height: 12),
           if (centro == null)
             Container(
@@ -340,13 +630,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
             ),
           const SizedBox(height: 10),
           Text(
-            entregador == null
-                ? 'Aguardando o envio da posição pelo aplicativo do entregador.'
-                : horario == null
-                ? 'Posição recebida, mas sem horário para confirmar se é atual.'
-                : recente
-                ? 'O mapa consulta atualizações a cada 15 segundos.'
-                : 'A última posição pode estar desatualizada.',
+            mensagemLocalizacao,
             style: TextStyle(color: tema.colorScheme.onSurfaceVariant),
           ),
         ],
@@ -355,41 +639,80 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
   }
 
   Future<void> carregarComprovante() async {
-    if (!possuiComprovante || carregandoComprovante) {
+    if (!mounted ||
+        !possuiComprovante ||
+        carregandoComprovante ||
+        _sessaoInvalida) {
       return;
     }
-
+    final referencia = referenciaComprovante;
     setState(() {
       carregandoComprovante = true;
       erroComprovante = false;
+      _mensagemComprovante = null;
     });
-
     try {
+      await _headersEmpresa();
+      final url = Uri.parse(
+        EntregaService.urlComprovante(
+          idEntrega: idEntrega,
+          referencia: referencia,
+        ),
+      );
+      final origem = Uri.parse(ApiConfig.entregas);
+      if (url.scheme != origem.scheme ||
+          url.host != origem.host ||
+          url.port != origem.port) {
+        throw const ApiException(
+          'O endereço do comprovante não é reconhecido pelo servidor.',
+        );
+      }
       final bytes = await EntregaService.buscarBytesComprovante(
         idEntrega: idEntrega,
-        referencia: referenciaComprovante,
+        referencia: referencia,
         empresa: true,
+        lancarErro: true,
       );
-
-      if (!mounted) return;
-
+      if (bytes == null || bytes.isEmpty) {
+        throw const ApiException('O comprovante está vazio.');
+      }
+      final codec = await ui.instantiateImageCodec(bytes);
+      try {
+        final quadro = await codec.getNextFrame();
+        quadro.image.dispose();
+      } finally {
+        codec.dispose();
+      }
+      await _headersEmpresa();
+      if (!mounted || referencia != referenciaComprovante || _sessaoInvalida) {
+        return;
+      }
       setState(() {
         bytesComprovante = bytes;
-        erroComprovante = bytes == null || bytes.isEmpty;
+        erroComprovante = false;
       });
     } catch (e) {
-      debugPrint('Erro ao carregar comprovante: $e');
-
-      if (!mounted) return;
-
+      if (!mounted || referencia != referenciaComprovante) return;
+      if (e is ApiException && e.statusCode == 401) {
+        _registrarFalhaDetalhes(e);
+      }
       setState(() {
         erroComprovante = true;
+        _mensagemComprovante = ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível carregar ou abrir o comprovante. Tente novamente.',
+        );
       });
     } finally {
       if (mounted) {
-        setState(() {
-          carregandoComprovante = false;
-        });
+        setState(() => carregandoComprovante = false);
+        if (referencia != referenciaComprovante &&
+            possuiComprovante &&
+            !_sessaoInvalida &&
+            !erroComprovante) {
+          unawaited(carregarComprovante());
+        }
       }
     }
   }
@@ -397,7 +720,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
   void ampliarComprovante() {
     final bytes = bytesComprovante;
 
-    if (bytes == null || bytes.isEmpty) return;
+    if (bytes == null || bytes.isEmpty || _sessaoInvalida) return;
 
     showDialog<void>(
       context: context,
@@ -446,52 +769,70 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
   }
 
   Future<void> cancelarEntrega() async {
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Cancelar entrega'),
-          content: const Text('Tem certeza que deseja cancelar esta entrega?'),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(dialogContext, false);
-              },
-              child: const Text('Não'),
+    if (!_podeOperar()) return;
+    setState(() => _cancelandoEntrega = true);
+    try {
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('Cancelar entrega'),
+            content: const Text(
+              'Tem certeza que deseja cancelar esta entrega?',
             ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(dialogContext, true);
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error,
-                foregroundColor: Colors.white,
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(dialogContext, false);
+                },
+                child: const Text('Não'),
               ),
-              child: const Text('Sim, cancelar'),
-            ),
-          ],
-        );
-      },
-    );
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(dialogContext, true);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.error,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Sim, cancelar'),
+              ),
+            ],
+          );
+        },
+      );
 
-    if (confirmar != true) return;
-
-    final sucesso = await EmpresaListaEntregasService.cancelarEntrega(
-      entrega['id'],
-    );
-
-    if (!mounted) return;
-
-    if (sucesso) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Entrega cancelada')));
-
+      if (!mounted || confirmar != true) return;
+      await _headersEmpresa();
+      final sucesso = await EmpresaListaEntregasService.cancelarEntrega(
+        _idValido(),
+        lancarErro: true,
+      );
+      if (!mounted) return;
+      if (!sucesso) {
+        throw const ApiException('Não foi possível cancelar a entrega.');
+      }
+      _mostrarMensagem('Entrega cancelada', erro: false);
+      _saindo = true;
       context.pop(true);
-    } else {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Erro ao cancelar entrega')));
+    } catch (e) {
+      if (!mounted) return;
+      if (_acessoNegado(e)) {
+        _registrarFalhaDetalhes(e);
+      } else {
+        _mostrarMensagem(
+          ApiService.mensagemErro(
+            e,
+            mensagemPadrao:
+                'Não foi possível cancelar a entrega. Confira a situação antes de tentar novamente.',
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _cancelandoEntrega = false);
+        unawaited(_atualizarAcompanhamento());
+      }
     }
   }
 
@@ -506,19 +847,23 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
   }
 
   Future<void> atribuirEntregador() async {
-    if (atribuindoEntregador) return;
+    if (!_podeOperar()) return;
 
     setState(() {
       atribuindoEntregador = true;
     });
 
     try {
-      final lista = await EmpresaService.buscarEntregadores();
+      await _headersEmpresa();
+      final lista = await EmpresaService.buscarEntregadores(lancarErro: true);
+      await _headersEmpresa();
       if (!mounted) return;
 
+      final emails = <String>{};
       final disponiveis = lista.where((item) {
         if (item is! Map) return false;
-        return (item['email']?.toString().trim() ?? '').isNotEmpty;
+        final email = item['email']?.toString().trim() ?? '';
+        return email.isNotEmpty && emails.add(email.toLowerCase());
       }).toList();
 
       if (disponiveis.isEmpty) {
@@ -582,51 +927,73 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
 
       if (!mounted || email == null) return;
 
-      final id = int.tryParse(idEntrega);
-      if (id == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('ID da entrega inválido.')),
-        );
-        return;
-      }
-
+      await _headersEmpresa();
       final sucesso = await EmpresaEntregaService.atribuirEntregador(
-        entregaId: id,
+        entregaId: _idValido(),
         entregadorEmail: email,
+        lancarErro: true,
       );
-
       if (!mounted) return;
-
-      if (sucesso) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Entregador atribuído com sucesso.'),
-            backgroundColor: AppColors.success,
-          ),
-        );
-        context.pop(true);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Não foi possível atribuir o entregador.'),
-            backgroundColor: AppColors.error,
-          ),
-        );
+      if (!sucesso) {
+        throw const ApiException('Não foi possível atribuir o entregador.');
       }
-    } catch (e) {
-      debugPrint('Erro ao atribuir entregador: $e');
-      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Não foi possível carregar ou atribuir o entregador.'),
-          backgroundColor: AppColors.error,
+          content: Text('Entregador atribuído com sucesso.'),
+          backgroundColor: AppColors.success,
+        ),
+      );
+      _saindo = true;
+      context.pop(true);
+    } catch (e) {
+      if (!mounted) return;
+      if (_acessoNegado(e)) {
+        _registrarFalhaDetalhes(e);
+      } else {
+        _mostrarMensagem(
+          ApiService.mensagemErro(
+            e,
+            mensagemPadrao:
+                'Não foi possível carregar ou atribuir o entregador. Confira a situação antes de tentar novamente.',
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => atribuindoEntregador = false);
+        unawaited(_atualizarAcompanhamento());
+      }
+    }
+  }
+
+  Future<void> _editarEntrega() async {
+    if (!_podeOperar()) return;
+    setState(() => _editandoEntrega = true);
+    try {
+      await _headersEmpresa();
+      if (!mounted) return;
+      final atualizado = await context.push<bool>(
+        '/empresa/entregas/editar',
+        extra: Map<String, dynamic>.from(entrega),
+      );
+      if (!mounted) return;
+      if (atualizado == true) {
+        _saindo = true;
+        context.pop(true);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      _mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível abrir a edição da entrega. Tente novamente.',
         ),
       );
     } finally {
       if (mounted) {
-        setState(() {
-          atribuindoEntregador = false;
-        });
+        setState(() => _editandoEntrega = false);
+        unawaited(_atualizarAcompanhamento());
       }
     }
   }
@@ -867,13 +1234,14 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
                   color: AppColors.warning,
                 ),
                 const SizedBox(height: 10),
-                const Text(
-                  'Não foi possível carregar o comprovante.',
+                Text(
+                  _mensagemComprovante ??
+                      'Não foi possível carregar o comprovante.',
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 12),
                 OutlinedButton.icon(
-                  onPressed: carregarComprovante,
+                  onPressed: _sessaoInvalida ? null : carregarComprovante,
                   icon: const Icon(Icons.refresh),
                   label: const Text('Tentar novamente'),
                 ),
@@ -914,13 +1282,15 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
         leading: IconButton(
           tooltip: 'Voltar às entregas',
           icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            if (context.canPop()) {
-              context.pop();
-            } else {
-              context.go('/empresa/entregas');
-            }
-          },
+          onPressed: _operacaoEmAndamento
+              ? null
+              : () {
+                  if (context.canPop()) {
+                    context.pop(_mudouEntrega);
+                  } else {
+                    context.go('/empresa/entregas');
+                  }
+                },
         ),
         title: Text('Entrega #$id'),
         centerTitle: true,
@@ -1016,7 +1386,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
             SizedBox(
               height: 52,
               child: ElevatedButton.icon(
-                onPressed: atribuindoEntregador ? null : atribuirEntregador,
+                onPressed: _operacaoEmAndamento ? null : atribuirEntregador,
                 icon: atribuindoEntregador
                     ? const SizedBox(
                         width: 20,
@@ -1043,16 +1413,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
             SizedBox(
               height: 52,
               child: ElevatedButton.icon(
-                onPressed: () async {
-                  final atualizado = await context.push<bool>(
-                    '/empresa/entregas/editar',
-                    extra: Map<String, dynamic>.from(entrega),
-                  );
-
-                  if (atualizado == true && context.mounted) {
-                    context.pop(true);
-                  }
-                },
+                onPressed: _operacaoEmAndamento ? null : _editarEntrega,
                 icon: const Icon(Icons.edit),
                 label: const Text('Editar Entrega'),
                 style: ElevatedButton.styleFrom(
@@ -1068,7 +1429,7 @@ class _DetalhesEntregaPageState extends State<DetalhesEntregaPage> {
             SizedBox(
               height: 52,
               child: ElevatedButton.icon(
-                onPressed: cancelarEntrega,
+                onPressed: _operacaoEmAndamento ? null : cancelarEntrega,
                 icon: const Icon(Icons.cancel),
                 label: const Text('Cancelar Entrega'),
                 style: ElevatedButton.styleFrom(

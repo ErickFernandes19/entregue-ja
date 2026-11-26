@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/empresa_estatisticas_service.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
@@ -22,20 +23,21 @@ class _EmpresaHomePageState extends State<EmpresaHomePage>
   Timer? timer;
   Map<String, dynamic>? estatisticas;
   bool carregando = true;
-  bool _consultandoDados = false;
+  Future<void>? _consultaDados;
+  String? _ultimoErroEstatisticas;
   bool _appAtivo = true;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    carregarNomeEmpresa();
-    carregarFotoEmpresa();
-    carregarDados();
+    unawaited(carregarNomeEmpresa());
+    unawaited(carregarFotoEmpresa());
+    unawaited(carregarDados());
 
     timer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (_appAtivo) {
-        unawaited(carregarDados());
+        unawaited(carregarDados(automatico: true));
       }
     });
   }
@@ -44,7 +46,7 @@ class _EmpresaHomePageState extends State<EmpresaHomePage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final ativo = state == AppLifecycleState.resumed;
     if (ativo && !_appAtivo) {
-      unawaited(carregarDados());
+      unawaited(carregarDados(automatico: true));
     }
     _appAtivo = ativo;
   }
@@ -56,51 +58,142 @@ class _EmpresaHomePageState extends State<EmpresaHomePage>
     super.dispose();
   }
 
+  bool _mostrarMensagem(String mensagem) {
+    if (!mounted || !_appAtivo || ModalRoute.of(context)?.isCurrent == false) {
+      return false;
+    }
+
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return false;
+
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(content: Text(mensagem)));
+    return true;
+  }
+
   Future<void> carregarNomeEmpresa() async {
-    final nome = await EmpresaService.nomeEmpresa();
+    try {
+      final nome = await EmpresaService.nomeEmpresa();
+      if (!mounted) return;
 
-    if (!mounted) return;
-
-    setState(() {
-      nomeEmpresa = nome ?? 'Empresa';
-    });
+      setState(() {
+        nomeEmpresa = nome ?? 'Empresa';
+      });
+    } catch (e) {
+      _mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível carregar o nome da empresa.',
+        ),
+      );
+    }
   }
 
   Future<void> carregarFotoEmpresa() async {
-    final referencia = await EmpresaService.fotoEmpresa();
-    Uint8List? bytes;
-
-    if (referencia != null && referencia.isNotEmpty) {
-      bytes = await EmpresaService.buscarBytesFotoEmpresa(referencia);
-    }
-
-    if (!mounted) return;
-
-    setState(() {
-      fotoEmpresaBytes = bytes;
-    });
-  }
-
-  Future<void> carregarDados() async {
-    if (_consultandoDados || !mounted) return;
-    _consultandoDados = true;
     try {
-      final resultado = await EmpresaEstatisticasService.buscarEstatisticas();
+      final referencia = await EmpresaService.fotoEmpresa();
+      if (!mounted) return;
+
+      Uint8List? bytes;
+      if (referencia != null && referencia.trim().isNotEmpty) {
+        bytes = await EmpresaService.buscarBytesFotoEmpresa(
+          referencia,
+          lancarErro: true,
+        );
+        if (bytes == null || bytes.isEmpty) {
+          throw const ApiException(
+            'Não foi possível carregar a foto da empresa.',
+          );
+        }
+      }
+
       if (!mounted) return;
       setState(() {
-        if (resultado != null) {
-          estatisticas = resultado;
-        }
-        carregando = false;
+        fotoEmpresaBytes = bytes;
       });
     } catch (e) {
-      debugPrint('Erro ao atualizar estatísticas da empresa: $e');
+      _mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível carregar a foto da empresa.',
+        ),
+      );
+    }
+  }
+
+  Future<void> carregarDados({bool automatico = false}) {
+    if (!mounted) return Future<void>.value();
+
+    final consultaAtual = _consultaDados;
+    if (consultaAtual != null) return consultaAtual;
+
+    final consulta = _carregarDados(automatico).whenComplete(() {
+      _consultaDados = null;
+    });
+    _consultaDados = consulta;
+    return consulta;
+  }
+
+  Future<void> _carregarDados(bool automatico) async {
+    try {
+      final empresa = await EmpresaService.empresaLogada();
       if (!mounted) return;
+      if (empresa == null) {
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
+      }
+
+      final resultado = await EmpresaEstatisticasService.buscarEstatisticas()
+          .timeout(const Duration(seconds: 20));
+      if (!mounted) return;
+
+      if (resultado == null) {
+        throw const ApiException(
+          'Não foi possível atualizar as estatísticas. Verifique sua conexão e tente novamente.',
+        );
+      }
+
+      const campos = [
+        'total',
+        'entregues',
+        'pendentes',
+        'emRota',
+        'naoEntregues',
+      ];
+      final dados = Map<String, dynamic>.from(resultado);
+      for (final campo in campos) {
+        final valor = int.tryParse(dados[campo]?.toString() ?? '');
+        if (valor == null || valor < 0) {
+          throw const FormatException('Estatísticas inválidas');
+        }
+        dados[campo] = valor;
+      }
+
       setState(() {
-        carregando = false;
+        estatisticas = dados;
+        _ultimoErroEstatisticas = null;
       });
+    } catch (e) {
+      if (!mounted) return;
+      final mensagem = ApiService.mensagemErro(
+        e,
+        mensagemPadrao:
+            'Não foi possível atualizar as estatísticas. Tente novamente.',
+      );
+      if (!automatico || mensagem != _ultimoErroEstatisticas) {
+        final aviso = estatisticas == null
+            ? mensagem
+            : '$mensagem Os últimos dados disponíveis continuam exibidos.';
+        if (_mostrarMensagem(aviso)) {
+          _ultimoErroEstatisticas = mensagem;
+        }
+      }
     } finally {
-      _consultandoDados = false;
+      if (mounted && carregando) {
+        setState(() => carregando = false);
+      }
     }
   }
 
@@ -292,15 +385,15 @@ class _EmpresaHomePageState extends State<EmpresaHomePage>
 
   @override
   Widget build(BuildContext context) {
-    final total = estatisticas?['total']?.toString() ?? '0';
+    final total = estatisticas?['total']?.toString() ?? '—';
 
-    final entregues = estatisticas?['entregues']?.toString() ?? '0';
+    final entregues = estatisticas?['entregues']?.toString() ?? '—';
 
-    final pendentes = estatisticas?['pendentes']?.toString() ?? '0';
+    final pendentes = estatisticas?['pendentes']?.toString() ?? '—';
 
-    final emRota = estatisticas?['emRota']?.toString() ?? '0';
+    final emRota = estatisticas?['emRota']?.toString() ?? '—';
 
-    final naoEntregues = estatisticas?['naoEntregues']?.toString() ?? '0';
+    final naoEntregues = estatisticas?['naoEntregues']?.toString() ?? '—';
 
     final theme = Theme.of(context);
 

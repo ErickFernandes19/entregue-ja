@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme/app_colors.dart';
 
@@ -34,24 +35,27 @@ class _RegisterPageState extends State<RegisterPage> {
   }
 
   void mostrarErro(String mensagem) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(mensagem)));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensagem)));
   }
 
   Future<void> cadastrar() async {
+    if (carregando) return;
+
     final nome = nomeController.text.trim();
     final email = emailController.text.trim().toLowerCase();
     final senha = senhaController.text;
     final confirmarSenha = confirmarSenhaController.text;
 
-    if (nome.isEmpty ||
-        email.isEmpty ||
-        senha.isEmpty ||
-        confirmarSenha.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Preencha todos os campos')));
+    if (nome.isEmpty) {
+      mostrarErro('Informe seu nome.');
+      return;
+    }
+
+    if (email.isEmpty) {
+      mostrarErro('Informe seu e-mail.');
       return;
     }
 
@@ -59,7 +63,12 @@ class _RegisterPageState extends State<RegisterPage> {
           r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$',
         ).hasMatch(email) ||
         email.length > 254) {
-      mostrarErro('Informe um e-mail válido');
+      mostrarErro('Informe um e-mail válido.');
+      return;
+    }
+
+    if (senha.isEmpty) {
+      mostrarErro('Informe uma senha.');
       return;
     }
 
@@ -71,46 +80,65 @@ class _RegisterPageState extends State<RegisterPage> {
       return;
     }
 
+    if (confirmarSenha.isEmpty) {
+      mostrarErro('Confirme sua senha.');
+      return;
+    }
+
     if (senha != confirmarSenha) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('As senhas não conferem')));
+      mostrarErro('As senhas não conferem.');
       return;
     }
 
     FocusScope.of(context).unfocus();
+    setState(() => carregando = true);
 
-    setState(() {
-      carregando = true;
-    });
+    try {
+      final resultado = await AuthService.cadastrarComResultado(
+        nome,
+        email,
+        senha,
+      );
 
-    final resultado = await AuthService.cadastrarComResultado(
-      nome,
-      email,
-      senha,
-    );
+      if (!mounted) return;
 
-    if (!mounted) return;
+      final sucesso = resultado['sucesso'];
+      if (sucesso is! bool) {
+        throw const FormatException('Resultado do cadastro inválido.');
+      }
 
-    setState(() {
-      carregando = false;
-    });
+      if (!sucesso) {
+        final mensagem = resultado['mensagem'];
+        mostrarErro(
+          mensagem is String && mensagem.trim().isNotEmpty
+              ? mensagem.trim()
+              : 'Não foi possível enviar o código de verificação. Tente novamente.',
+        );
+        return;
+      }
 
-    if (resultado['sucesso'] == true) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Código de verificação enviado para seu e-mail'),
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Código de verificação enviado para seu e-mail.'),
+          ),
+        );
+
+      await context.push<void>('/entregador/verificar-cadastro', extra: email);
+    } catch (e) {
+      if (!mounted) return;
+      mostrarErro(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível concluir a solicitação de cadastro. Tente novamente.',
         ),
       );
-
-      context.push('/entregador/verificar-cadastro', extra: email);
-    } else {
-      final mensagem = resultado['mensagem']?.toString().trim();
-      mostrarErro(
-        mensagem != null && mensagem.isNotEmpty
-            ? mensagem
-            : 'Não foi possível enviar o código de verificação',
-      );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
     }
   }
 
@@ -159,7 +187,7 @@ class _RegisterPageState extends State<RegisterPage> {
         suffixIcon: senha
             ? IconButton(
                 icon: Icon(mostrar ? Icons.visibility_off : Icons.visibility),
-                onPressed: onMostrar,
+                onPressed: carregando ? null : onMostrar,
               )
             : null,
         labelText: label,
@@ -240,7 +268,7 @@ class _RegisterPageState extends State<RegisterPage> {
                       Container(
                         padding: const EdgeInsets.all(18),
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.18),
+                          color: Colors.white.withValues(alpha: 0.18),
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(
@@ -277,14 +305,14 @@ class _RegisterPageState extends State<RegisterPage> {
                           color: theme.cardColor,
                           borderRadius: BorderRadius.circular(26),
                           border: Border.all(
-                            color: theme.colorScheme.outlineVariant.withOpacity(
-                              0.35,
+                            color: theme.colorScheme.outlineVariant.withValues(
+                              alpha: 0.35,
                             ),
                           ),
                           boxShadow: [
                             BoxShadow(
-                              color: Colors.black.withOpacity(
-                                theme.brightness == Brightness.dark
+                              color: Colors.black.withValues(
+                                alpha: theme.brightness == Brightness.dark
                                     ? 0.28
                                     : 0.12,
                               ),
@@ -442,9 +470,11 @@ class _RegisterPageState extends State<RegisterPage> {
                                   ),
                                 ),
                                 TextButton(
-                                  onPressed: () {
-                                    context.go('/entregador/login');
-                                  },
+                                  onPressed: carregando
+                                      ? null
+                                      : () {
+                                          context.go('/entregador/login');
+                                        },
                                   child: const Text('Entrar'),
                                 ),
                               ],

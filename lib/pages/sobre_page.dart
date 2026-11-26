@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
@@ -9,25 +10,43 @@ class SobrePage extends StatelessWidget {
   const SobrePage({super.key});
 
   Future<void> voltarAoInicio(BuildContext context) async {
-    final empresa = await EmpresaService.empresaLogada();
+    try {
+      final empresa = await EmpresaService.empresaLogada();
 
-    if (!context.mounted) return;
+      if (!context.mounted) return;
 
-    if (empresa != null) {
-      context.go('/empresa/inicio');
-      return;
+      if (empresa != null) {
+        context.go('/empresa/inicio');
+        return;
+      }
+
+      final entregador = await AuthService.usuarioLogado();
+
+      if (!context.mounted) return;
+
+      if (entregador != null) {
+        context.go('/entregador/inicio');
+        return;
+      }
+
+      context.go('/selecionar');
+    } catch (e) {
+      if (!context.mounted) return;
+
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              ApiService.mensagemErro(
+                e,
+                mensagemPadrao:
+                    'Não foi possível verificar sua sessão. Tente novamente.',
+              ),
+            ),
+          ),
+        );
     }
-
-    final entregador = await AuthService.usuarioLogado();
-
-    if (!context.mounted) return;
-
-    if (entregador != null) {
-      context.go('/entregador/inicio');
-      return;
-    }
-
-    context.go('/selecionar');
   }
 
   @override
@@ -107,12 +126,12 @@ class SobrePage extends StatelessWidget {
               color: theme.cardColor,
               borderRadius: BorderRadius.circular(22),
               border: Border.all(
-                color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
               ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(
-                    theme.brightness == Brightness.dark ? 0.16 : 0.04,
+                  color: Colors.black.withValues(
+                    alpha: theme.brightness == Brightness.dark ? 0.16 : 0.04,
                   ),
                   blurRadius: 12,
                   offset: const Offset(0, 5),
@@ -125,7 +144,9 @@ class SobrePage extends StatelessWidget {
                 Row(
                   children: [
                     CircleAvatar(
-                      backgroundColor: AppColors.primary.withOpacity(0.14),
+                      backgroundColor: AppColors.primary.withValues(
+                        alpha: 0.14,
+                      ),
                       child: const Icon(
                         Icons.info_outline,
                         color: AppColors.primary,
@@ -180,13 +201,13 @@ class SobrePage extends StatelessWidget {
               color: theme.cardColor,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(
-                color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
               ),
             ),
             child: Row(
               children: [
                 CircleAvatar(
-                  backgroundColor: AppColors.success.withOpacity(0.14),
+                  backgroundColor: AppColors.success.withValues(alpha: 0.14),
                   child: const Icon(
                     Icons.verified_outlined,
                     color: AppColors.success,

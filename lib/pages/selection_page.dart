@@ -6,6 +6,26 @@ import '../theme/app_colors.dart';
 class SelectionPage extends StatelessWidget {
   const SelectionPage({super.key});
 
+  void navegar(BuildContext context, String rota) {
+    if (!context.mounted) return;
+
+    try {
+      context.go(rota);
+    } catch (_) {
+      if (!context.mounted) return;
+
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Não foi possível abrir a tela de login. Tente novamente.',
+            ),
+          ),
+        );
+    }
+  }
+
   Widget botao({
     required IconData icon,
     required String titulo,
@@ -60,7 +80,7 @@ class SelectionPage extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.18),
+                      color: Colors.white.withValues(alpha: 0.18),
                       shape: BoxShape.circle,
                     ),
                     child: const Icon(
@@ -97,14 +117,16 @@ class SelectionPage extends StatelessWidget {
                       color: theme.cardColor,
                       borderRadius: BorderRadius.circular(28),
                       border: Border.all(
-                        color: theme.colorScheme.outlineVariant.withOpacity(
-                          0.35,
+                        color: theme.colorScheme.outlineVariant.withValues(
+                          alpha: 0.35,
                         ),
                       ),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(
-                            theme.brightness == Brightness.dark ? 0.28 : 0.12,
+                          color: Colors.black.withValues(
+                            alpha: theme.brightness == Brightness.dark
+                                ? 0.28
+                                : 0.12,
                           ),
                           blurRadius: 20,
                           offset: const Offset(0, 8),
@@ -137,9 +159,7 @@ class SelectionPage extends StatelessWidget {
                           icon: Icons.person,
                           titulo: 'Sou Entregador',
                           cor: AppColors.primary,
-                          onTap: () {
-                            context.go('/entregador/login');
-                          },
+                          onTap: () => navegar(context, '/entregador/login'),
                         ),
 
                         const SizedBox(height: 14),
@@ -148,9 +168,7 @@ class SelectionPage extends StatelessWidget {
                           icon: Icons.business,
                           titulo: 'Sou Empresa',
                           cor: corEmpresa,
-                          onTap: () {
-                            context.go('/empresa/login');
-                          },
+                          onTap: () => navegar(context, '/empresa/login'),
                         ),
 
                         const SizedBox(height: 24),

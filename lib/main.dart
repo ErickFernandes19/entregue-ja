@@ -456,7 +456,7 @@ Future<void> main() async {
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => EntregasProvider()),
+        ChangeNotifierProvider(lazy: false, create: (_) => EntregasProvider()),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
       ],
       child: const MeuApp(),
@@ -477,10 +477,11 @@ class MeuApp extends StatefulWidget {
   State<MeuApp> createState() => _MeuAppState();
 }
 
-class _MeuAppState extends State<MeuApp> {
+class _MeuAppState extends State<MeuApp> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       telaInicialCarregada = true;
@@ -494,6 +495,19 @@ class _MeuAppState extends State<MeuApp> {
         abrirNotificacoes(tipoConta: tipoConta, contaId: contaId);
       }
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      unawaited(context.read<EntregasProvider>().carregarEntregasDoBackend());
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   Future<void> _inicializarSessao() async {

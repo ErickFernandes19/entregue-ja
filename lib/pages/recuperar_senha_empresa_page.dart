@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 
+import '../services/api_service.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 
@@ -52,6 +53,8 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
   }
 
   void mostrarMensagem(String mensagem, {bool sucesso = false}) {
+    if (!mounted) return;
+
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -62,72 +65,133 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
   }
 
   bool emailValido(String email) {
-    return RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email);
+    return email.length <= 254 &&
+        RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email);
+  }
+
+  String mensagemResultado(
+    Map<String, dynamic> resultado,
+    String mensagemPadrao,
+  ) {
+    final mensagem = resultado['mensagem'];
+    if (mensagem is String && mensagem.trim().isNotEmpty) {
+      return mensagem.trim();
+    }
+    return mensagemPadrao;
+  }
+
+  bool codigoInvalidoOuExpirado(String mensagem) {
+    final texto = mensagem.toLowerCase();
+    return texto.contains('código') &&
+        (texto.contains('inválid') || texto.contains('expirad'));
+  }
+
+  bool resultadoComSucesso(Map<String, dynamic> resultado) {
+    final sucesso = resultado['sucesso'];
+    if (sucesso is! bool) {
+      throw const FormatException('Resposta inválida');
+    }
+    return sucesso;
   }
 
   Future<void> solicitarCodigo() async {
-    final email = emailController.text.trim();
+    if (!mounted || carregando || etapa != 0) return;
+    final email = emailController.text.trim().toLowerCase();
     if (!emailValido(email)) {
       mostrarMensagem('Informe um e-mail válido.');
       return;
     }
-
-    setState(() => carregando = true);
-    final resultado = await EmpresaService.solicitarCodigoRecuperacao(email);
-    if (!mounted) return;
-    setState(() => carregando = false);
-
-    final sucesso = resultado['sucesso'] == true;
-    mostrarMensagem(
-      resultado['mensagem']?.toString() ?? 'Não foi possível enviar o código.',
-      sucesso: sucesso,
-    );
-    if (sucesso) {
-      setState(() {
-        emailConfirmado = email;
-        codigoController.clear();
-        etapa = 1;
-      });
-    }
+    await enviarCodigo(email, reenvio: false);
   }
 
   Future<void> reenviarCodigo() async {
-    if (carregando) return;
+    if (!mounted || carregando || etapa != 1) return;
+    await enviarCodigo(emailConfirmado, reenvio: true);
+  }
+
+  Future<void> enviarCodigo(String email, {required bool reenvio}) async {
+    if (!mounted || carregando) return;
+    FocusManager.instance.primaryFocus?.unfocus();
     setState(() => carregando = true);
-    final resultado = await EmpresaService.solicitarCodigoRecuperacao(
-      emailConfirmado,
-    );
-    if (!mounted) return;
-    setState(() => carregando = false);
-    mostrarMensagem(
-      resultado['mensagem']?.toString() ??
-          'Não foi possível reenviar o código.',
-      sucesso: resultado['sucesso'] == true,
-    );
+    final mensagemPadrao = reenvio
+        ? 'Não foi possível reenviar o código. Tente novamente.'
+        : 'Não foi possível solicitar o código. Tente novamente.';
+
+    try {
+      final resultado = await EmpresaService.solicitarCodigoRecuperacao(email);
+      if (!mounted) return;
+
+      if (resultadoComSucesso(resultado)) {
+        setState(() {
+          emailConfirmado = email;
+          codigoConfirmado = '';
+          codigoController.clear();
+          if (!reenvio) {
+            senhaController.clear();
+            confirmarSenhaController.clear();
+          }
+          etapa = 1;
+        });
+        mostrarMensagem(
+          'Se o e-mail estiver cadastrado, um código será enviado. '
+          'Confira sua caixa de entrada e o spam.',
+          sucesso: true,
+        );
+      } else {
+        mostrarMensagem(mensagemResultado(resultado, mensagemPadrao));
+      }
+    } catch (e) {
+      mostrarMensagem(
+        ApiService.mensagemErro(e, mensagemPadrao: mensagemPadrao),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
+    }
   }
 
   Future<void> verificarCodigo() async {
+    if (!mounted || carregando || etapa != 1) return;
     final codigo = codigoController.text.trim();
     if (!RegExp(r'^\d{6}$').hasMatch(codigo)) {
       mostrarMensagem('Digite o código de 6 dígitos recebido por e-mail.');
       return;
     }
 
+    FocusManager.instance.primaryFocus?.unfocus();
     setState(() => carregando = true);
-    final resultado = await EmpresaService.verificarCodigoRecuperacao(
-      emailConfirmado,
-      codigo,
-    );
-    if (!mounted) return;
-    setState(() => carregando = false);
+    const mensagemPadrao =
+        'Não foi possível verificar o código. Tente novamente.';
 
-    if (resultado['sucesso'] == true) {
-      setState(() {
-        codigoConfirmado = codigo;
-        etapa = 2;
-      });
-    } else {
-      mostrarMensagem(resultado['mensagem']?.toString() ?? 'Código inválido.');
+    try {
+      final resultado = await EmpresaService.verificarCodigoRecuperacao(
+        emailConfirmado,
+        codigo,
+      );
+      if (!mounted) return;
+
+      if (resultadoComSucesso(resultado)) {
+        setState(() {
+          codigoConfirmado = codigo;
+          etapa = 2;
+        });
+      } else {
+        final mensagem = mensagemResultado(resultado, mensagemPadrao);
+        mostrarMensagem(
+          codigoInvalidoOuExpirado(mensagem)
+              ? 'Código inválido ou expirado. Confira o código ou solicite outro.'
+              : mensagem,
+        );
+      }
+    } catch (e) {
+      mostrarMensagem(
+        ApiService.mensagemErro(e, mensagemPadrao: mensagemPadrao),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
     }
   }
 
@@ -140,6 +204,7 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
   }
 
   Future<void> redefinirSenha() async {
+    if (!mounted || carregando || etapa != 2) return;
     final senha = senhaController.text;
     final confirmacao = confirmarSenhaController.text;
     if (senha.isEmpty || confirmacao.isEmpty) {
@@ -157,32 +222,57 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
       return;
     }
 
+    FocusManager.instance.primaryFocus?.unfocus();
     setState(() => carregando = true);
-    final resultado = await EmpresaService.redefinirSenha(
-      emailConfirmado,
-      codigoConfirmado,
-      senha,
-    );
-    if (!mounted) return;
-    setState(() => carregando = false);
+    const mensagemPadrao =
+        'Não foi possível redefinir a senha. Tente novamente.';
 
-    if (resultado['sucesso'] == true) {
-      mostrarMensagem(
-        'Senha redefinida com sucesso! Faça login com a nova senha.',
-        sucesso: true,
+    try {
+      final resultado = await EmpresaService.redefinirSenha(
+        emailConfirmado,
+        codigoConfirmado,
+        senha,
       );
+      if (!mounted) return;
 
-      context.go('/empresa/login');
-    } else {
+      if (resultadoComSucesso(resultado)) {
+        mostrarMensagem(
+          'Senha redefinida com sucesso! Faça login com a nova senha.',
+          sucesso: true,
+        );
+        codigoConfirmado = '';
+        codigoController.clear();
+        senhaController.clear();
+        confirmarSenhaController.clear();
+        context.go('/empresa/login');
+      } else {
+        final mensagem = mensagemResultado(resultado, mensagemPadrao);
+        if (codigoInvalidoOuExpirado(mensagem)) {
+          setState(() {
+            codigoConfirmado = '';
+            etapa = 1;
+          });
+          mostrarMensagem(
+            'Código inválido ou expirado. Verifique o código ou solicite outro.',
+          );
+        } else {
+          mostrarMensagem(mensagem);
+        }
+      }
+    } catch (e) {
       mostrarMensagem(
-        resultado['mensagem']?.toString() ??
-            'Não foi possível redefinir a senha.',
+        ApiService.mensagemErro(e, mensagemPadrao: mensagemPadrao),
       );
+    } finally {
+      if (mounted) {
+        setState(() => carregando = false);
+      }
     }
   }
 
   void voltar() {
-    if (carregando) return;
+    if (!mounted || carregando) return;
+    FocusManager.instance.primaryFocus?.unfocus();
 
     if (etapa == 0) {
       if (context.canPop()) {
@@ -191,7 +281,16 @@ class _RecuperarSenhaEmpresaPageState extends State<RecuperarSenhaEmpresaPage> {
         context.go('/empresa/login');
       }
     } else {
-      setState(() => etapa--);
+      setState(() {
+        codigoConfirmado = '';
+        if (etapa == 1) {
+          emailConfirmado = '';
+          codigoController.clear();
+          senhaController.clear();
+          confirmarSenhaController.clear();
+        }
+        etapa--;
+      });
     }
   }
 

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/api_service.dart';
 import '../services/empresa_service.dart';
 import '../theme/app_colors.dart';
 
@@ -14,6 +15,10 @@ class MeusEntregadoresPage extends StatefulWidget {
 class _MeusEntregadoresPageState extends State<MeusEntregadoresPage> {
   List<dynamic> entregadores = [];
   bool carregando = true;
+  bool _consultando = false;
+  bool _abrindoPerfil = false;
+  String? _erroCarregamento;
+  String? _empresaDosDados;
 
   @override
   void initState() {
@@ -21,15 +26,137 @@ class _MeusEntregadoresPageState extends State<MeusEntregadoresPage> {
     carregarEntregadores();
   }
 
-  Future<void> carregarEntregadores() async {
-    final resultado = await EmpresaService.buscarEntregadores();
-
+  void _mostrarErro(String mensagem) {
     if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(content: Text(mensagem), backgroundColor: AppColors.error),
+    );
+  }
 
-    setState(() {
-      entregadores = resultado;
-      carregando = false;
-    });
+  Future<void> carregarEntregadores() async {
+    if (!mounted || _consultando) return;
+    _consultando = true;
+
+    try {
+      final empresa = await EmpresaService.empresaLogada();
+      if (!mounted) return;
+
+      if (empresa == null || empresa.trim().isEmpty) {
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
+      }
+
+      if (_empresaDosDados != null && _empresaDosDados != empresa) {
+        setState(() {
+          entregadores = [];
+          _empresaDosDados = null;
+          _erroCarregamento = null;
+          carregando = true;
+        });
+      }
+
+      final resultado = await EmpresaService.buscarEntregadores(
+        lancarErro: true,
+      );
+      if (!mounted) return;
+
+      final empresaAtual = await EmpresaService.empresaLogada();
+      if (!mounted) return;
+      if (empresaAtual != empresa) {
+        throw const ApiException(
+          'Sua sessão mudou. Entre novamente ou atualize os dados.',
+          statusCode: 401,
+        );
+      }
+
+      final lista = <Map<String, dynamic>>[];
+      for (final item in resultado) {
+        if (item is! Map) {
+          throw const FormatException('Registro de entregador inválido.');
+        }
+        final dados = Map<String, dynamic>.from(item);
+        final email = dados['email']?.toString().trim() ?? '';
+        if (email.isEmpty) {
+          throw const FormatException('E-mail do entregador ausente.');
+        }
+        lista.add(dados);
+      }
+
+      setState(() {
+        entregadores = lista;
+        _empresaDosDados = empresa;
+        _erroCarregamento = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      final mensagem = ApiService.mensagemErro(
+        e,
+        mensagemPadrao:
+            'Não foi possível carregar os entregadores. Tente novamente.',
+      );
+      final semAcesso =
+          e is ApiException && (e.statusCode == 401 || e.statusCode == 403);
+
+      setState(() {
+        if (semAcesso) {
+          entregadores = [];
+          _empresaDosDados = null;
+        }
+        _erroCarregamento = mensagem;
+      });
+      _mostrarErro(
+        entregadores.isNotEmpty
+            ? '$mensagem Exibindo os últimos dados disponíveis.'
+            : mensagem,
+      );
+    } finally {
+      _consultando = false;
+      if (mounted && carregando) {
+        setState(() => carregando = false);
+      }
+    }
+  }
+
+  Future<void> _abrirPerfil(dynamic entregador) async {
+    if (!mounted || _abrindoPerfil || _consultando) return;
+    _abrindoPerfil = true;
+    try {
+      final empresa = await EmpresaService.empresaLogada();
+      if (!mounted) return;
+      if (empresa == null || empresa != _empresaDosDados) {
+        setState(() {
+          entregadores = [];
+          _empresaDosDados = null;
+          _erroCarregamento =
+              'Sua sessão mudou ou expirou. Atualize os dados ou entre novamente.';
+        });
+        _mostrarErro(_erroCarregamento!);
+        return;
+      }
+
+      final atualizado = await context.push<bool>(
+        '/empresa/entregadores/perfil',
+        extra: Map<String, dynamic>.from(entregador),
+      );
+      if (!mounted) return;
+      if (atualizado == true) {
+        await carregarEntregadores();
+      }
+    } catch (e) {
+      _mostrarErro(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível abrir o perfil do entregador. Tente novamente.',
+        ),
+      );
+    } finally {
+      _abrindoPerfil = false;
+    }
   }
 
   String formatarData(String? data) {
@@ -66,12 +193,12 @@ class _MeusEntregadoresPageState extends State<MeusEntregadoresPage> {
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: theme.colorScheme.outlineVariant.withOpacity(0.35),
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(
-              theme.brightness == Brightness.dark ? 0.16 : 0.04,
+            color: Colors.black.withValues(
+              alpha: theme.brightness == Brightness.dark ? 0.16 : 0.04,
             ),
             blurRadius: 10,
             offset: const Offset(0, 4),
@@ -80,21 +207,10 @@ class _MeusEntregadoresPageState extends State<MeusEntregadoresPage> {
       ),
       child: ListTile(
         contentPadding: const EdgeInsets.all(14),
-        onTap: () async {
-          final atualizado = await context.push<bool>(
-            '/empresa/entregadores/perfil',
-            extra: Map<String, dynamic>.from(entregador),
-          );
-
-          if (!mounted) return;
-
-          if (atualizado == true) {
-            await carregarEntregadores();
-          }
-        },
+        onTap: () => _abrirPerfil(entregador),
         leading: CircleAvatar(
           radius: 23,
-          backgroundColor: AppColors.primary.withOpacity(0.14),
+          backgroundColor: AppColors.primary.withValues(alpha: 0.14),
           child: const Icon(Icons.person, color: AppColors.primary),
         ),
         title: Text(
@@ -155,13 +271,15 @@ class _MeusEntregadoresPageState extends State<MeusEntregadoresPage> {
                       color: theme.cardColor,
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
-                        color: AppColors.primary.withOpacity(0.20),
+                        color: AppColors.primary.withValues(alpha: 0.20),
                       ),
                     ),
                     child: Row(
                       children: [
                         CircleAvatar(
-                          backgroundColor: AppColors.primary.withOpacity(0.14),
+                          backgroundColor: AppColors.primary.withValues(
+                            alpha: 0.14,
+                          ),
                           child: const Icon(
                             Icons.groups,
                             color: AppColors.primary,
@@ -178,7 +296,9 @@ class _MeusEntregadoresPageState extends State<MeusEntregadoresPage> {
                           ),
                         ),
                         Text(
-                          '${entregadores.length}',
+                          _empresaDosDados == null && _erroCarregamento != null
+                              ? '—'
+                              : '${entregadores.length}',
                           style: TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.bold,
@@ -196,8 +316,8 @@ class _MeusEntregadoresPageState extends State<MeusEntregadoresPage> {
                         color: theme.cardColor,
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
-                          color: theme.colorScheme.outlineVariant.withOpacity(
-                            0.35,
+                          color: theme.colorScheme.outlineVariant.withValues(
+                            alpha: 0.35,
                           ),
                         ),
                       ),
@@ -210,7 +330,9 @@ class _MeusEntregadoresPageState extends State<MeusEntregadoresPage> {
                           ),
                           const SizedBox(height: 10),
                           Text(
-                            'Nenhum entregador vinculado',
+                            _erroCarregamento == null
+                                ? 'Nenhum entregador vinculado'
+                                : 'Não foi possível carregar os entregadores',
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
                               color: theme.colorScheme.onSurface,
@@ -218,7 +340,9 @@ class _MeusEntregadoresPageState extends State<MeusEntregadoresPage> {
                           ),
                           const SizedBox(height: 5),
                           Text(
-                            'Quando um entregador aceitar o vínculo, ele aparecerá aqui.',
+                            _erroCarregamento == null
+                                ? 'Quando um entregador aceitar o vínculo, ele aparecerá aqui.'
+                                : '$_erroCarregamento Deslize para baixo para atualizar.',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               color: theme.colorScheme.onSurfaceVariant,

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 
+import '../services/api_service.dart';
 import '../services/cep_service.dart';
 import '../services/empresa_entrega_service.dart';
 import '../services/empresa_lista_entregas_service.dart';
@@ -35,6 +36,7 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
   bool carregando = false;
   bool carregandoEntregadores = true;
   bool buscandoCep = false;
+  bool _erroEntregadores = false;
 
   @override
   void initState() {
@@ -42,82 +44,143 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
     carregarEntregadores();
   }
 
+  void mostrarMensagem(String mensagem, {bool sucesso = false}) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(mensagem),
+        backgroundColor: sucesso ? AppColors.success : AppColors.error,
+      ),
+    );
+  }
+
   Future<void> carregarEntregadores() async {
     try {
-      final lista = await EmpresaService.buscarEntregadores();
+      final lista = await EmpresaService.buscarEntregadores(lancarErro: true);
       if (!mounted) return;
+      final emails = <String>{};
+      final validos = <Map<String, dynamic>>[];
+      for (final item in lista) {
+        if (item is! Map<String, dynamic>) {
+          throw const FormatException('Entregador inválido.');
+        }
+        final email = item['email']?.toString().trim() ?? '';
+        if (email.isEmpty) {
+          throw const FormatException('E-mail do entregador inválido.');
+        }
+        if (emails.add(email)) {
+          validos.add(item);
+        }
+      }
       setState(() {
-        entregadores = lista;
+        entregadores = validos;
         entregadorSelecionado = null;
+        _erroEntregadores = false;
       });
     } catch (e) {
-      debugPrint('Erro ao carregar entregadores: $e');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Não foi possível carregar os entregadores.'),
+      setState(() => _erroEntregadores = true);
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao: 'Não foi possível carregar os entregadores.',
         ),
       );
     } finally {
       if (mounted) {
-        setState(() {
-          carregandoEntregadores = false;
-        });
+        setState(() => carregandoEntregadores = false);
       }
     }
   }
 
   Future<void> buscarCep() async {
-    if (buscandoCep) return;
+    if (!mounted || buscandoCep || carregando) return;
 
     final cep = cepController.text.replaceAll(RegExp(r'[^0-9]'), '');
 
     if (cep.length != 8) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Digite um CEP válido com 8 números')),
+      mostrarMensagem('Digite um CEP válido com 8 números');
+      return;
+    }
+
+    final camposEndereco = [
+      ruaController,
+      bairroController,
+      cidadeController,
+      ufController,
+      numeroController,
+      complementoController,
+    ];
+    final valoresAnteriores = camposEndereco
+        .map((campo) => campo.text)
+        .toList();
+
+    setState(() => buscandoCep = true);
+
+    try {
+      final dados = await CepService.buscarCep(
+        cep,
+      ).timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+
+      if (cepController.text.replaceAll(RegExp(r'[^0-9]'), '') != cep) return;
+
+      if (dados == null) {
+        mostrarMensagem(
+          'Não foi possível localizar o CEP. Confira o número e a conexão ou preencha o endereço manualmente.',
+        );
+        return;
+      }
+
+      for (var i = 0; i < camposEndereco.length; i++) {
+        if (camposEndereco[i].text != valoresAnteriores[i]) {
+          mostrarMensagem(
+            'O endereço foi alterado durante a consulta. Confira os campos preenchidos.',
+          );
+          return;
+        }
+      }
+
+      final logradouro = dados['logradouro']?.toString().trim() ?? '';
+      final bairro = dados['bairro']?.toString().trim() ?? '';
+      final cidade = dados['localidade']?.toString().trim() ?? '';
+      final uf = dados['uf']?.toString().trim() ?? '';
+
+      if (cidade.isEmpty || uf.isEmpty) {
+        throw const FormatException('Endereço inválido.');
+      }
+
+      setState(() {
+        ruaController.text = logradouro;
+        bairroController.text = bairro;
+        cidadeController.text = cidade;
+        ufController.text = uf;
+        numeroController.clear();
+        complementoController.clear();
+      });
+
+      mostrarMensagem(
+        logradouro.isEmpty || bairro.isEmpty
+            ? 'CEP encontrado. Complete os dados do endereço.'
+            : 'Endereço encontrado. Informe o número.',
+        sucesso: true,
       );
-      return;
+    } catch (e) {
+      if (!mounted) return;
+      mostrarMensagem(
+        ApiService.mensagemErro(
+          e,
+          mensagemPadrao:
+              'Não foi possível consultar o CEP. Confira a conexão ou informe o endereço manualmente.',
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => buscandoCep = false);
+      }
     }
-
-    setState(() {
-      buscandoCep = true;
-    });
-
-    final dados = await CepService.buscarCep(cep);
-
-    if (!mounted) return;
-
-    setState(() {
-      buscandoCep = false;
-    });
-
-    if (dados == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('CEP não encontrado')));
-      return;
-    }
-
-    final logradouro = dados['logradouro']?.toString().trim() ?? '';
-    final bairro = dados['bairro']?.toString().trim() ?? '';
-    final cidade = dados['localidade']?.toString().trim() ?? '';
-    final uf = dados['uf']?.toString().trim() ?? '';
-
-    setState(() {
-      ruaController.text = logradouro;
-      bairroController.text = bairro;
-      cidadeController.text = cidade;
-      ufController.text = uf;
-      numeroController.clear();
-      complementoController.clear();
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Endereço encontrado. Informe o número.'),
-        backgroundColor: AppColors.success,
-      ),
-    );
   }
 
   String montarEnderecoCompleto() {
@@ -258,71 +321,85 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
   }
 
   Future<void> cadastrarEntrega() async {
-    if (carregando) return;
+    if (!mounted || carregando || carregandoEntregadores) return;
+    if (buscandoCep) {
+      mostrarMensagem(
+        'Aguarde a consulta do CEP antes de cadastrar a entrega.',
+      );
+      return;
+    }
 
     final cliente = clienteController.text.trim();
+    final cep = cepController.text.replaceAll(RegExp(r'[^0-9]'), '');
     final rua = ruaController.text.trim();
     final numero = numeroController.text.trim();
     final bairro = bairroController.text.trim();
     final cidade = cidadeController.text.trim();
-    final uf = ufController.text.trim();
+    final uf = ufController.text.trim().toUpperCase();
     final complemento = complementoController.text.trim();
     final observacao = observacaoController.text.trim();
-
     final valor = converterValor(valorController.text);
 
     if (cliente.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Informe o nome do cliente')),
-      );
+      mostrarMensagem('Informe o nome do cliente');
       return;
     }
-
-    if (cepController.text.replaceAll(RegExp(r'[^0-9]'), '').length != 8) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Informe um CEP válido')));
+    if (cep.length != 8) {
+      mostrarMensagem('Informe um CEP válido');
       return;
     }
-
     if (rua.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Informe a rua da entrega')));
+      mostrarMensagem('Informe a rua da entrega');
       return;
     }
-
     if (numero.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Informe o número do endereço')),
-      );
+      mostrarMensagem('Informe o número do endereço');
       return;
     }
-
     if (bairro.isEmpty || cidade.isEmpty || uf.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Complete bairro, cidade e estado')),
-      );
+      mostrarMensagem('Complete bairro, cidade e estado');
+      return;
+    }
+    if (!RegExp(r'^[A-Z]{2}$').hasMatch(uf)) {
+      mostrarMensagem('Informe a sigla do estado com duas letras.');
+      return;
+    }
+    if (valor == null || !valor.isFinite || valor <= 0) {
+      mostrarMensagem('Informe um valor válido para a entrega');
       return;
     }
 
-    if (valor == null || valor <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Informe um valor válido para a entrega')),
-      );
-      return;
-    }
-
-    setState(() {
-      carregando = true;
-    });
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() => carregando = true);
+    var mensagemPadrao = 'Não foi possível verificar a sessão da empresa.';
+    var enviandoCadastro = false;
 
     try {
+      final empresaEmail = await EmpresaService.empresaLogada();
+      if (!mounted) return;
+      if (empresaEmail == null || empresaEmail.isEmpty) {
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
+      }
+
+      final token = await EmpresaService.obterTokenEmpresa();
+      if (!mounted) return;
+      if (token == null || token.isEmpty) {
+        throw const ApiException(
+          'Sua sessão expirou. Entre novamente na sua conta.',
+          statusCode: 401,
+        );
+      }
+
       final endereco = montarEnderecoCompleto();
       final enderecoNormalizado = normalizarEndereco(endereco);
       final enderecoParaMapa = montarEnderecoParaMapa();
       final entregadorEmail = entregadorSelecionado;
 
+      mensagemPadrao =
+          'Não foi possível verificar entregas existentes. Tente novamente.';
       final lista = await EmpresaListaEntregasService.buscarEntregas();
       if (!mounted) return;
 
@@ -351,29 +428,27 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
         if (coordenadas != null) break;
       }
 
-      coordenadas ??= await GeocodingService.buscarCoordenadas(
-        enderecoParaMapa,
+      mensagemPadrao =
+          'Não foi possível consultar a localização do endereço. Confira os dados e tente novamente.';
+      coordenadas ??= await buscarCoordenadasValidas(enderecoParaMapa);
+      if (!mounted) return;
+      coordenadas ??= await buscarCoordenadasValidas(
+        '$cep, $numero, $cidade - $uf',
       );
-      if (coordenadas == null) {
-        final cep = cepController.text.replaceAll(RegExp(r'[^0-9]'), '').trim();
-        final enderecoAlternativo = '$cep, $numero, $cidade - $uf';
-        coordenadas = await GeocodingService.buscarCoordenadas(
-          enderecoAlternativo,
-        );
-      }
       if (!mounted) return;
 
-      final empresaEmail = await EmpresaService.empresaLogada();
+      final emailAtual = await EmpresaService.empresaLogada();
+      final tokenAtual = await EmpresaService.obterTokenEmpresa();
       if (!mounted) return;
-      if (empresaEmail == null || empresaEmail.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Não foi possível identificar a empresa logada'),
-          ),
+      if (emailAtual != empresaEmail || tokenAtual != token) {
+        throw const ApiException(
+          'Sua sessão foi alterada. Entre novamente na sua conta.',
+          statusCode: 401,
         );
-        return;
       }
 
+      mensagemPadrao = 'Não foi possível confirmar o cadastro da entrega.';
+      enviandoCadastro = true;
       final resultado = await EmpresaEntregaService.cadastrarEntrega(
         empresaEmail: empresaEmail,
         entregadorEmail: entregadorEmail,
@@ -387,40 +462,52 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
       );
       if (!mounted) return;
       if (resultado == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Não foi possível cadastrar a entrega'),
-            backgroundColor: AppColors.error,
-          ),
+        mostrarMensagem(
+          'Não foi possível confirmar o cadastro. Consulte suas entregas antes de tentar novamente.',
         );
         return;
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Entrega cadastrada com sucesso'),
-          backgroundColor: AppColors.success,
-        ),
+      mostrarMensagem(
+        coordenadas == null
+            ? 'Entrega cadastrada com sucesso, mas não foi possível localizar o endereço no mapa.'
+            : 'Entrega cadastrada com sucesso',
+        sucesso: true,
       );
       context.pop(true);
     } catch (e) {
-      debugPrint('Erro ao verificar duplicidade/cadastrar entrega: $e');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Não foi possível verificar as entregas ou concluir o cadastro. Tente novamente.',
-          ),
-          backgroundColor: AppColors.error,
-        ),
+      final mensagem = ApiService.mensagemErro(
+        e,
+        mensagemPadrao: mensagemPadrao,
+      );
+      final falhaDefinitiva =
+          e is ApiException &&
+          e.statusCode != null &&
+          e.statusCode! >= 400 &&
+          e.statusCode! < 500 &&
+          e.statusCode != 408;
+      mostrarMensagem(
+        enviandoCadastro && !falhaDefinitiva
+            ? '$mensagem Consulte suas entregas antes de tentar novamente.'
+            : mensagem,
       );
     } finally {
       if (mounted) {
-        setState(() {
-          carregando = false;
-        });
+        setState(() => carregando = false);
       }
     }
+  }
+
+  Future<Map<String, double>?> buscarCoordenadasValidas(String endereco) async {
+    final dados = await GeocodingService.buscarCoordenadas(
+      endereco,
+    ).timeout(const Duration(seconds: 15));
+    if (dados == null) return null;
+    return coordenadasExistentes({
+      'latitude': dados['lat'],
+      'longitude': dados['lng'],
+    });
   }
 
   Widget campo({
@@ -541,7 +628,9 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
         if (disponiveis.isEmpty) ...[
           const SizedBox(height: 8),
           Text(
-            'Nenhum entregador vinculado. Você pode cadastrar a entrega e atribuir depois.',
+            _erroEntregadores
+                ? 'Não foi possível carregar os entregadores. Você pode cadastrar a entrega e atribuir depois.'
+                : 'Nenhum entregador vinculado. Você pode cadastrar a entrega e atribuir depois.',
             style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
           ),
         ],
@@ -750,7 +839,7 @@ class _CadastrarEntregaPageState extends State<CadastrarEntregaPage> {
           SizedBox(
             height: 54,
             child: ElevatedButton.icon(
-              onPressed: carregando || carregandoEntregadores
+              onPressed: carregando || carregandoEntregadores || buscandoCep
                   ? null
                   : cadastrarEntrega,
               icon: carregando
