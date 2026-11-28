@@ -271,10 +271,15 @@ public class PagamentoAssinaturaService {
         return processarPagamentoRecorrente(mercadoPagoPagamentoId, null);
     }
 
-    private Map<String, Object> processarPagamentoRecorrente(
+    @Transactional
+    public Map<String, Object> processarPagamentoRecorrente(
             String mercadoPagoPagamentoId, String assinaturaConfirmadaNaListagem) {
         if (mercadoPagoPagamentoId == null || !mercadoPagoPagamentoId.matches("[0-9]+")) {
             throw new IllegalArgumentException("Identificador do pagamento inválido.");
+        }
+        if (assinaturaConfirmadaNaListagem != null
+                && !assinaturaConfirmadaNaListagem.matches("[A-Za-z0-9_-]{1,100}")) {
+            throw new IllegalArgumentException("Identificador da assinatura recorrente inválido.");
         }
 
         JsonNode externo = mercadoPagoService.consultarPagamentoRecorrente(mercadoPagoPagamentoId);

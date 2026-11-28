@@ -166,12 +166,19 @@ public class MercadoPagoWebhookController {
 
             if (eventoPagamentoAutorizado) {
                 JsonNode autorizado = mercadoPagoService.consultarPagamentoAutorizado(dataId);
+                if (!dataId.equals(texto(autorizado, "id"))) {
+                    throw new IllegalStateException("Identificador da fatura recorrente inconsistente.");
+                }
+                String assinaturaId = texto(autorizado, "preapproval_id");
+                if (assinaturaId == null || !assinaturaId.matches("[A-Za-z0-9_-]{1,100}")) {
+                    throw new IllegalStateException("Fatura sem identificador de assinatura válido.");
+                }
                 String pagamentoId = texto(autorizado.path("payment"), "id");
                 if (pagamentoId == null || !pagamentoId.matches("[0-9]+")) {
                     LOGGER.error("Cobrança autorizada sem ID de pagamento válido, id={}", dataId);
                     return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
                 }
-                pagamentoService.processarPagamentoRecorrente(pagamentoId);
+                pagamentoService.processarPagamentoRecorrente(pagamentoId, assinaturaId);
                 return ResponseEntity.ok().build();
             }
 
